@@ -293,6 +293,50 @@ pub enum ToolProfile {
     },
 }
 
+/// Upper cutting surface of a form / T-slot / dovetail cutter at radial
+/// offset `r`, measured as height above the tip — the mirror of the lower
+/// surface [`ToolProfile::eval`] computes. `segments` is the `(z_above_tip,
+/// r)` outline, tip → up (same convention as `eval`).
+///
+/// Returns `f32::INFINITY` when the topmost sampled outline point still
+/// reaches radius `r`: the cutter body keeps going up (the shank / neck), so
+/// there is no modeled ceiling and that column carves top-down like an
+/// endmill. A **finite** value is the disk-top / dovetail-shoulder that caps
+/// the removed band and leaves the overhang above it intact — the whole point
+/// of the multi-span model.
+///
+/// Found by scanning the outline from the top for the highest z whose
+/// interpolated radius rises to `r`. For the T-slot vertical step (disk_r →
+/// neck_r at one z) both endpoints share that z, so the ceiling is exactly
+/// the disk top regardless of `r` within the disk band.
+fn form_upper(segments: &[(f32, f32)], r: f32) -> f32 {
+    let Some(&(_, top_r)) = segments.last() else {
+        // Empty outline collapses to a flat endmill — no ceiling.
+        return f32::INFINITY;
+    };
+    if top_r >= r {
+        // Topmost sample still reaches r ⇒ body continues up (shank).
+        return f32::INFINITY;
+    }
+    for w in segments.windows(2).rev() {
+        let (z0, r0) = w[0]; // lower z
+        let (z1, r1) = w[1]; // higher z
+                             // The highest window where radius drops below r going up: r0 (lower)
+                             // reaches r, r1 (higher) doesn't. Interpolate the z where radius == r.
+        if r0 >= r && r1 < r {
+            let denom = r0 - r1;
+            if denom < 1e-6 {
+                return z0.max(z1);
+            }
+            let t = (r0 - r) / denom;
+            return z0 + t * (z1 - z0);
+        }
+    }
+    // Unreachable for r <= max_r (some sample reaches r while the topmost
+    // does not, so a downward crossing must exist); finite tip-z fallback.
+    segments[0].0
+}
+
 impl ToolProfile {
     #[must_use]
     pub fn radius(&self) -> f32 {
@@ -486,21 +530,26 @@ impl ToolProfile {
     ///
     /// This is the multi-span dexel generalisation of [`Self::eval`] (which
     /// returns only the *lower* cutter surface). The lower bound reuses
-    /// `eval` verbatim, so every simple tool is unchanged. The upper bound is
-    /// `f32::INFINITY` — "no modeled ceiling; remove everything above `lo` up
-    /// to the stock top" — which makes subtracting `[lo, +∞]` from a column's
-    /// top span reduce **exactly** to today's monotone-`min()`.
+    /// `eval` verbatim, so every simple tool is unchanged.
     ///
-    /// Phase 1 (this landing) returns `+∞` for *every* kind. The finite
-    /// upper surface that makes T-slot / dovetail undercuts honest — where
-    /// `FormProfile` removes only a band `[disk_bottom, disk_top]` and leaves
-    /// the overhang above the neck intact — lands in a later slice
-    /// (`ivac-58nl.6` landing #4); until then no tool models a ceiling, so
-    /// the dexel carve is byte-for-byte the heightmap's top-down cut.
+    /// The upper bound is `f32::INFINITY` for every top-down solid (endmill,
+    /// ball, V, bull, drag, laser, compression, drill, engraver) — "no
+    /// modeled ceiling; remove everything above `lo`" — which makes
+    /// subtracting `[lo, +∞]` from a column's top span reduce **exactly** to
+    /// today's monotone-`min()`. Only [`ToolProfile::FormProfile`] returns a
+    /// **finite** upper (via [`form_upper`]) for its undercut band: a T-slot
+    /// removes only `[disk_bottom, disk_top]` and a dovetail only the sloped
+    /// shoulder, leaving the overhang above the neck intact — the first
+    /// honestly-simulated undercuts. The neck / axis of a form cutter still
+    /// reaches the top (`+∞`), so it carves top-down like an endmill.
     #[must_use]
     pub fn eval_interval(&self, r: f32) -> Option<(f32, f32)> {
         let lo = self.eval(r)?;
-        Some((lo, f32::INFINITY))
+        let hi = match self {
+            ToolProfile::FormProfile { segments } => form_upper(segments, r),
+            _ => f32::INFINITY,
+        };
+        Some((lo, hi))
     }
 
     /// Build a profile from a project tool entry. V-bit / engraver use
@@ -1280,11 +1329,12 @@ mod tests {
         assert_eq!(ToolProfile::from_tool(&em).max_engagement_depth(), None);
     }
 
-    /// Phase 1 `eval_interval` contract: for EVERY tool kind and radius, the
-    /// lower bound equals `eval(r)` exactly and the upper bound is `+∞`, and
-    /// the reach (`Some`/`None`) agrees with `eval`. This is what lets a
-    /// dexel field carve byte-for-byte identically to the heightmap until the
-    /// finite `FormProfile` ceiling lands (ivac-58nl.6 landing #4).
+    /// `eval_interval` contract for every **top-down solid** tool kind: the
+    /// lower bound equals `eval(r)` exactly, the upper bound is `+∞`, and the
+    /// reach (`Some`/`None`) agrees with `eval`. This is what lets a dexel
+    /// field carve those tools byte-for-byte identically to the heightmap.
+    /// `FormProfile` is the one exception (finite undercut ceiling) and is
+    /// covered by `form_profile_eval_interval_models_finite_undercut_ceiling`.
     #[test]
     fn eval_interval_lower_is_eval_upper_is_unbounded() {
         let profiles = [
@@ -1311,9 +1361,6 @@ mod tests {
                 cone_half_angle: 0.5,
                 max_engagement_depth: 2.5,
             },
-            ToolProfile::FormProfile {
-                segments: vec![(0.0, 8.0), (4.0, 8.0), (4.0, 2.0), (12.0, 2.0)],
-            },
         ];
         // Probe from the axis out past the widest cutter radius so we hit
         // both the reachable band and the outside-radius `None` case.
@@ -1339,5 +1386,73 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Landing #4: a form cutter's `eval_interval` models a FINITE ceiling for
+    /// its undercut band while the neck / axis still reaches the stock top
+    /// (`+∞`). T-slot outline: disk r=8 over z∈[0,4], neck r=2 over z∈[4,12].
+    #[test]
+    fn form_profile_eval_interval_models_finite_undercut_ceiling() {
+        let tslot = ToolProfile::FormProfile {
+            segments: vec![(0.0, 8.0), (4.0, 8.0), (4.0, 2.0), (12.0, 2.0)],
+        };
+        // Neck band (r ≤ 2): top-reaching, no ceiling — carves like an endmill.
+        for &r in &[0.0_f32, 1.0, 2.0] {
+            let (lo, hi) = tslot.eval_interval(r).expect("neck reaches the axis");
+            assert_eq!(lo, 0.0, "neck lower surface is the tip");
+            assert!(
+                hi.is_infinite() && hi.is_sign_positive(),
+                "neck has no ceiling at r={r}, got {hi}"
+            );
+        }
+        // Disk band (2 < r ≤ 8): finite ceiling at the disk top (z=4); the
+        // overhang above survives.
+        for &r in &[3.0_f32, 5.0, 8.0] {
+            let (lo, hi) = tslot.eval_interval(r).expect("disk reaches r");
+            assert_eq!(lo, 0.0, "disk lower surface is the tip");
+            assert!(
+                (hi - 4.0).abs() < 1e-5,
+                "disk ceiling is the disk top z=4, got {hi} at r={r}"
+            );
+            assert!(hi > lo, "removed band must be non-empty");
+        }
+        // Outside the widest radius: no contact at all.
+        assert_eq!(tslot.eval_interval(8.5), None);
+        // Lower bound still equals eval() bit-for-bit everywhere reachable.
+        for step in 0..=40 {
+            let r = step as f32 * 0.25;
+            match (tslot.eval(r), tslot.eval_interval(r)) {
+                (Some(e), Some((lo, _))) => assert_eq!(e.to_bits(), lo.to_bits()),
+                (None, None) => {}
+                (a, b) => panic!("reach disagree @ r={r}: {a:?} vs {b:?}"),
+            }
+        }
+    }
+
+    /// A dovetail (wide at the tip, narrowing upward) gives a SLOPED ceiling
+    /// that interpolates with radius — unlike the T-slot's flat disk top.
+    #[test]
+    fn form_profile_dovetail_interval_ceiling_slopes_with_radius() {
+        // Wide at the tip (r=6, z=0), narrowing to r=2 at z=5.
+        let dovetail = ToolProfile::FormProfile {
+            segments: vec![(0.0, 6.0), (5.0, 2.0)],
+        };
+        // r = 2 is the top (narrowest) radius → body continues up → +∞.
+        let (_, hi2) = dovetail.eval_interval(2.0).expect("neck reaches r=2");
+        assert!(hi2.is_infinite() && hi2.is_sign_positive());
+        // r = 4 → ceiling interpolates halfway: t=(6-4)/(6-2)=0.5 → z=2.5.
+        let (lo4, hi4) = dovetail.eval_interval(4.0).expect("reaches r=4");
+        assert_eq!(lo4, 0.0);
+        assert!(
+            (hi4 - 2.5).abs() < 1e-5,
+            "sloped ceiling at z=2.5, got {hi4}"
+        );
+        // r = 6 (rim, tip only) → zero-width band at the very tip (z=0).
+        let (lo6, hi6) = dovetail.eval_interval(6.0).expect("reaches the rim");
+        assert_eq!(lo6, 0.0);
+        assert!(
+            (hi6 - 0.0).abs() < 1e-5,
+            "rim ceiling at the tip, got {hi6}"
+        );
     }
 }

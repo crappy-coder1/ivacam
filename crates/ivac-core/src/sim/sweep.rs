@@ -277,6 +277,69 @@ fn sweep_chord_carve<T: CarveTarget>(
     touched
 }
 
+/// Undercut-aware chord carve into a [`DexelField`]: like [`sweep_chord_carve`]
+/// but drives the tool's removed **interval** ([`ToolProfile::eval_interval`])
+/// into [`DexelField::carve_cell`], so a form cutter's finite ceiling (the
+/// T-slot disk top / dovetail shoulder) removes only a band and leaves the
+/// overhang above it — populating the undercut sidecar. This is the first
+/// carve path that can produce a genuine undercut.
+///
+/// For every non-form tool `eval_interval` yields `[eval(r), +∞]`, so this
+/// reduces to the same top-down monotone-min as `sweep_chord_carve` (the dense
+/// fast path): byte-identical top surface, sidecar untouched. Only
+/// `FormProfile`'s disk/dovetail band takes the slow path.
+///
+/// Not yet wired into the live sim (no caller); the shipping 3-axis path still
+/// runs `sweep_chord_carve` on a `Heightmap`.
+pub fn sweep_chord_carve_dexel(
+    field: &mut DexelField,
+    segment: &ToolpathSegment,
+    profile: &ToolProfile,
+) -> u32 {
+    if matches!(segment.kind, MoveKind::Rapid) {
+        return 0;
+    }
+    let r_tool = profile.radius() as f64;
+    if r_tool <= 0.0 {
+        return 0;
+    }
+    // Same dragoff-shift / air-skip / engagement-clamp preamble as
+    // `sweep_chord_carve` — only the per-cell write differs.
+    let shifted = apply_dragoff_offset(segment, profile);
+    let segment = shifted.as_ref().unwrap_or(segment);
+    let from = &segment.from;
+    let to = &segment.to;
+    let top_z = f64::from(field.top_z);
+    if from.z >= top_z && to.z >= top_z {
+        return 0;
+    }
+    let depth_floor_z = profile.max_engagement_depth().map(|d| top_z - f64::from(d));
+    let layout = field.carve_layout();
+    let mut touched = 0u32;
+    for_each_swept_cell(&layout, segment, profile, |ix, iy, r, cutter_pz, _dz| {
+        // `eval_interval`'s lower bound equals the `dz` the walker computed;
+        // we take both bounds from it so the finite ceiling stays consistent
+        // with the lower surface. `for_each_swept_cell` already skipped cells
+        // the tool can't reach, so this is `Some` for every cell it visits.
+        let Some((lo, hi)) = profile.eval_interval(r) else {
+            return;
+        };
+        let clamped_pz = depth_floor_z.map_or(cutter_pz, |floor| cutter_pz.max(floor));
+        let pz = clamped_pz as f32;
+        let removed_lo = pz + lo;
+        // Infinite ceiling ⇒ a top-reaching cut; `carve_cell`'s fast path
+        // maps `[removed_lo, +∞]` to the same monotone-min as the heightmap.
+        let removed_hi = if hi.is_infinite() {
+            f32::INFINITY
+        } else {
+            pz + hi
+        };
+        field.carve_cell(ix, iy, removed_lo, removed_hi);
+        touched += 1;
+    });
+    touched
+}
+
 /// Shift a drag-knife segment by `-dragoff * unit_dir` so the
 /// carved chord tracks the trailing blade tip instead of the spindle
 /// axis. Returns `None` for non-DragKnife profiles, a profile with
@@ -2111,6 +2174,105 @@ mod tests {
                 b.to_bits(),
                 "split partial carve != whole carve"
             );
+        }
+    }
+
+    // --- Undercut-aware dexel sweep (landing #4) ---
+
+    /// The headline Phase-1 deliverable: sweeping a T-slot cutter through the
+    /// interval-aware dexel carve actually produces an undercut — a void with
+    /// a surviving overhang above it — which the single-Z heightmap cannot
+    /// represent. Disk band populates the sidecar; the neck carves top-down.
+    #[test]
+    fn tslot_sweep_populates_undercut_sidecar_and_preserves_overhang() {
+        // T-slot: disk r=8 over z∈[0,4] above the tip, neck r=2 over z∈[4,12].
+        let profile = ToolProfile::FormProfile {
+            segments: vec![(0.0, 8.0), (4.0, 8.0), (4.0, 2.0), (12.0, 2.0)],
+        };
+        let mut field = fresh_dexel(); // 40×40, top_z = 0, floor = -1000
+                                       // Plunge straight down at the grid centre, tip 0 → -5.
+        let plunge = seg(
+            MoveKind::Plunge,
+            pose(20.0, 20.0, 0.0),
+            pose(20.0, 20.0, -5.0),
+        );
+        let touched = sweep_chord_carve_dexel(&mut field, &plunge, &profile);
+        assert!(touched > 0);
+        assert!(
+            field.undercut_columns() > 0,
+            "the T-slot disk band must populate the undercut sidecar"
+        );
+
+        // Neck-band column ~1.6mm from the axis (< neck r=2): carves top-down
+        // to the tip depth -5 as a single dense span.
+        let neck = field.spans_at(21, 20);
+        assert_eq!(neck.len(), 1, "neck column stays a single dense span");
+        assert!(
+            (field.top_at(21, 20) + 5.0).abs() < 1e-4,
+            "neck carves to tip depth -5, got {}",
+            field.top_at(21, 20)
+        );
+
+        // Disk-band column ~5.5mm from the axis (2 < r < 8): a void [-5,-1]
+        // with a surviving overhang [-1,0] above it.
+        let disk = field.spans_at(25, 20);
+        assert_eq!(
+            disk.len(),
+            2,
+            "disk band leaves a void with an overhang above"
+        );
+        let below = disk[0];
+        let over = disk[1];
+        assert!((below.hi + 5.0).abs() < 1e-4, "cut floor at tip depth -5");
+        assert!(
+            (over.lo + 1.0).abs() < 1e-4,
+            "overhang bottom at disk-top depth -1"
+        );
+        assert!(
+            (over.hi - 0.0).abs() < 1e-4,
+            "overhang reaches the stock top"
+        );
+        assert!(
+            (field.top_at(25, 20) - 0.0).abs() < 1e-4,
+            "dense top mirrors the overhang top"
+        );
+    }
+
+    /// A top-down solid tool run through the interval sweep must reduce to the
+    /// plain top-down carve: same surface as `sweep_chord_carve`, sidecar
+    /// never touched. Proves the finite-ceiling machinery is inert for
+    /// non-form tools.
+    #[test]
+    fn dexel_interval_sweep_reduces_to_topdown_for_non_form_tools() {
+        let profiles = [
+            ToolProfile::Endmill { r: 2.5 },
+            ToolProfile::BallNose { r: 2.5 },
+            ToolProfile::VBit {
+                r: 3.0,
+                tip_r: 0.2,
+                half_angle_rad: 0.6,
+            },
+        ];
+        let s = seg(MoveKind::Cut, pose(4.0, 7.0, -1.0), pose(30.0, 24.0, -1.8));
+        for profile in &profiles {
+            let mut hm = fresh_map(40, 40);
+            let mut df = fresh_dexel();
+            let t_hm = sweep_chord_carve(&mut hm, &s, profile);
+            let t_df = sweep_chord_carve_dexel(&mut df, &s, profile);
+            assert_eq!(t_hm, t_df, "{profile:?}: touched diverged");
+            assert_eq!(
+                df.undercut_columns(),
+                0,
+                "{profile:?}: non-form interval sweep stays dense"
+            );
+            assert_eq!(
+                df.dirty_aabb(),
+                hm.dirty_aabb(),
+                "{profile:?}: dirty diverged"
+            );
+            for (a, b) in df.top().iter().zip(hm.data.iter()) {
+                assert_eq!(a.to_bits(), b.to_bits(), "{profile:?}: surface diverged");
+            }
         }
     }
 }
