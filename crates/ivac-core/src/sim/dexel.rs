@@ -2,10 +2,10 @@
 //! single-Z heightmap (see the `ivac-58nl.6` design note).
 //!
 //! This module holds the **pure 1-D interval algebra** that a per-column
-//! span list needs, with no field, no sweep, and no rendering wired up yet.
-//! It is the smallest reviewable slice of the multi-span dexel core: a
-//! column of stock becomes a sorted, disjoint list of solid `Span`s along
-//! Z, and carving removes a `[lo, hi]` interval from that list.
+//! span list needs, plus [`DexelField`] — the hybrid dense-top +
+//! sparse-undercut container built on it — with no sweep and no rendering
+//! wired up yet. A column of stock becomes a sorted, disjoint list of solid
+//! `Span`s along Z, and carving removes a `[lo, hi]` interval from that list.
 //!
 //! Why this shape matters: the current [`super::heightmap::Heightmap`] is a
 //! degenerate **1-span** dexel (one solid span `[floor, top]` per column).
@@ -22,7 +22,14 @@
 
 // Z coordinates are `f32` to match the heightmap's cell storage; the
 // interval math is exact on the endpoints we feed it (no accumulation).
-#![allow(clippy::module_name_repetitions)]
+// `DexelField`'s grid plumbing does the same f64↔u32↔usize casts as
+// `super::heightmap`, so it carries the same cast allows.
+#![allow(
+    clippy::module_name_repetitions,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 
 /// A solid interval along one column, Z up. Invariant: `lo < hi`.
 ///
@@ -115,9 +122,298 @@ pub fn merge_adjacent(spans: &mut Vec<Span>) {
     *spans = out;
 }
 
+use std::collections::HashMap;
+
+use crate::geometry::Point2;
+
+/// Hybrid material field: a **dense top surface** (identical layout and
+/// semantics to [`super::heightmap::Heightmap`]'s `data`, so the 3-axis hot
+/// path and the zero-copy WASM/GL upload are unchanged) plus a **sparse
+/// undercut sidecar** carrying the full span list only for the columns that
+/// actually grew an interior void.
+///
+/// The invariant that keeps the fast path free: a column with a single
+/// full-height solid span `[stock_bottom_z, top]` lives in the dense `top`
+/// array *alone* and never touches the sidecar. `top[idx]` always mirrors
+/// the highest solid surface, so every existing dense reader keeps working.
+///
+/// Carving a top-reaching interval from such a column is exactly the
+/// heightmap's monotone-`min()` (see [`DexelField::carve_cell`]'s fast
+/// path); only an interior removal (an undercut) or a from-below carve
+/// populates the sidecar.
+#[derive(Debug, Clone)]
+pub struct DexelField {
+    pub origin: Point2,
+    pub cell: f64,
+    pub cols: u32,
+    pub rows: u32,
+    /// Uncut stock surface (mirrors `Heightmap::top_z`).
+    pub top_z: f32,
+    /// Stock floor — the `lo` of a fresh, uncut column's single span.
+    /// Implicit in `Heightmap` (which is unbounded below); made explicit
+    /// here because a span needs a bottom.
+    pub stock_bottom_z: f32,
+    /// DENSE fast path: highest solid Z per column, row-major `cols * rows`.
+    /// Byte-identical in layout to `Heightmap::data`; zero-copy to WASM/GL.
+    top: Vec<f32>,
+    /// SPARSE sidecar keyed by cell index. Present ONLY for columns with an
+    /// interior void; an absent key means the implicit single span
+    /// `[stock_bottom_z, top[idx]]`. When present, the span list is the
+    /// authoritative sorted, disjoint, ascending column and `top[idx]`
+    /// still mirrors its highest `hi` for the dense readers.
+    undercut: HashMap<usize, Vec<Span>>,
+    /// Half-open dirty rectangle in cell indices (same contract as
+    /// `Heightmap`'s): `None` = no mutations since the last `clear_dirty()`.
+    dirty: Option<(u32, u32, u32, u32)>,
+}
+
+impl DexelField {
+    /// # Panics
+    ///
+    /// Panics on a non-positive `cell`, zero `cols` / `rows`, a `cols * rows`
+    /// product that overflows `usize`, or `stock_bottom_z >= top_z`.
+    #[must_use]
+    pub fn new(
+        origin: Point2,
+        cell: f64,
+        cols: u32,
+        rows: u32,
+        top_z: f32,
+        stock_bottom_z: f32,
+    ) -> Self {
+        assert!(cell > 0.0, "DexelField cell size must be > 0");
+        assert!(cols > 0 && rows > 0, "DexelField dimensions must be > 0");
+        assert!(
+            stock_bottom_z < top_z,
+            "DexelField stock_bottom_z must be below top_z"
+        );
+        // Same overflow guard as Heightmap::new — on wasm32 `usize` is u32,
+        // so `cols * rows` can wrap and silently under-allocate.
+        let len = (cols as usize)
+            .checked_mul(rows as usize)
+            .expect("dexel dim overflow");
+        Self {
+            origin,
+            cell,
+            cols,
+            rows,
+            top_z,
+            stock_bottom_z,
+            top: vec![top_z; len],
+            undercut: HashMap::new(),
+            dirty: None,
+        }
+    }
+
+    /// Build a `DexelField` from an existing [`super::heightmap::Heightmap`],
+    /// adopting its geometry, current top surface, and dirty rectangle. The
+    /// sidecar starts empty (every column is a single full-height span), so
+    /// the two are carve-for-carve equivalent on the 3-axis path.
+    /// `stock_bottom_z` supplies the span floor the heightmap leaves implicit.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `stock_bottom_z >= hm.top_z`.
+    #[must_use]
+    pub fn from_heightmap(hm: &super::heightmap::Heightmap, stock_bottom_z: f32) -> Self {
+        assert!(
+            stock_bottom_z < hm.top_z,
+            "DexelField stock_bottom_z must be below top_z"
+        );
+        Self {
+            origin: hm.origin,
+            cell: hm.cell,
+            cols: hm.cols,
+            rows: hm.rows,
+            top_z: hm.top_z,
+            stock_bottom_z,
+            top: hm.data.clone(),
+            undercut: HashMap::new(),
+            dirty: hm.dirty_aabb(),
+        }
+    }
+
+    #[inline]
+    fn idx_of(&self, ix: u32, iy: u32) -> usize {
+        (iy as usize) * (self.cols as usize) + (ix as usize)
+    }
+
+    /// Bounds-checked top-down carve: lower the column's top surface to `z`
+    /// if `z` is below it. Exactly `Heightmap::lower_at`; a no-op for cells
+    /// outside the grid.
+    pub fn lower_at(&mut self, ix: u32, iy: u32, z: f32) {
+        if ix >= self.cols || iy >= self.rows {
+            return;
+        }
+        self.carve_cell(ix, iy, z, f32::INFINITY);
+    }
+
+    /// Unchecked top-down carve — the sweep loop pre-clamps to the cell
+    /// rectangle. Equivalent to `carve_cell(ix, iy, z, +∞)`; kept as a named
+    /// parity with `Heightmap::lower_at_unchecked`.
+    #[inline]
+    pub fn lower_at_unchecked(&mut self, ix: u32, iy: u32, z: f32) {
+        self.carve_cell(ix, iy, z, f32::INFINITY);
+    }
+
+    /// Remove the solid material interval `[removed_lo, removed_hi]` from
+    /// cell `(ix, iy)`. The general carve entry point.
+    ///
+    /// **Fast path** (the whole 3-axis workload): when the removal reaches
+    /// the current top *and* the column is still a single full-height span
+    /// (no sidecar entry), this is a plain top-down cut — literally the
+    /// heightmap's monotone-`min()` on the dense array, with zero sidecar
+    /// cost. `removed_hi == f32::INFINITY` always takes this branch on an
+    /// undisturbed column, so top-down carving is byte-identical to
+    /// `Heightmap::lower_at_unchecked`.
+    ///
+    /// **Slow path**: an interior removal (leaving material above the cut, an
+    /// undercut) or an already multi-span column routes through
+    /// [`subtract_interval`] and re-canonicalises via `store_column`.
+    #[inline]
+    pub fn carve_cell(&mut self, ix: u32, iy: u32, removed_lo: f32, removed_hi: f32) {
+        let idx = self.idx_of(ix, iy);
+        // `undercut.is_empty()` is an O(1), hash-free escape: for a pure
+        // 3-axis job the sidecar is always empty, so this branch stays a
+        // length check + the dense write below — matching Heightmap's cost.
+        if removed_hi >= self.top[idx]
+            && (self.undercut.is_empty() || !self.undercut.contains_key(&idx))
+        {
+            if removed_lo < self.top[idx] {
+                self.top[idx] = removed_lo;
+                self.mark_dirty(ix, iy);
+            }
+            return;
+        }
+        let mut spans = self.spans_for(idx);
+        subtract_interval(&mut spans, removed_lo, removed_hi);
+        self.store_column(idx, ix, iy, spans);
+    }
+
+    /// The authoritative span list for a column: the sidecar entry if
+    /// present, else the implicit single span `[stock_bottom_z, top[idx]]`
+    /// (or an empty list if the column has been cut below the floor, i.e. no
+    /// solid material remains).
+    fn spans_for(&self, idx: usize) -> Vec<Span> {
+        match self.undercut.get(&idx) {
+            Some(s) => s.clone(),
+            None => {
+                if self.top[idx] > self.stock_bottom_z {
+                    vec![Span {
+                        lo: self.stock_bottom_z,
+                        hi: self.top[idx],
+                    }]
+                } else {
+                    Vec::new()
+                }
+            }
+        }
+    }
+
+    /// Write a column back, keeping the dense/sidecar split canonical: a
+    /// cleared or single full-height span lives in the dense array alone;
+    /// anything with an interior void goes to the sidecar with `top[idx]`
+    /// mirroring the highest surface. Always marks the cell dirty.
+    fn store_column(&mut self, idx: usize, ix: u32, iy: u32, mut spans: Vec<Span>) {
+        merge_adjacent(&mut spans);
+        match spans.as_slice() {
+            // Cut clean through — no solid left. Dense top drops to the floor
+            // (the mesh collapses the underside there).
+            [] => {
+                self.top[idx] = self.stock_bottom_z;
+                self.undercut.remove(&idx);
+            }
+            // A single floor-reaching span is a pure top-down column: dense
+            // only, no sidecar. This is how an undercut heals back once a
+            // deeper cut removes the overhang above it.
+            [s] if s.lo <= self.stock_bottom_z => {
+                self.top[idx] = s.hi;
+                self.undercut.remove(&idx);
+            }
+            // Interior void (or a floating slab that no longer reaches the
+            // floor) ⇒ sidecar; dense top mirrors the highest surface.
+            _ => {
+                let hi = spans.last().map_or(self.stock_bottom_z, |s| s.hi);
+                self.top[idx] = hi;
+                self.undercut.insert(idx, spans);
+            }
+        }
+        self.mark_dirty(ix, iy);
+    }
+
+    #[inline]
+    fn mark_dirty(&mut self, ix: u32, iy: u32) {
+        self.dirty = Some(match self.dirty {
+            None => (ix, iy, ix + 1, iy + 1),
+            Some((x0, y0, x1, y1)) => (x0.min(ix), y0.min(iy), x1.max(ix + 1), y1.max(iy + 1)),
+        });
+    }
+
+    /// Reset every column to uncut stock and clear the sidecar + dirty rect.
+    pub fn reset(&mut self) {
+        for c in &mut self.top {
+            *c = self.top_z;
+        }
+        self.undercut.clear();
+        self.dirty = None;
+    }
+
+    #[must_use]
+    pub fn dirty_aabb(&self) -> Option<(u32, u32, u32, u32)> {
+        self.dirty
+    }
+
+    pub fn clear_dirty(&mut self) {
+        self.dirty = None;
+    }
+
+    /// Mark the whole grid dirty (e.g. after a checkpoint restore).
+    pub fn mark_all_dirty(&mut self) {
+        self.dirty = Some((0, 0, self.cols, self.rows));
+    }
+
+    /// The dense top surface — same layout / semantics as `Heightmap::data`.
+    #[must_use]
+    pub fn top(&self) -> &[f32] {
+        &self.top
+    }
+
+    /// Highest solid Z at cell `(ix, iy)`.
+    #[must_use]
+    pub fn top_at(&self, ix: u32, iy: u32) -> f32 {
+        self.top[self.idx_of(ix, iy)]
+    }
+
+    #[must_use]
+    pub fn top_ptr(&self) -> *const f32 {
+        self.top.as_ptr()
+    }
+
+    #[must_use]
+    pub fn top_len(&self) -> usize {
+        self.top.len()
+    }
+
+    /// Number of columns currently carrying an undercut sidecar entry. `0`
+    /// for any pure 3-axis (top-down) job.
+    #[must_use]
+    pub fn undercut_columns(&self) -> usize {
+        self.undercut.len()
+    }
+
+    /// The authoritative solid span list for a column (sidecar entry or the
+    /// implicit single span). Primarily for inspection / tests and the
+    /// eventual undercut mesh builder.
+    #[must_use]
+    pub fn spans_at(&self, ix: u32, iy: u32) -> Vec<Span> {
+        self.spans_for(self.idx_of(ix, iy))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sim::heightmap::Heightmap;
 
     fn spans(pairs: &[(f32, f32)]) -> Vec<Span> {
         pairs.iter().map(|&(lo, hi)| Span { lo, hi }).collect()
@@ -278,5 +574,125 @@ mod tests {
         // A deeper cut to z = -5 lowers it.
         subtract_interval(&mut s, -5.0, 1000.0);
         assert_eq!(s, spans(&[(floor, -5.0)]));
+    }
+
+    // --- DexelField ---
+
+    /// Deterministic LCG (Knuth MMIX constants) so the differential corpus
+    /// below is reproducible without an rng dependency.
+    fn lcg(state: &mut u64) -> u32 {
+        *state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (*state >> 33) as u32
+    }
+
+    /// The crown-jewel guarantee of landing #2: a pure top-down carve
+    /// sequence drives `DexelField` and `Heightmap` to a **bit-for-bit
+    /// identical** top surface, never touches the undercut sidecar, and
+    /// tracks the same dirty AABB. The dense fast path *is* the heightmap's
+    /// monotone-`min()`.
+    #[test]
+    fn dexel_top_down_matches_heightmap_bitwise() {
+        let origin = Point2::new(-3.0, 2.0);
+        let (cell, cols, rows, top_z) = (0.2_f64, 17_u32, 11_u32, 4.0_f32);
+        let mut hm = Heightmap::new(origin, cell, cols, rows, top_z);
+        // Floor far below so it never interferes; top-down carving must stay
+        // on the dense fast path regardless of where it sits.
+        let mut df = DexelField::new(origin, cell, cols, rows, top_z, top_z - 1000.0);
+
+        let mut rng: u64 = 0x2545_f491_4f6c_dd1d;
+        for _ in 0..20_000 {
+            let r = lcg(&mut rng);
+            let ix = r % cols;
+            let iy = (r / cols) % rows;
+            // z ranges from top_z down to top_z - 6: some ops are no-ops
+            // (z above the current surface), some descend — hammering both
+            // sides of the monotone-min branch.
+            let z = top_z - (lcg(&mut rng) % 600) as f32 * 0.01;
+            hm.lower_at_unchecked(ix, iy, z);
+            df.carve_cell(ix, iy, z, f32::INFINITY);
+        }
+
+        // 1. The dense top surface is byte-for-byte identical.
+        assert_eq!(df.top().len(), hm.data.len());
+        for (a, b) in df.top().iter().zip(hm.data.iter()) {
+            assert_eq!(
+                a.to_bits(),
+                b.to_bits(),
+                "top surface diverged from heightmap"
+            );
+        }
+        // 2. Pure top-down carving NEVER populates the undercut sidecar.
+        assert_eq!(df.undercut_columns(), 0, "top-down carves must stay dense");
+        // 3. The dirty AABB tracks identically.
+        assert_eq!(df.dirty_aabb(), hm.dirty_aabb());
+    }
+
+    #[test]
+    fn from_heightmap_adopts_surface_and_dirty() {
+        let origin = Point2::new(0.0, 0.0);
+        let mut hm = Heightmap::new(origin, 1.0, 4, 4, 5.0);
+        hm.lower_at(1, 2, 2.0);
+        let df = DexelField::from_heightmap(&hm, -10.0);
+        assert_eq!(df.top(), hm.data.as_slice());
+        assert_eq!(df.dirty_aabb(), hm.dirty_aabb());
+        assert_eq!(df.undercut_columns(), 0);
+    }
+
+    #[test]
+    fn interior_carve_populates_sidecar_and_mirrors_top() {
+        let mut df = DexelField::new(Point2::new(0.0, 0.0), 1.0, 4, 4, 5.0, 0.0);
+        // Remove the interior band [2,3] from column (1,1): [0,5] -> [0,2]+[3,5].
+        df.carve_cell(1, 1, 2.0, 3.0);
+        assert_eq!(df.undercut_columns(), 1);
+        assert_eq!(
+            df.spans_at(1, 1),
+            spans(&[(0.0, 2.0), (3.0, 5.0)]),
+            "interior cut leaves an undercut void"
+        );
+        // Dense top still mirrors the highest solid surface.
+        assert_eq!(df.top_at(1, 1), 5.0);
+        // Neighbouring columns are untouched and stay dense.
+        assert_eq!(df.top_at(0, 0), 5.0);
+    }
+
+    #[test]
+    fn undercut_heals_back_to_dense_when_overhang_removed() {
+        let mut df = DexelField::new(Point2::new(0.0, 0.0), 1.0, 4, 4, 5.0, 0.0);
+        df.carve_cell(1, 1, 2.0, 3.0); // [0,2]+[3,5] — sidecar
+        assert_eq!(df.undercut_columns(), 1);
+        // Remove everything above z = 1 ⇒ single floor-reaching span [0,1].
+        df.carve_cell(1, 1, 1.0, f32::INFINITY);
+        assert_eq!(
+            df.undercut_columns(),
+            0,
+            "a floor-reaching single span heals back to dense"
+        );
+        assert_eq!(df.spans_at(1, 1), spans(&[(0.0, 1.0)]));
+        assert_eq!(df.top_at(1, 1), 1.0);
+    }
+
+    #[test]
+    fn floating_slab_is_treated_as_undercut() {
+        let mut df = DexelField::new(Point2::new(0.0, 0.0), 1.0, 4, 4, 5.0, 0.0);
+        // A from-below carve removes [0,2]: [0,5] -> [2,5], a floating slab
+        // that no longer reaches the floor ⇒ sidecar.
+        df.carve_cell(1, 1, 0.0, 2.0);
+        assert_eq!(df.undercut_columns(), 1);
+        assert_eq!(df.spans_at(1, 1), spans(&[(2.0, 5.0)]));
+        assert_eq!(df.top_at(1, 1), 5.0);
+    }
+
+    #[test]
+    fn carve_through_below_floor_stays_dense() {
+        let mut df = DexelField::new(Point2::new(0.0, 0.0), 1.0, 4, 4, 5.0, 0.0);
+        // Fast path: a top-reaching removal whose floor dips below the stock
+        // bottom (Heightmap allows z below anything) — dense, no sidecar.
+        df.carve_cell(1, 1, -1.0, f32::INFINITY);
+        assert_eq!(df.top_at(1, 1), -1.0);
+        assert_eq!(df.undercut_columns(), 0);
+        // spans_for now yields no solid material (top below the floor).
+        assert!(df.spans_at(1, 1).is_empty());
     }
 }
