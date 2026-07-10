@@ -17,6 +17,7 @@
 //! than chord [`gcode::preview::ToolpathSegment`]s, which the sim's
 //! sweep loop doesn't model today.
 
+pub mod dexel;
 pub mod diagnostics;
 pub mod fixture_check;
 pub mod heightmap;

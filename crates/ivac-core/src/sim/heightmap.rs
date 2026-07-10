@@ -480,6 +480,29 @@ impl ToolProfile {
         }
     }
 
+    /// Removed-material **interval** at radial offset `r`, measured as height
+    /// above the tool tip: `(lo_dz, hi_dz)`, or `None` if the cutter's solid
+    /// of revolution doesn't reach radius `r`.
+    ///
+    /// This is the multi-span dexel generalisation of [`Self::eval`] (which
+    /// returns only the *lower* cutter surface). The lower bound reuses
+    /// `eval` verbatim, so every simple tool is unchanged. The upper bound is
+    /// `f32::INFINITY` — "no modeled ceiling; remove everything above `lo` up
+    /// to the stock top" — which makes subtracting `[lo, +∞]` from a column's
+    /// top span reduce **exactly** to today's monotone-`min()`.
+    ///
+    /// Phase 1 (this landing) returns `+∞` for *every* kind. The finite
+    /// upper surface that makes T-slot / dovetail undercuts honest — where
+    /// `FormProfile` removes only a band `[disk_bottom, disk_top]` and leaves
+    /// the overhang above the neck intact — lands in a later slice
+    /// (`ivac-58nl.6` landing #4); until then no tool models a ceiling, so
+    /// the dexel carve is byte-for-byte the heightmap's top-down cut.
+    #[must_use]
+    pub fn eval_interval(&self, r: f32) -> Option<(f32, f32)> {
+        let lo = self.eval(r)?;
+        Some((lo, f32::INFINITY))
+    }
+
     /// Build a profile from a project tool entry. V-bit / engraver use
     /// `tool.tip_angle_deg` (full included angle) — sim depth before
     /// this used a hard-coded 60° regardless of the configured bit,
@@ -1255,5 +1278,66 @@ mod tests {
         // Sanity: non-Engraver profiles return None.
         let em = make_tool(ToolKind::Endmill, 6.0);
         assert_eq!(ToolProfile::from_tool(&em).max_engagement_depth(), None);
+    }
+
+    /// Phase 1 `eval_interval` contract: for EVERY tool kind and radius, the
+    /// lower bound equals `eval(r)` exactly and the upper bound is `+∞`, and
+    /// the reach (`Some`/`None`) agrees with `eval`. This is what lets a
+    /// dexel field carve byte-for-byte identically to the heightmap until the
+    /// finite `FormProfile` ceiling lands (ivac-58nl.6 landing #4).
+    #[test]
+    fn eval_interval_lower_is_eval_upper_is_unbounded() {
+        let profiles = [
+            ToolProfile::Endmill { r: 2.0 },
+            ToolProfile::BallNose { r: 2.0 },
+            ToolProfile::Drill { r: 1.5 },
+            ToolProfile::LaserBeam { r: 0.15 },
+            ToolProfile::DragKnife {
+                r: 1.0,
+                dragoff: 0.3,
+            },
+            ToolProfile::Compression { r: 2.0 },
+            ToolProfile::VBit {
+                r: 3.0,
+                tip_r: 0.5,
+                half_angle_rad: 0.4,
+            },
+            ToolProfile::BullNose {
+                r: 3.0,
+                corner_r: 0.8,
+            },
+            ToolProfile::Engraver {
+                tip_r: 0.5,
+                cone_half_angle: 0.5,
+                max_engagement_depth: 2.5,
+            },
+            ToolProfile::FormProfile {
+                segments: vec![(0.0, 8.0), (4.0, 8.0), (4.0, 2.0), (12.0, 2.0)],
+            },
+        ];
+        // Probe from the axis out past the widest cutter radius so we hit
+        // both the reachable band and the outside-radius `None` case.
+        for p in &profiles {
+            for step in 0..=40 {
+                let r = step as f32 * 0.25; // 0.0 .. 10.0
+                match (p.eval(r), p.eval_interval(r)) {
+                    (Some(lo), Some((ilo, ihi))) => {
+                        assert_eq!(
+                            lo.to_bits(),
+                            ilo.to_bits(),
+                            "{p:?} @ r={r}: eval_interval lower must equal eval exactly",
+                        );
+                        assert!(
+                            ihi.is_infinite() && ihi.is_sign_positive(),
+                            "{p:?} @ r={r}: Phase 1 upper bound must be +inf, got {ihi}",
+                        );
+                    }
+                    (None, None) => {}
+                    (a, b) => {
+                        panic!("{p:?} @ r={r}: eval/eval_interval reach disagree: {a:?} vs {b:?}")
+                    }
+                }
+            }
+        }
     }
 }
