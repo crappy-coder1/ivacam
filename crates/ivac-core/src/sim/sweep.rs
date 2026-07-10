@@ -31,6 +31,7 @@
 use crate::gcode::preview::{MoveKind, Pose3, ToolpathSegment};
 use crate::pipeline::CancelToken;
 use crate::project::Fixture;
+use crate::sim::dexel::DexelField;
 use crate::sim::diagnostics::{SimDiagnostics, SimWarning};
 use crate::sim::fixture_check::{check_segment_against_fixtures, FixtureCheck};
 use crate::sim::heightmap::{Heightmap, ToolProfile};
@@ -230,8 +231,8 @@ fn run_segment_warnings(
 
 /// Carve-only pass: lower every cell under the (possibly synthetic)
 /// chord. No diagnostics. Rapid moves bail.
-fn sweep_chord_carve(
-    heightmap: &mut Heightmap,
+fn sweep_chord_carve<T: CarveTarget>(
+    target: &mut T,
     segment: &ToolpathSegment,
     profile: &ToolProfile,
 ) -> u32 {
@@ -250,7 +251,7 @@ fn sweep_chord_carve(
     let from = &segment.from;
     let to = &segment.to;
     // Skip moves that stay above the stock — the cutter is in air.
-    let top_z = heightmap.top_z as f64;
+    let top_z = f64::from(target.carve_top_z());
     if from.z >= top_z && to.z >= top_z {
         return 0;
     }
@@ -262,7 +263,7 @@ fn sweep_chord_carve(
     // the unphysical cut rather than letting the heightmap drop past
     // the cutter's reach.
     let depth_floor_z = profile.max_engagement_depth().map(|d| top_z - f64::from(d));
-    let layout = HeightmapLayout::of(heightmap);
+    let layout = target.carve_layout();
     let mut touched = 0u32;
     // `for_each_swept_cell` clamps (ix, iy) to the heightmap's cell
     // rectangle, so the safe `lower_at`'s bounds branch is redundant
@@ -270,7 +271,7 @@ fn sweep_chord_carve(
     for_each_swept_cell(&layout, segment, profile, |ix, iy, _r, cutter_pz, dz| {
         let clamped_pz = depth_floor_z.map_or(cutter_pz, |floor| cutter_pz.max(floor));
         let surface_z = clamped_pz as f32 + dz;
-        heightmap.lower_at_unchecked(ix, iy, surface_z);
+        target.carve_top_down(ix, iy, surface_z);
         touched += 1;
     });
     touched
@@ -314,8 +315,8 @@ fn apply_dragoff_offset(
 /// every cell carved by either partial sees the same `cutter_pz +
 /// profile.eval(r)` it would see in the full sweep.
 #[allow(clippy::too_many_lines)]
-fn sweep_chord_carve_partial(
-    heightmap: &mut Heightmap,
+fn sweep_chord_carve_partial<T: CarveTarget>(
+    target: &mut T,
     segment: &ToolpathSegment,
     profile: &ToolProfile,
     t_start: f64,
@@ -335,11 +336,11 @@ fn sweep_chord_carve_partial(
     let segment = shifted.as_ref().unwrap_or(segment);
     let from = &segment.from;
     let to = &segment.to;
-    let top_z = heightmap.top_z as f64;
+    let top_z = f64::from(target.carve_top_z());
     if from.z >= top_z && to.z >= top_z {
         return 0;
     }
-    let layout = HeightmapLayout::of(heightmap);
+    let layout = target.carve_layout();
     let dx = to.x - from.x;
     let dy = to.y - from.y;
     let len_sq = dx * dx + dy * dy;
@@ -452,7 +453,7 @@ fn sweep_chord_carve_partial(
             };
             let clamped_pz = depth_floor_z.map_or(cutter_pz, |floor| cutter_pz.max(floor));
             let surface_z = clamped_pz as f32 + dz;
-            heightmap.lower_at_unchecked(ix, iy, surface_z);
+            target.carve_top_down(ix, iy, surface_z);
             touched += 1;
         }
     }
@@ -480,6 +481,66 @@ impl HeightmapLayout {
             cols: h.cols,
             rows: h.rows,
         }
+    }
+}
+
+/// A material field the chord-carve loop can lower cells into: either the
+/// legacy single-Z [`Heightmap`] or the multi-span [`DexelField`]. Keeping
+/// the sweep core generic over this trait means there is exactly ONE carve
+/// implementation while the material model evolves — the `Heightmap`
+/// monomorphisation compiles to the same code as before (zero regression),
+/// and the `DexelField` one reuses it verbatim.
+///
+/// The two `carve_top_down` writes are provably equivalent on the top-down
+/// path this loop drives: `Heightmap::lower_at_unchecked` is monotone-`min`,
+/// and `DexelField::carve_cell(.., +∞)`'s fast path IS that same monotone-min
+/// on the dense top array (see `DexelField::carve_cell`). So a pure 3-axis
+/// sweep lands a byte-identical top surface in either target.
+pub(super) trait CarveTarget {
+    /// Grid layout (origin / cell / dims) for `for_each_swept_cell`.
+    fn carve_layout(&self) -> HeightmapLayout;
+    /// Uncut stock-top plane, for the air-skip and engagement-depth clamp.
+    fn carve_top_z(&self) -> f32;
+    /// Lower cell `(ix, iy)` to `surface_z` (monotone: only when below the
+    /// current top). Pre-clamped to the cell rectangle by the caller.
+    fn carve_top_down(&mut self, ix: u32, iy: u32, surface_z: f32);
+}
+
+impl CarveTarget for Heightmap {
+    #[inline]
+    fn carve_layout(&self) -> HeightmapLayout {
+        HeightmapLayout::of(self)
+    }
+    #[inline]
+    fn carve_top_z(&self) -> f32 {
+        self.top_z
+    }
+    #[inline]
+    fn carve_top_down(&mut self, ix: u32, iy: u32, surface_z: f32) {
+        self.lower_at_unchecked(ix, iy, surface_z);
+    }
+}
+
+impl CarveTarget for DexelField {
+    #[inline]
+    fn carve_layout(&self) -> HeightmapLayout {
+        HeightmapLayout {
+            origin_x: self.origin.x,
+            origin_y: self.origin.y,
+            cell: self.cell,
+            cols: self.cols,
+            rows: self.rows,
+        }
+    }
+    #[inline]
+    fn carve_top_z(&self) -> f32 {
+        self.top_z
+    }
+    #[inline]
+    fn carve_top_down(&mut self, ix: u32, iy: u32, surface_z: f32) {
+        // Top-reaching removal ⇒ the fast path, which is monotone-min on the
+        // dense top — byte-identical to `Heightmap::lower_at_unchecked`.
+        self.carve_cell(ix, iy, surface_z, f32::INFINITY);
     }
 }
 
@@ -1865,6 +1926,191 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    // --- DexelField carve parity (landing #3) ---
+
+    /// Build a `DexelField` mirroring a fresh 40×40 test map, with the span
+    /// floor far below any cut so top-down carving stays single-span (dense).
+    fn fresh_dexel() -> DexelField {
+        let hm = fresh_map(40, 40);
+        DexelField::from_heightmap(&hm, hm.top_z - 1000.0)
+    }
+
+    /// Driving the generic chord-carve core into a `DexelField` instead of a
+    /// `Heightmap` lands a **bit-for-bit identical** top surface, matching
+    /// touched count and dirty AABB, and never populates the undercut
+    /// sidecar — across every profile kind and move kind. This is the
+    /// end-to-end proof that `DexelField` is a drop-in carve target.
+    #[test]
+    fn dexel_full_carve_matches_heightmap_bitwise() {
+        let cases: Vec<(&str, ToolProfile, ToolpathSegment)> = vec![
+            (
+                "endmill-cut",
+                ToolProfile::Endmill { r: 2.0 },
+                seg(MoveKind::Cut, pose(3.0, 8.0, -1.0), pose(30.0, 20.0, -1.5)),
+            ),
+            (
+                "ballnose-cut",
+                ToolProfile::BallNose { r: 2.5 },
+                seg(MoveKind::Cut, pose(5.0, 5.0, -0.8), pose(28.0, 26.0, -2.0)),
+            ),
+            (
+                "vbit-cut",
+                ToolProfile::VBit {
+                    r: 3.0,
+                    tip_r: 0.2,
+                    half_angle_rad: 0.6,
+                },
+                seg(MoveKind::Cut, pose(4.0, 30.0, -0.5), pose(32.0, 6.0, -1.2)),
+            ),
+            (
+                "bullnose-cut",
+                ToolProfile::BullNose {
+                    r: 2.0,
+                    corner_r: 0.8,
+                },
+                seg(MoveKind::Cut, pose(6.0, 6.0, -1.0), pose(30.0, 30.0, -1.0)),
+            ),
+            (
+                "drill-plunge",
+                ToolProfile::Drill { r: 1.5 },
+                seg(
+                    MoveKind::Plunge,
+                    pose(18.0, 18.0, 0.0),
+                    pose(18.0, 18.0, -3.0),
+                ),
+            ),
+            (
+                // Toolpath drives past the 1.0mm engagement clamp → both
+                // targets must clamp identically.
+                "engraver-clamp",
+                ToolProfile::Engraver {
+                    tip_r: 0.3,
+                    cone_half_angle: 0.5,
+                    max_engagement_depth: 1.0,
+                },
+                seg(MoveKind::Cut, pose(4.0, 12.0, -0.5), pose(30.0, 12.0, -5.0)),
+            ),
+            (
+                // Non-zero dragoff shifts the carved chord in both targets.
+                "dragknife-dragoff",
+                ToolProfile::DragKnife {
+                    r: 0.5,
+                    dragoff: 1.5,
+                },
+                seg(MoveKind::Cut, pose(6.0, 20.0, -1.0), pose(30.0, 24.0, -1.0)),
+            ),
+            (
+                "compression-cut",
+                ToolProfile::Compression { r: 2.0 },
+                seg(MoveKind::Cut, pose(5.0, 15.0, -1.0), pose(28.0, 28.0, -1.5)),
+            ),
+            (
+                "laser-cut",
+                ToolProfile::LaserBeam { r: 1.0 },
+                seg(MoveKind::Cut, pose(8.0, 8.0, -0.4), pose(24.0, 24.0, -0.4)),
+            ),
+            (
+                // Both endpoints above stock → air-skip, no writes.
+                "air-skip",
+                ToolProfile::Endmill { r: 2.0 },
+                seg(MoveKind::Cut, pose(5.0, 5.0, 0.5), pose(20.0, 20.0, 0.5)),
+            ),
+            (
+                // Rapids never carve.
+                "rapid-noop",
+                ToolProfile::Endmill { r: 2.0 },
+                seg(
+                    MoveKind::Rapid,
+                    pose(5.0, 5.0, -2.0),
+                    pose(20.0, 20.0, -2.0),
+                ),
+            ),
+        ];
+
+        for (name, profile, segment) in &cases {
+            let mut hm = fresh_map(40, 40);
+            let mut df = fresh_dexel();
+
+            let t_hm = sweep_chord_carve(&mut hm, segment, profile);
+            let t_df = sweep_chord_carve(&mut df, segment, profile);
+
+            assert_eq!(t_hm, t_df, "{name}: touched count diverged");
+            assert_eq!(
+                df.undercut_columns(),
+                0,
+                "{name}: top-down carve must stay dense"
+            );
+            assert_eq!(
+                df.dirty_aabb(),
+                hm.dirty_aabb(),
+                "{name}: dirty AABB diverged"
+            );
+            assert_eq!(df.top().len(), hm.data.len());
+            for (i, (a, b)) in df.top().iter().zip(hm.data.iter()).enumerate() {
+                assert_eq!(
+                    a.to_bits(),
+                    b.to_bits(),
+                    "{name}: cell {i} diverged ({a} vs {b})"
+                );
+            }
+        }
+    }
+
+    /// The partial-carve path is byte-identical too: (a) each `[t0,t1]` slice
+    /// carves a `DexelField` the same as a `Heightmap`, and (b) summing the
+    /// slices reproduces the whole-segment carve bit-for-bit — the end-to-end
+    /// analogue of the interval algebra's `partial_removal_is_associative`,
+    /// which is what keeps the 60fps partial-advance sim drift-free.
+    #[test]
+    fn dexel_partial_carve_matches_heightmap_and_is_split_invariant() {
+        let profile = ToolProfile::BallNose { r: 2.5 };
+        let segment = seg(MoveKind::Cut, pose(4.0, 6.0, -0.5), pose(32.0, 30.0, -2.2));
+        let seams = [0.0_f64, 0.17, 0.5, 0.83, 1.0];
+
+        // (a) dexel partial slice == heightmap partial slice, bit-for-bit.
+        for w in seams.windows(2) {
+            let (t0, t1) = (w[0], w[1]);
+            let mut hm = fresh_map(40, 40);
+            let mut df = fresh_dexel();
+            let t_hm = sweep_chord_carve_partial(&mut hm, &segment, &profile, t0, t1);
+            let t_df = sweep_chord_carve_partial(&mut df, &segment, &profile, t0, t1);
+            assert_eq!(t_hm, t_df, "slice [{t0},{t1}]: touched diverged");
+            assert_eq!(
+                df.dirty_aabb(),
+                hm.dirty_aabb(),
+                "slice [{t0},{t1}]: dirty diverged"
+            );
+            for (a, b) in df.top().iter().zip(hm.data.iter()) {
+                assert_eq!(
+                    a.to_bits(),
+                    b.to_bits(),
+                    "slice [{t0},{t1}]: surface diverged"
+                );
+            }
+        }
+
+        // (b) split carve (all slices) == whole carve, bit-for-bit, on the
+        // dexel field.
+        let mut whole = fresh_dexel();
+        sweep_chord_carve(&mut whole, &segment, &profile);
+
+        let mut split = fresh_dexel();
+        for w in seams.windows(2) {
+            sweep_chord_carve_partial(&mut split, &segment, &profile, w[0], w[1]);
+        }
+
+        assert_eq!(whole.undercut_columns(), 0);
+        assert_eq!(split.undercut_columns(), 0);
+        assert_eq!(split.dirty_aabb(), whole.dirty_aabb());
+        for (a, b) in split.top().iter().zip(whole.top().iter()) {
+            assert_eq!(
+                a.to_bits(),
+                b.to_bits(),
+                "split partial carve != whole carve"
+            );
         }
     }
 }
