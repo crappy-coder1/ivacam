@@ -109,6 +109,41 @@ pub fn dexel_to_stl_binary(field: &DexelField, stock_bottom_z: f32) -> Vec<u8> {
     serialize_binary_stl(&tris)
 }
 
+/// Serialize a [`DexelField`] as a binary STL of the **whole solid**, meshed
+/// as per-column voxel boxes straight off the sparse spans — the "Path A"
+/// watertight export.
+///
+/// Unlike [`dexel_to_stl_binary`] (the smooth, preview-parity default), this
+/// makes **no** interpolated top shell. Every column's solid spans become
+/// axis-aligned faces: a `+Z` top and a `−Z` bottom per span, plus vertical
+/// walls over exactly the Z where the column is solid and the lateral
+/// neighbour is air (walls split at the neighbour's span boundaries so
+/// coincident faces share edges). The result encloses the exact carved
+/// volume — undercut voids included — with **no** interpenetrating seam. So
+/// it is watertight (hole-free, consistently wound) and safe for the boolean
+/// / slicer / generic-mesh-viewer consumers that choke on the smooth
+/// export's non-manifold ramp-through-void.
+///
+/// Tradeoffs, by design (Path A vs the deferred smooth-stitched Path B):
+/// * The top is **stair-stepped** (flat per cell), not smooth — so for a
+///   pure 3-axis job this is **not** byte-identical to
+///   [`heightmap_to_stl_binary`]; it is a separate, opt-in export.
+/// * It is watertight but **not strictly 2-manifold**: up to four wall faces
+///   can meet along a shared vertical voxel edge (a T-junction, not an area
+///   gap). Slicers and most boolean engines accept this; a consumer needing
+///   a true 2-manifold surface would need Path B.
+///
+/// The solid's floor is intrinsic — each column's lowest span already bottoms
+/// at [`DexelField::stock_bottom_z`] — so there is no separate skirt-floor
+/// parameter, and (unlike the smooth skirt) no material is invented under a
+/// from-below floating slab.
+#[must_use]
+pub fn dexel_to_stl_solid_binary(field: &DexelField) -> Vec<u8> {
+    let mut tris: Vec<[[f32; 3]; 3]> = Vec::new();
+    push_solid_tris(&mut tris, field);
+    serialize_binary_stl(&tris)
+}
+
 /// Build the dense top surface + perimeter skirt + flat bottom for a
 /// single-valued heightfield `data` (`cols * rows`, row-major). Shared by
 /// both entry points so the 3-axis shell is bit-identical between them.
@@ -362,6 +397,187 @@ fn emit_face_walls(
                 [xr, yb, wlo],
             ),
         }
+    }
+}
+
+/// Which outward face of a solid column a wall sub-quad sits on — named by
+/// the direction of the AIR it faces (the opposite of the void [`Face`],
+/// whose name is the solid neighbour). Winding puts the recomputed normal
+/// outward, out of the solid.
+#[derive(Copy, Clone)]
+enum SolidFace {
+    /// +X neighbour air: wall at `x = xr`, normal +X.
+    Px,
+    /// −X neighbour air: wall at `x = xl`, normal −X.
+    Nx,
+    /// +Y neighbour air: wall at `y = yt`, normal +Y.
+    Py,
+    /// −Y neighbour air: wall at `y = yb`, normal −Y.
+    Ny,
+}
+
+/// Mesh the whole carved solid as per-column voxel boxes (the Path A
+/// watertight export). Each column's spans become a `+Z`/`−Z` face pair plus
+/// outward walls over the Z where the column is solid and the lateral
+/// neighbour is air. Columns are visited in row-major order so the output is
+/// deterministic; fully carved-away columns (no span) contribute nothing.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
+fn push_solid_tris(tris: &mut Vec<[[f32; 3]; 3]>, field: &DexelField) {
+    let cols = field.cols;
+    let rows = field.rows;
+    let cell = field.cell as f32;
+    let ox = field.origin.x as f32;
+    let oy = field.origin.y as f32;
+
+    for iy in 0..rows {
+        for ix in 0..cols {
+            let spans = field.spans_at(ix, iy);
+            if spans.is_empty() {
+                continue;
+            }
+            let xl = ox + ix as f32 * cell;
+            let xr = xl + cell;
+            let yb = oy + iy as f32 * cell;
+            let yt = yb + cell;
+
+            // Lateral neighbour spans (empty = off-grid ⇒ full outward wall).
+            let px = if ix + 1 < cols {
+                field.spans_at(ix + 1, iy)
+            } else {
+                Vec::new()
+            };
+            let nx = if ix > 0 {
+                field.spans_at(ix - 1, iy)
+            } else {
+                Vec::new()
+            };
+            let py = if iy + 1 < rows {
+                field.spans_at(ix, iy + 1)
+            } else {
+                Vec::new()
+            };
+            let ny = if iy > 0 {
+                field.spans_at(ix, iy - 1)
+            } else {
+                Vec::new()
+            };
+
+            for s in &spans {
+                // Top: +Z face at the span top.
+                push_quad(
+                    tris,
+                    [xl, yb, s.hi],
+                    [xr, yb, s.hi],
+                    [xr, yt, s.hi],
+                    [xl, yt, s.hi],
+                );
+                // Bottom: −Z face at the span floor.
+                push_quad(
+                    tris,
+                    [xl, yb, s.lo],
+                    [xl, yt, s.lo],
+                    [xr, yt, s.lo],
+                    [xr, yb, s.lo],
+                );
+                // Outward walls where the neighbour is air over [lo, hi].
+                emit_solid_wall(tris, &px, s, SolidFace::Px, xl, xr, yb, yt);
+                emit_solid_wall(tris, &nx, s, SolidFace::Nx, xl, xr, yb, yt);
+                emit_solid_wall(tris, &py, s, SolidFace::Py, xl, xr, yb, yt);
+                emit_solid_wall(tris, &ny, s, SolidFace::Ny, xl, xr, yb, yt);
+            }
+        }
+    }
+}
+
+/// Emit outward wall quads on one face for the parts of the solid span
+/// `[s.lo, s.hi]` where `neighbour` is **air** — i.e. `span − ⋃ neighbour`.
+/// `neighbour` is the sorted, disjoint, ascending span list of the adjacent
+/// column (empty for an off-grid neighbour ⇒ the whole span walls). Splitting
+/// at the neighbour's span edges is what makes the wall share edges with the
+/// neighbour's own faces (no area gap on the shared plane).
+fn emit_solid_wall(
+    tris: &mut Vec<[[f32; 3]; 3]>,
+    neighbour: &[crate::sim::dexel::Span],
+    s: &crate::sim::dexel::Span,
+    face: SolidFace,
+    xl: f32,
+    xr: f32,
+    yb: f32,
+    yt: f32,
+) {
+    // Sweep [s.lo, s.hi], emitting each gap the neighbour does NOT fill.
+    let mut z = s.lo;
+    for n in neighbour {
+        if n.hi <= z {
+            continue; // neighbour span entirely below the cursor
+        }
+        if n.lo >= s.hi {
+            break; // neighbour has passed the top of this span
+        }
+        let air_hi = n.lo.min(s.hi);
+        if air_hi - z > VOID_EPS {
+            push_solid_wall_quad(tris, face, z, air_hi, xl, xr, yb, yt);
+        }
+        z = z.max(n.hi);
+        if z >= s.hi {
+            break;
+        }
+    }
+    if s.hi - z > VOID_EPS {
+        push_solid_wall_quad(tris, face, z, s.hi, xl, xr, yb, yt);
+    }
+}
+
+/// Emit one outward-facing wall quad spanning `[zlo, zhi]` on the given face.
+/// Winding is chosen per face so [`triangle_normal`] recomputes an outward
+/// normal (out of the solid, into the neighbouring air).
+fn push_solid_wall_quad(
+    tris: &mut Vec<[[f32; 3]; 3]>,
+    face: SolidFace,
+    zlo: f32,
+    zhi: f32,
+    xl: f32,
+    xr: f32,
+    yb: f32,
+    yt: f32,
+) {
+    match face {
+        // Wall at x = xr, normal +X.
+        SolidFace::Px => push_quad(
+            tris,
+            [xr, yb, zlo],
+            [xr, yt, zlo],
+            [xr, yt, zhi],
+            [xr, yb, zhi],
+        ),
+        // Wall at x = xl, normal −X.
+        SolidFace::Nx => push_quad(
+            tris,
+            [xl, yb, zlo],
+            [xl, yb, zhi],
+            [xl, yt, zhi],
+            [xl, yt, zlo],
+        ),
+        // Wall at y = yt, normal +Y.
+        SolidFace::Py => push_quad(
+            tris,
+            [xr, yt, zlo],
+            [xl, yt, zlo],
+            [xl, yt, zhi],
+            [xr, yt, zhi],
+        ),
+        // Wall at y = yb, normal −Y.
+        SolidFace::Ny => push_quad(
+            tris,
+            [xl, yb, zlo],
+            [xr, yb, zlo],
+            [xr, yb, zhi],
+            [xl, yb, zhi],
+        ),
     }
 }
 
@@ -767,5 +983,278 @@ mod tests {
             df.spans_at(1, 1),
             vec![Span::new(0.0, 2.0).unwrap(), Span::new(3.0, 5.0).unwrap()]
         );
+    }
+
+    // ───────────────────── solid (Path A) builder ─────────────────────
+
+    /// True iff `(px, py)` lies inside triangle `t`'s XY projection (used to
+    /// count the horizontal faces a vertical ray pierces). Robust for a point
+    /// strictly interior to a cell and off the quad diagonal.
+    fn point_in_tri_xy(p: [f32; 2], t: &[[f32; 3]; 3]) -> bool {
+        let cross = |a: [f32; 3], b: [f32; 3]| -> f32 {
+            (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])
+        };
+        let d1 = cross(t[0], t[1]);
+        let d2 = cross(t[1], t[2]);
+        let d3 = cross(t[2], t[0]);
+        let has_neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
+        let has_pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
+        !(has_neg && has_pos)
+    }
+
+    /// The sorted `(z, sign)` of every horizontal face a vertical ray at
+    /// `(px, py)` pierces. `sign` = +1 for a +Z (top) face, −1 for a −Z
+    /// (bottom) face. Walls are vertical ⇒ never pierced by a vertical ray, so
+    /// this reconstructs the column's span boundaries — a per-column
+    /// watertightness probe that tolerates the mesh's non-2-manifold edges.
+    fn vertical_crossings(bytes: &[u8], px: f32, py: f32) -> Vec<(f32, i8)> {
+        let count = tri_count(bytes);
+        let mut out: Vec<(f32, i8)> = Vec::new();
+        for i in 0..count {
+            let n = tri_normal(bytes, i);
+            if n[0].abs() > 1e-3 || n[1].abs() > 1e-3 {
+                continue; // not a horizontal face
+            }
+            let vs = tri_verts(bytes, i);
+            if point_in_tri_xy([px, py], &vs) {
+                out.push((vs[0][2], if n[2] > 0.0 { 1 } else { -1 }));
+            }
+        }
+        out.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        out
+    }
+
+    /// Quantized vertex key for edge bookkeeping (mm at 1e-3 resolution).
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn qkey(v: [f32; 3]) -> (i32, i32, i32) {
+        (
+            (v[0] * 1000.0).round() as i32,
+            (v[1] * 1000.0).round() as i32,
+            (v[2] * 1000.0).round() as i32,
+        )
+    }
+
+    /// Assert a closed, consistently-wound 2-manifold: every directed edge
+    /// a→b is cancelled by an opposite b→a. Only valid where the mesh has NO
+    /// T-junctions (a single box, or a flat uniform field); stepped/void
+    /// fields are watertight but not 2-manifold, so they use ray probes.
+    fn assert_closed_manifold(bytes: &[u8]) {
+        use std::collections::HashMap;
+        let count = tri_count(bytes);
+        let mut edges: HashMap<((i32, i32, i32), (i32, i32, i32)), i32> = HashMap::new();
+        for i in 0..count {
+            let vs = tri_verts(bytes, i);
+            for e in 0..3 {
+                let a = qkey(vs[e]);
+                let b = qkey(vs[(e + 1) % 3]);
+                *edges.entry((a, b)).or_insert(0) += 1;
+            }
+        }
+        for (&(a, b), &c) in &edges {
+            let opp = edges.get(&(b, a)).copied().unwrap_or(0);
+            assert_eq!(
+                c, opp,
+                "directed edge {a:?}->{b:?} ({c}) != reverse ({opp})"
+            );
+        }
+    }
+
+    /// A lone uncut column (1×1 grid, all neighbours off-grid) meshes as a
+    /// closed six-face box: 12 triangles, one outward normal per axis
+    /// direction, and a clean 2-manifold.
+    #[test]
+    fn solid_single_column_is_closed_box() {
+        let df = DexelField::new(Point2::new(0.0, 0.0), 2.0, 1, 1, 4.0, -1.0);
+        let bytes = dexel_to_stl_solid_binary(&df);
+        assert_eq!(tri_count(&bytes), 12, "top + bottom + 4 walls = 6 quads");
+        assert_closed_manifold(&bytes);
+        let dirs = [
+            [1.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, -1.0],
+        ];
+        for d in dirs {
+            let c = (0..tri_count(&bytes))
+                .filter(|&i| {
+                    let n = tri_normal(&bytes, i);
+                    (n[0] - d[0]).abs() < 1e-3
+                        && (n[1] - d[1]).abs() < 1e-3
+                        && (n[2] - d[2]).abs() < 1e-3
+                })
+                .count();
+            assert_eq!(c, 2, "face {d:?} should be exactly two triangles");
+        }
+    }
+
+    /// A flat, uncut field has one equal-height span per column ⇒ no interior
+    /// walls and coplanar tops/bottoms ⇒ a closed 2-manifold slab (the
+    /// T-junction-free case, so the strict directed-edge check applies).
+    #[test]
+    fn solid_flat_field_is_two_manifold() {
+        let df = DexelField::new(Point2::new(1.0, -2.0), 0.5, 4, 3, 2.0, -1.0);
+        let bytes = dexel_to_stl_solid_binary(&df);
+        assert_closed_manifold(&bytes);
+    }
+
+    /// The load-bearing watertightness proof: for every cell, a vertical ray
+    /// pierces exactly the top/bottom faces of that column's spans, in order.
+    /// Covers 3-axis lowers (single span) and undercut voids (two spans).
+    #[test]
+    fn solid_ray_parity_reconstructs_spans() {
+        let origin = Point2::new(-1.0, 2.0);
+        let (cell, cols, rows, top_z, bottom) = (0.5_f64, 4_u32, 4_u32, 6.0_f32, -1.0_f32);
+        let mut df = DexelField::new(origin, cell, cols, rows, top_z, bottom);
+        df.lower_at(0, 0, 3.0);
+        df.lower_at(1, 0, 2.0);
+        df.lower_at(3, 3, 0.5);
+        df.carve_cell(2, 2, 2.0, 4.0); // spans [-1,2] + [4,6]
+        df.carve_cell(1, 2, 1.0, 3.5); // spans [-1,1] + [3.5,6]
+        let bytes = dexel_to_stl_solid_binary(&df);
+
+        let cf = cell as f32;
+        let (ox, oy) = (origin.x as f32, origin.y as f32);
+        for iy in 0..rows {
+            for ix in 0..cols {
+                // Interior sample, off the quad diagonal (0.37 ≠ 0.63).
+                let px = ox + (ix as f32 + 0.37) * cf;
+                let py = oy + (iy as f32 + 0.63) * cf;
+                let got = vertical_crossings(&bytes, px, py);
+                let mut want: Vec<(f32, i8)> = Vec::new();
+                for s in df.spans_at(ix, iy) {
+                    want.push((s.lo, -1));
+                    want.push((s.hi, 1));
+                }
+                want.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+                assert_eq!(got.len(), want.len(), "cell ({ix},{iy}) crossing count");
+                for (g, w) in got.iter().zip(want.iter()) {
+                    assert!(
+                        (g.0 - w.0).abs() < 1e-4 && g.1 == w.1,
+                        "cell ({ix},{iy}) crossing {g:?} != {w:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// An interior void is fully sealed: the centre column's ray shows both
+    /// spans (so the void is capped floor + ceiling), and each of the four
+    /// sides carries a wall over the void band (the neighbours seal it). This
+    /// is exactly the watertightness the smooth exporter lacks.
+    #[test]
+    fn solid_undercut_void_is_sealed() {
+        let mut df = DexelField::new(Point2::new(0.0, 0.0), 1.0, 3, 3, 6.0, 0.0);
+        df.carve_cell(1, 1, 2.0, 4.0); // centre spans [0,2] + [4,6], void [2,4]
+        let bytes = dexel_to_stl_solid_binary(&df);
+
+        // Sample off the cell center (= quad diagonal) so each face counts once.
+        let got = vertical_crossings(&bytes, 1.37, 1.63);
+        let want = [(0.0f32, -1i8), (2.0, 1), (4.0, -1), (6.0, 1)];
+        assert_eq!(got.len(), want.len(), "centre column crossing count");
+        for (g, w) in got.iter().zip(want.iter()) {
+            assert!(
+                (g.0 - w.0).abs() < 1e-4 && g.1 == w.1,
+                "centre ray {g:?} != {w:?}"
+            );
+        }
+
+        let count = tri_count(&bytes);
+        let (mut px, mut nx, mut py, mut ny) = (0, 0, 0, 0);
+        for i in 0..count {
+            let n = tri_normal(&bytes, i);
+            if n[2].abs() > 1e-3 {
+                continue; // vertical walls only
+            }
+            let vs = tri_verts(&bytes, i);
+            if !vs.iter().all(|v| (2.0 - 1e-4..=4.0 + 1e-4).contains(&v[2])) {
+                continue; // only the void band
+            }
+            if (n[0] + 1.0).abs() < 1e-3 && vs.iter().all(|v| (v[0] - 2.0).abs() < 1e-4) {
+                px += 1; // plane x=2, −X (from the +X neighbour)
+            } else if (n[0] - 1.0).abs() < 1e-3 && vs.iter().all(|v| (v[0] - 1.0).abs() < 1e-4) {
+                nx += 1; // plane x=1, +X (from the −X neighbour)
+            } else if (n[1] + 1.0).abs() < 1e-3 && vs.iter().all(|v| (v[1] - 2.0).abs() < 1e-4) {
+                py += 1;
+            } else if (n[1] - 1.0).abs() < 1e-3 && vs.iter().all(|v| (v[1] - 1.0).abs() < 1e-4) {
+                ny += 1;
+            }
+        }
+        assert_eq!(
+            (px, nx, py, ny),
+            (2, 2, 2, 2),
+            "void sealed by a wall on each of the four sides"
+        );
+    }
+
+    /// A height step emits a wall over the difference, facing the lower side,
+    /// with nothing over the shared full-height part.
+    #[test]
+    fn solid_step_emits_outward_wall() {
+        let mut df = DexelField::new(Point2::new(0.0, 0.0), 1.0, 2, 1, 5.0, 0.0);
+        df.lower_at(1, 0, 2.0); // col0 [0,5], col1 [0,2]; step over [2,5]
+        let bytes = dexel_to_stl_solid_binary(&df);
+        let count = tri_count(&bytes);
+        let mut wall = 0;
+        for i in 0..count {
+            let n = tri_normal(&bytes, i);
+            let vs = tri_verts(&bytes, i);
+            if (n[0] - 1.0).abs() < 1e-3
+                && vs.iter().all(|v| (v[0] - 1.0).abs() < 1e-4)
+                && vs.iter().all(|v| (2.0 - 1e-4..=5.0 + 1e-4).contains(&v[2]))
+            {
+                wall += 1;
+            }
+        }
+        assert_eq!(wall, 2, "step wall over [2,5] at x=1 facing +X");
+    }
+
+    /// Every span contributes one +Z and one −Z face, so their triangle
+    /// counts balance regardless of the carve pattern.
+    #[test]
+    fn solid_top_bottom_face_counts_balance() {
+        let mut df = DexelField::new(Point2::new(0.0, 0.0), 1.0, 4, 4, 5.0, 0.0);
+        df.carve_cell(1, 1, 2.0, 3.0);
+        df.carve_cell(2, 2, 1.0, 4.0);
+        df.lower_at(3, 0, 2.0);
+        let bytes = dexel_to_stl_solid_binary(&df);
+        let count = tri_count(&bytes);
+        let (mut up, mut down) = (0, 0);
+        for i in 0..count {
+            let n = tri_normal(&bytes, i);
+            if (n[2] - 1.0).abs() < 1e-3 {
+                up += 1;
+            } else if (n[2] + 1.0).abs() < 1e-3 {
+                down += 1;
+            }
+        }
+        assert_eq!(up, down, "one +Z top per −Z bottom across all spans");
+        assert!(up > 0, "carved field must have top faces");
+    }
+
+    /// Deterministic across repeated calls with a populated sidecar.
+    #[test]
+    fn solid_is_deterministic_with_undercuts() {
+        let mut df = DexelField::new(Point2::new(0.5, -1.0), 0.75, 5, 5, 4.0, -2.0);
+        df.carve_cell(3, 1, 1.0, 2.0);
+        df.carve_cell(1, 3, 0.5, 1.5);
+        df.carve_cell(2, 2, 0.0, 3.0);
+        let a = dexel_to_stl_solid_binary(&df);
+        let b = dexel_to_stl_solid_binary(&df);
+        assert_eq!(a, b, "solid STL must be deterministic");
+    }
+
+    /// The stair-stepped solid is deliberately NOT byte-identical to the
+    /// smooth default, even for a pure 3-axis job — hence a separate fn.
+    #[test]
+    fn solid_differs_from_smooth_for_3axis() {
+        let mut df = DexelField::new(Point2::new(0.0, 0.0), 1.0, 4, 4, 5.0, -2.0);
+        df.lower_at(1, 1, 1.0);
+        df.lower_at(2, 1, 2.0);
+        assert_eq!(df.undercut_columns(), 0, "still a pure 3-axis field");
+        let smooth = dexel_to_stl_binary(&df, -2.0);
+        let solid = dexel_to_stl_solid_binary(&df);
+        assert_ne!(smooth, solid, "stair-stepped solid must differ from smooth");
     }
 }
