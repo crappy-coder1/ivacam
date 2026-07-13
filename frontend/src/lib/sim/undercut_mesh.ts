@@ -66,48 +66,85 @@ export interface UndercutMeshData {
   triangles: number;
 }
 
-/// Emitter accumulator — plain arrays grown by push, converted to typed
-/// arrays once at the end. Undercut sidecars are small (form-tool cavities),
-/// so the intermediate `number[]` cost is negligible.
-interface Emit {
-  positions: number[];
-  normals: number[];
-}
+/// Growable, non-indexed triangle-soup accumulator that writes straight into
+/// `Float32Array`s. Replaces the old `number[]`-push-then-convert path: for a
+/// large cavity the per-neighbour array allocation and the final `number[] →
+/// Float32Array` copy were the emit's dominant GC cost (ivac-58nl.6.5.5), and
+/// both are gone here — the only allocations are the doubling grows.
+class TriBuf {
+  positions: Float32Array;
+  normals: Float32Array;
+  /// Floats written so far (== `9 · triangles`); both arrays advance together.
+  len = 0;
 
-function pushTri(
-  e: Emit,
-  ax: number,
-  ay: number,
-  az: number,
-  bx: number,
-  by: number,
-  bz: number,
-  cx: number,
-  cy: number,
-  cz: number,
-  nx: number,
-  ny: number,
-  nz: number,
-): void {
-  e.positions.push(ax, ay, az, bx, by, bz, cx, cy, cz);
-  e.normals.push(nx, ny, nz, nx, ny, nz, nx, ny, nz);
-}
+  constructor(capacityFloats = 512) {
+    this.positions = new Float32Array(capacityFloats);
+    this.normals = new Float32Array(capacityFloats);
+  }
 
-/// Emit a planar quad `p0→p1→p2→p3` as two triangles sharing the flat
-/// `normal`. Winding is chosen per call site to face `normal`; the mesh
-/// renders `DoubleSide` regardless (interior surfaces are viewed from the
-/// void), so the flat normal is what actually matters — for lighting.
-function pushQuad(
-  e: Emit,
-  p0: readonly [number, number, number],
-  p1: readonly [number, number, number],
-  p2: readonly [number, number, number],
-  p3: readonly [number, number, number],
-  normal: readonly [number, number, number],
-): void {
-  const [nx, ny, nz] = normal;
-  pushTri(e, p0[0], p0[1], p0[2], p1[0], p1[1], p1[2], p2[0], p2[1], p2[2], nx, ny, nz);
-  pushTri(e, p0[0], p0[1], p0[2], p2[0], p2[1], p2[2], p3[0], p3[1], p3[2], nx, ny, nz);
+  private grow(need: number): void {
+    let cap = this.positions.length;
+    while (cap < this.len + need) cap *= 2;
+    const p = new Float32Array(cap);
+    p.set(this.positions);
+    this.positions = p;
+    const n = new Float32Array(cap);
+    n.set(this.normals);
+    this.normals = n;
+  }
+
+  /// Emit a planar quad `p0→p1→p2→p3` as two triangles (`0,1,2` + `0,2,3`)
+  /// sharing the flat `normal`. Winding is chosen per call site to face
+  /// `normal`; the mesh renders `DoubleSide` (interior surfaces are viewed
+  /// from the void), so the flat normal is what matters — for lighting.
+  quad(
+    x0: number,
+    y0: number,
+    z0: number,
+    x1: number,
+    y1: number,
+    z1: number,
+    x2: number,
+    y2: number,
+    z2: number,
+    x3: number,
+    y3: number,
+    z3: number,
+    nx: number,
+    ny: number,
+    nz: number,
+  ): void {
+    if (this.len + 18 > this.positions.length) this.grow(18);
+    const p = this.positions;
+    const m = this.normals;
+    let o = this.len;
+    // Triangle A: p0, p1, p2.
+    p[o] = x0;
+    p[o + 1] = y0;
+    p[o + 2] = z0;
+    p[o + 3] = x1;
+    p[o + 4] = y1;
+    p[o + 5] = z1;
+    p[o + 6] = x2;
+    p[o + 7] = y2;
+    p[o + 8] = z2;
+    // Triangle B: p0, p2, p3.
+    p[o + 9] = x0;
+    p[o + 10] = y0;
+    p[o + 11] = z0;
+    p[o + 12] = x2;
+    p[o + 13] = y2;
+    p[o + 14] = z2;
+    p[o + 15] = x3;
+    p[o + 16] = y3;
+    p[o + 17] = z3;
+    for (o = this.len; o < this.len + 18; o += 3) {
+      m[o] = nx;
+      m[o + 1] = ny;
+      m[o + 2] = nz;
+    }
+    this.len += 18;
+  }
 }
 
 /// Generate the undercut void surfaces from a snapshot. Pure and
@@ -152,27 +189,61 @@ export function emitUndercutMesh(snap: UndercutSnapshot): UndercutMeshData {
   const csrByCell = new Map<number, number>();
   for (let i = 0; i < n; i++) csrByCell.set(colIndex[i], i);
 
-  /// Solid spans of cell `idx` as a flat `[lo0,hi0,lo1,hi1,…]` array. An
-  /// undercut column uses its sidecar list; any other in-bounds column is
-  /// the implicit single span `[stockBottomZ, top[idx]]` (empty if carved
-  /// through to/under the floor); out of bounds is empty (open to outside).
-  const spansOf = (idx: number): number[] => {
-    const ci = csrByCell.get(idx);
-    if (ci !== undefined) {
-      return Array.from(spans.subarray(spanOffsets[ci] * 2, spanOffsets[ci + 1] * 2));
+  const buf = new TriBuf(Math.max(512, n * 36));
+
+  // Neighbour solid-span lists resolved WITHOUT per-neighbour allocation:
+  // for each of the four faces we hold a source `Float32Array`, a start
+  // index into it (in floats), and a pair count. An undercut neighbour points
+  // straight at the shared `spans` buffer; a plain in-bounds neighbour uses a
+  // reused 2-slot scratch holding its implicit `[stockBottomZ, top]` span; an
+  // out-of-bounds / carved-through neighbour is zero pairs. Order is
+  // [px, nx, py, ny] — matching the original emit order.
+  const nbrArr: Float32Array[] = [spans, spans, spans, spans];
+  const nbrBase = [0, 0, 0, 0];
+  const nbrPairs = [0, 0, 0, 0];
+  const scratch = [
+    new Float32Array(2),
+    new Float32Array(2),
+    new Float32Array(2),
+    new Float32Array(2),
+  ];
+
+  /// Resolve neighbour cell `cellIdx` (or `-1` at a grid edge) into face slot
+  /// `k`'s `(nbrArr, nbrBase, nbrPairs)`. Mirrors the old `spansOf`: sidecar
+  /// list for an undercut column, implicit `[stockBottomZ, top]` for a plain
+  /// column, empty for out-of-bounds or fully carved-through.
+  const resolveNbr = (k: number, cellIdx: number): void => {
+    if (cellIdx < 0) {
+      nbrPairs[k] = 0;
+      return;
     }
-    if (idx < 0 || idx >= top.length) return [];
-    const t = top[idx];
-    return t > stockBottomZ + EPS ? [stockBottomZ, t] : [];
+    const ci = csrByCell.get(cellIdx);
+    if (ci !== undefined) {
+      nbrArr[k] = spans;
+      nbrBase[k] = spanOffsets[ci] * 2;
+      nbrPairs[k] = spanOffsets[ci + 1] - spanOffsets[ci];
+      return;
+    }
+    if (cellIdx >= top.length) {
+      nbrPairs[k] = 0;
+      return;
+    }
+    const t = top[cellIdx];
+    if (t > stockBottomZ + EPS) {
+      scratch[k][0] = stockBottomZ;
+      scratch[k][1] = t;
+      nbrArr[k] = scratch[k];
+      nbrBase[k] = 0;
+      nbrPairs[k] = 1;
+    } else {
+      nbrPairs[k] = 0;
+    }
   };
 
-  const e: Emit = { positions: [], normals: [] };
-
   /// Emit wall quads on one face plane for the parts of `[vlo, vhi]` where
-  /// `neighbourSpans` is solid. `orient` picks the plane + normal; the two
-  /// varying corners are the face's in-plane extent (`a0..a1`) and Z.
+  /// face slot `k`'s neighbour is solid. `orient` picks the plane + normal.
   const emitFaceWalls = (
-    neighbourSpans: number[],
+    k: number,
     vlo: number,
     vhi: number,
     orient: 'px' | 'nx' | 'py' | 'ny',
@@ -181,22 +252,25 @@ export function emitUndercutMesh(snap: UndercutSnapshot): UndercutMeshData {
     yB: number,
     yT: number,
   ): void => {
-    for (let s = 0; s + 1 < neighbourSpans.length; s += 2) {
-      const wlo = Math.max(vlo, neighbourSpans[s]);
-      const whi = Math.min(vhi, neighbourSpans[s + 1]);
+    const arr = nbrArr[k];
+    const base = nbrBase[k];
+    const pairs = nbrPairs[k];
+    for (let s = 0; s < pairs; s++) {
+      const wlo = Math.max(vlo, arr[base + 2 * s]);
+      const whi = Math.min(vhi, arr[base + 2 * s + 1]);
       if (whi - wlo <= EPS) continue;
       switch (orient) {
         case 'px': // +X neighbour: plane x = xR, normal −X (into this cell).
-          pushQuad(e, [xR, yB, wlo], [xR, yT, wlo], [xR, yT, whi], [xR, yB, whi], [-1, 0, 0]);
+          buf.quad(xR, yB, wlo, xR, yT, wlo, xR, yT, whi, xR, yB, whi, -1, 0, 0);
           break;
         case 'nx': // −X neighbour: plane x = xL, normal +X.
-          pushQuad(e, [xL, yB, wlo], [xL, yB, whi], [xL, yT, whi], [xL, yT, wlo], [1, 0, 0]);
+          buf.quad(xL, yB, wlo, xL, yB, whi, xL, yT, whi, xL, yT, wlo, 1, 0, 0);
           break;
         case 'py': // +Y neighbour: plane y = yT, normal −Y.
-          pushQuad(e, [xL, yT, wlo], [xL, yT, whi], [xR, yT, whi], [xR, yT, wlo], [0, -1, 0]);
+          buf.quad(xL, yT, wlo, xL, yT, whi, xR, yT, whi, xR, yT, wlo, 0, -1, 0);
           break;
         case 'ny': // −Y neighbour: plane y = yB, normal +Y.
-          pushQuad(e, [xL, yB, wlo], [xR, yB, wlo], [xR, yB, whi], [xL, yB, whi], [0, 1, 0]);
+          buf.quad(xL, yB, wlo, xR, yB, wlo, xR, yB, whi, xL, yB, whi, 0, 1, 0);
           break;
       }
     }
@@ -215,32 +289,32 @@ export function emitUndercutMesh(snap: UndercutSnapshot): UndercutMeshData {
     const xR = xL + cellSize;
     const yB = originY + iy * cellSize;
     const yT = yB + cellSize;
-    // Neighbour span lists (resolved once per column, reused for every void).
-    const nxSpans = ix > 0 ? spansOf(iy * cols + (ix - 1)) : [];
-    const pxSpans = ix + 1 < cols ? spansOf(iy * cols + (ix + 1)) : [];
-    const nySpans = iy > 0 ? spansOf((iy - 1) * cols + ix) : [];
-    const pySpans = iy + 1 < rows ? spansOf((iy + 1) * cols + ix) : [];
+    // Resolve the four neighbours once per column, reused for every void.
+    resolveNbr(0, ix + 1 < cols ? iy * cols + (ix + 1) : -1); // px
+    resolveNbr(1, ix > 0 ? iy * cols + (ix - 1) : -1); // nx
+    resolveNbr(2, iy + 1 < rows ? (iy + 1) * cols + ix : -1); // py
+    resolveNbr(3, iy > 0 ? (iy - 1) * cols + ix : -1); // ny
 
     for (let s = start; s < end - 1; s++) {
       const vlo = spans[2 * s + 1]; // hi of the lower span = void floor
       const vhi = spans[2 * (s + 1)]; // lo of the upper span = void ceiling
       if (vhi - vlo <= EPS) continue;
       // Floor: top face of the material below the void (+Z).
-      pushQuad(e, [xL, yB, vlo], [xR, yB, vlo], [xR, yT, vlo], [xL, yT, vlo], [0, 0, 1]);
+      buf.quad(xL, yB, vlo, xR, yB, vlo, xR, yT, vlo, xL, yT, vlo, 0, 0, 1);
       // Ceiling: underside of the overhang above the void (−Z).
-      pushQuad(e, [xL, yB, vhi], [xL, yT, vhi], [xR, yT, vhi], [xR, yB, vhi], [0, 0, -1]);
+      buf.quad(xL, yB, vhi, xL, yT, vhi, xR, yT, vhi, xR, yB, vhi, 0, 0, -1);
       // Walls: only where the neighbour is solid across the void's Z range.
-      emitFaceWalls(pxSpans, vlo, vhi, 'px', xL, xR, yB, yT);
-      emitFaceWalls(nxSpans, vlo, vhi, 'nx', xL, xR, yB, yT);
-      emitFaceWalls(pySpans, vlo, vhi, 'py', xL, xR, yB, yT);
-      emitFaceWalls(nySpans, vlo, vhi, 'ny', xL, xR, yB, yT);
+      emitFaceWalls(0, vlo, vhi, 'px', xL, xR, yB, yT);
+      emitFaceWalls(1, vlo, vhi, 'nx', xL, xR, yB, yT);
+      emitFaceWalls(2, vlo, vhi, 'py', xL, xR, yB, yT);
+      emitFaceWalls(3, vlo, vhi, 'ny', xL, xR, yB, yT);
     }
   }
 
   return {
-    positions: new Float32Array(e.positions),
-    normals: new Float32Array(e.normals),
-    triangles: e.positions.length / 9,
+    positions: buf.positions.slice(0, buf.len),
+    normals: buf.normals.slice(0, buf.len),
+    triangles: buf.len / 9,
   };
 }
 
