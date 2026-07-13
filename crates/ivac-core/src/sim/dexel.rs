@@ -481,6 +481,17 @@ impl DexelField {
         self.spans_for(self.idx_of(ix, iy))
     }
 
+    /// Flat cell indices (`iy * cols + ix`) of every undercut sidecar
+    /// column, sorted ascending. The deterministic column order the STL
+    /// mesh builder walks so its output doesn't depend on `HashMap`
+    /// iteration order. Empty for a pure 3-axis job.
+    #[must_use]
+    pub fn undercut_cells_sorted(&self) -> Vec<usize> {
+        let mut keys: Vec<usize> = self.undercut.keys().copied().collect();
+        keys.sort_unstable();
+        keys
+    }
+
     /// Capture the full carve state (dense top + undercut sidecar) for a
     /// backward-scrub checkpoint. Cheap for a pure 3-axis job — the sidecar
     /// clone is empty and only the dense `Vec<f32>` is copied, exactly the

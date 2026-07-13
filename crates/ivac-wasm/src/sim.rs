@@ -38,7 +38,7 @@ use ivac_core::gcode::preview::ToolpathSegment;
 use ivac_core::project::{Fixture, ToolEntry};
 use ivac_core::sim::dexel::{DexelField, DexelSnapshot};
 use ivac_core::sim::diagnostics::{SimDiagnostics, SimRunSummary};
-use ivac_core::sim::heightmap::{Heightmap, ToolProfile};
+use ivac_core::sim::heightmap::ToolProfile;
 use ivac_core::sim::holder::HolderProfile;
 use ivac_core::sim::sweep::{
     sweep_range_cached_dexel, sweep_segment_partial_dexel, SegmentWarningCache,
@@ -469,26 +469,19 @@ impl Simulator {
         self.field.top_z
     }
 
-    /// Serialize the carved stock as a binary STL. The mesh
-    /// drops to `stock_bottom_z` at every perimeter sample so the result
-    /// is watertight. Wired up via the File menu's "Export simulated
-    /// stock as STL..." entry.
+    /// Serialize the carved stock as a binary STL. The perimeter skirt
+    /// drops to `stock_bottom_z` at every edge sample so the result reads
+    /// as a solid. Wired up via the File menu's "Export simulated stock as
+    /// STL..." entry.
     ///
-    /// This exports the **dense top surface** only (a heightfield built from
-    /// `DexelField::top`, byte-identical to the pre-flip `Heightmap` mesh for
-    /// 3-axis jobs). Undercut voids below the top aren't meshed here yet —
-    /// that's a separate follow-up once the undercut renderer lands.
+    /// Meshes the dense top surface **and** the undercut void cavities from
+    /// the sidecar (a form-tool's T-slot / dovetail voids), so the STL
+    /// matches what the 3-D preview shows rather than flattening the voids
+    /// to the top surface. For a pure 3-axis job (empty sidecar) the output
+    /// is byte-identical to the old dense-only heightfield mesh.
     #[must_use]
     pub fn export_stl(&self, stock_bottom_z: f32) -> Vec<u8> {
-        let mut hm = Heightmap::new(
-            self.field.origin,
-            self.field.cell,
-            self.field.cols,
-            self.field.rows,
-            self.field.top_z,
-        );
-        hm.data.copy_from_slice(self.field.top());
-        ivac_core::sim::stl::heightmap_to_stl_binary(&hm, stock_bottom_z)
+        ivac_core::sim::stl::dexel_to_stl_binary(&self.field, stock_bottom_z)
     }
 
     /// Pointer to the dense top-surface f32 buffer. JS wraps it as
