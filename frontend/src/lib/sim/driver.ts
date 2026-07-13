@@ -14,6 +14,7 @@
 
 import * as THREE from 'three';
 import { HeightfieldMeshPyramid, pickMinLodLevelForBudget } from './heightfield_mesh';
+import { UndercutMeshBuilder } from './undercut_mesh';
 import { planAdvance, playheadToSegment } from './playhead';
 import { computeFootprint } from './footprint';
 import { isWasmTransport } from '../api/transport-mode';
@@ -272,7 +273,20 @@ export class HeightfieldDriver {
   readonly group: THREE.Group;
   private sim: SimulatorWasm | null = null;
   private mesh: HeightfieldMeshPyramid | null = null;
+  /// Undercut void renderer — the T-slot / dovetail cavity surfaces the
+  /// single-valued dense heightfield structurally can't show. Created once
+  /// and attached under `group`, so it inherits the sim mesh's
+  /// visibility / teardown; fed a fresh snapshot after every carve.
+  private undercut: UndercutMeshBuilder | null = null;
   private wasm: WasmHandle | null = null;
+  /// Physical stock floor (`topZ − thickness`) captured at build() — the
+  /// implicit `lo` of an uncut column, needed to resolve non-undercut
+  /// neighbour solidity when meshing void walls.
+  private stockBottomZ = 0;
+  /// Last undercut column count pushed to the void builder. Lets a carve
+  /// that leaves the sidecar empty clear the mesh exactly once instead of
+  /// rebuilding empty geometry every frame of a 3-axis job.
+  private lastUndercutCount = 0;
   /// Cached buffer view; valid until the next advance() that may grow
   /// WASM linear memory. Re-taken after every advance.
   private heightView: Float32Array | null = null;
@@ -330,6 +344,13 @@ export class HeightfieldDriver {
     this.group = new THREE.Group();
     this.group.visible = false;
     opts.scene.add(this.group);
+    // Void renderer lives under `group` (not the scene) so preview-mode
+    // visibility and disposal cascade from the dense sim mesh. Persists
+    // across build() rebuilds; each build() just swaps its geometry.
+    this.undercut = new UndercutMeshBuilder({
+      scene: this.group,
+      requestRender: opts.requestRender,
+    });
     // Register as the live driver so file_ops can reach it.
     // eslint-disable-next-line @typescript-eslint/no-this-alias -- singleton registry
     currentDriver = this;
@@ -398,6 +419,7 @@ export class HeightfieldDriver {
     // Form (T-slot / dovetail) tools carve undercuts relative to it; 3-axis
     // jobs never reach it and stay on the dense top-down fast path.
     const stockBottomZ = topZ - stockThickness;
+    this.stockBottomZ = stockBottomZ;
     this.dispose();
     this.sim = new this.wasm.Simulator(
       fp.minX,
@@ -459,7 +481,14 @@ export class HeightfieldDriver {
     this.partialT = 0;
     this.diagnostics = { warnings: [] };
     this.notifyDiagnostics();
+    // Match the void surfaces to the dense mesh's stock material so a
+    // cavity reads as the same carved solid.
+    this.undercut?.setStyle({
+      solidColor: input.settings.solidColor,
+      solidOpacity: input.settings.solidOpacity,
+    });
     this.refreshHeightView();
+    this.refreshUndercutMesh();
   }
 
   /// Drop any heightmap/diagnostics checkpoints and size the checkpoint
@@ -515,6 +544,7 @@ export class HeightfieldDriver {
     // the reset.
     this.mesh?.reset();
     this.refreshHeightView();
+    this.refreshUndercutMesh();
   }
 
   /// Subscribe to diagnostics changes. Called with the current snapshot
@@ -743,6 +773,11 @@ export class HeightfieldDriver {
       }
     }
 
+    // Re-mesh the undercut voids from the (re-flattened) CSR sidecar. Uses
+    // the just-refreshed `heightView` as the dense-top array; a no-op for
+    // 3-axis jobs (empty sidecar).
+    this.refreshUndercutMesh();
+
     this.scheduleEdgeRebuild();
     this.opts.requestRender();
     return true;
@@ -754,6 +789,8 @@ export class HeightfieldDriver {
 
   setSolidVisible(visible: boolean) {
     this.mesh?.setSolidVisible(visible);
+    // Void surfaces are part of the solid stock — show them with it.
+    this.undercut?.setVisible(visible);
   }
 
   setEdgesVisible(visible: boolean) {
@@ -770,6 +807,10 @@ export class HeightfieldDriver {
       solidOpacity: settings.solidOpacity,
       edgeColor: settings.edgeColor,
       edgeOpacity: settings.edgeOpacity,
+    });
+    this.undercut?.setStyle({
+      solidColor: settings.solidColor,
+      solidOpacity: settings.solidOpacity,
     });
     this.opts.requestRender();
   }
@@ -842,6 +883,10 @@ export class HeightfieldDriver {
       this.sim.free();
       this.sim = null;
     }
+    // Drop any void geometry but keep the builder alive for the next
+    // build() (it's created once in the constructor).
+    this.undercut?.clear();
+    this.lastUndercutCount = 0;
     this.heightView = null;
     this.appliedSeg = 0;
     this.partialT = 0;
@@ -861,6 +906,10 @@ export class HeightfieldDriver {
       this.edgeRebuildTimer = null;
     }
     this.dispose();
+    // Full teardown of the void builder (frees its material + detaches its
+    // group from `this.group`) before the group leaves the scene.
+    this.undercut?.dispose();
+    this.undercut = null;
     this.opts.scene.remove(this.group);
     // Deregister so a stale handle can't be reached.
     if (currentDriver === this) currentDriver = null;
@@ -900,6 +949,58 @@ export class HeightfieldDriver {
     const cols = this.sim.cols();
     const rows = this.sim.rows();
     this.heightView = new Float32Array(this.wasm.memory.buffer, this.sim.data_ptr(), cols * rows);
+  }
+
+  /// Re-mesh the undercut voids from the sim's CSR sidecar. Called after
+  /// every carve (right after `refreshHeightView`, whose `heightView` this
+  /// reuses as the dense-top array). Reads the WASM CSR buffers into a plain
+  /// snapshot synchronously — the views are valid until the next advance —
+  /// and hands it to the void builder. A pure 3-axis job's sidecar is empty,
+  /// so this clears once and then stays a cheap early return.
+  private refreshUndercutMesh() {
+    if (!this.wasm || !this.sim || !this.undercut) return;
+    const count = this.sim.undercut_column_count();
+    if (count === 0) {
+      // Only touch the mesh on the empty transition; otherwise every
+      // 3-axis frame would rebuild empty geometry.
+      if (this.lastUndercutCount !== 0) {
+        this.undercut.clear();
+        this.lastUndercutCount = 0;
+      }
+      return;
+    }
+    const top = this.heightView;
+    if (!top) return;
+    const mem = this.wasm.memory.buffer;
+    const colIndex = new Uint32Array(
+      mem,
+      this.sim.undercut_col_index_ptr(),
+      this.sim.undercut_col_index_len(),
+    );
+    const spanOffsets = new Uint32Array(
+      mem,
+      this.sim.undercut_span_offsets_ptr(),
+      this.sim.undercut_span_offsets_len(),
+    );
+    const spans = new Float32Array(
+      mem,
+      this.sim.undercut_spans_ptr(),
+      this.sim.undercut_spans_len(),
+    );
+    this.undercut.build({
+      cols: this.sim.cols(),
+      rows: this.sim.rows(),
+      cellSize: this.sim.cell_size(),
+      originX: this.sim.origin_x(),
+      originY: this.sim.origin_y(),
+      topZ: this.sim.top_z(),
+      stockBottomZ: this.stockBottomZ,
+      top,
+      colIndex,
+      spanOffsets,
+      spans,
+    });
+    this.lastUndercutCount = count;
   }
 
   private scheduleEdgeRebuild() {
