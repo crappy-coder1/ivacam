@@ -41,6 +41,9 @@ interface SimulatorWasm {
     maxY: number,
     cellSize: number,
     topZ: number,
+    /// Explicit span floor (physical stock bottom = topZ − thickness). The
+    /// dexel field carves undercuts relative to it; 3-axis jobs never reach it.
+    stockBottomZ: number,
   ): SimulatorWasm;
   reset(): void;
   /// Record that the JS driver coarsened cell_size to fit the
@@ -81,9 +84,24 @@ interface SimulatorWasm {
   origin_y(): number;
   top_z(): number;
   data_ptr(): number;
-  /// Serialize the carved heightfield as a binary STL. The mesh
-  /// drops to `stock_bottom_z` at every perimeter sample so the result
-  /// is watertight.
+  /// Number of columns carrying an undercut sidecar entry (0 for a pure
+  /// 3-axis job). Check this to skip the undercut upload entirely when
+  /// there's nothing to draw.
+  undercut_column_count(): number;
+  /// Undercut sidecar as flat CSR buffers (zero-copy, like `data_ptr`).
+  /// Column `i` lives at flat cell `col_index[i]`; its spans are
+  /// `spans[2*span_offsets[i] .. 2*span_offsets[i+1]]` as `(lo, hi)` pairs.
+  /// `span_offsets` has `undercut_column_count() + 1` entries. Re-take every
+  /// view after each `advance()` — a growing WASM heap detaches them.
+  undercut_col_index_ptr(): number;
+  undercut_col_index_len(): number;
+  undercut_span_offsets_ptr(): number;
+  undercut_span_offsets_len(): number;
+  undercut_spans_ptr(): number;
+  undercut_spans_len(): number;
+  /// Serialize the carved stock's dense top surface as a binary STL. The
+  /// mesh drops to `stock_bottom_z` at every perimeter sample so the result
+  /// is watertight. (Undercut voids below the top aren't meshed here yet.)
   export_stl(stock_bottom_z: number): Uint8Array;
   free(): void;
 }
@@ -99,6 +117,7 @@ interface WasmModule {
     maxY: number,
     cellSize: number,
     topZ: number,
+    stockBottomZ: number,
   ) => SimulatorWasm;
 }
 
@@ -375,8 +394,20 @@ export class HeightfieldDriver {
     // viewed from below. Default to 10 mm so an unconfigured project
     // still has a visible stock height.
     const stockThickness = input.stock.thickness > 0 ? input.stock.thickness : 10.0;
+    // Explicit span floor for the dexel field — the physical stock bottom.
+    // Form (T-slot / dovetail) tools carve undercuts relative to it; 3-axis
+    // jobs never reach it and stay on the dense top-down fast path.
+    const stockBottomZ = topZ - stockThickness;
     this.dispose();
-    this.sim = new this.wasm.Simulator(fp.minX, fp.minY, fp.maxX, fp.maxY, effectiveCellSize, topZ);
+    this.sim = new this.wasm.Simulator(
+      fp.minX,
+      fp.minY,
+      fp.maxX,
+      fp.maxY,
+      effectiveCellSize,
+      topZ,
+      stockBottomZ,
+    );
     // Surface the coarsening as a sim warning so it shows up in
     // the diagnostics panel — silently coarsening the grid hid
     // tool-engagement and small-feature issues from the user.

@@ -1,9 +1,17 @@
-//! Heightmap simulator bindings — wraps `ivac_core::sim::Heightmap` and
-//! `sweep_range` so the frontend can drive incremental cutting preview at
-//! 60 fps. JS gets a `Float32Array` view directly into WASM memory via
-//! `data_ptr()`; each `advance()` call mutates cells in place and reports
-//! the dirty AABB so the renderer can re-upload only the touched
-//! sub-rectangle.
+//! Dexel simulator bindings — wraps `ivac_core::sim::dexel::DexelField` and
+//! the undercut-aware `sweep_*_dexel` family so the frontend can drive
+//! incremental cutting preview at 60 fps, now with genuine undercuts for
+//! form (T-slot / dovetail) tools. JS gets a `Float32Array` view directly
+//! into WASM memory via `data_ptr()` (the dense top surface — byte-identical
+//! to the old `Heightmap::data` for every non-form 3-axis job); each
+//! `advance()` call mutates cells in place and reports the dirty AABB so the
+//! renderer can re-upload only the touched sub-rectangle.
+//!
+//! Undercut sidecar: a form tool's carve grows interior voids the dense top
+//! can't represent. Those columns are exposed to JS as three flat CSR
+//! buffers (`undercut_col_index` / `undercut_span_offsets` / `undercut_spans`)
+//! with their own ptr/len accessors, mirroring `data_ptr()`. They stay empty
+//! for 3-axis work, so the fast path is unchanged.
 //!
 //! Wire shapes:
 //! * `segments`: serde-serialized `Vec<ToolpathSegment>` (the same shape
@@ -28,21 +36,25 @@ use wasm_bindgen::prelude::*;
 
 use ivac_core::gcode::preview::ToolpathSegment;
 use ivac_core::project::{Fixture, ToolEntry};
+use ivac_core::sim::dexel::{DexelField, DexelSnapshot};
 use ivac_core::sim::diagnostics::{SimDiagnostics, SimRunSummary};
 use ivac_core::sim::heightmap::{Heightmap, ToolProfile};
 use ivac_core::sim::holder::HolderProfile;
-use ivac_core::sim::sweep::{sweep_range_cached, sweep_segment_partial, SegmentWarningCache};
+use ivac_core::sim::sweep::{
+    sweep_range_cached_dexel, sweep_segment_partial_dexel, SegmentWarningCache,
+};
 
 use crate::{into_js_error, panic_message, structured_error_to_js};
 
-/// Owns a `Heightmap` plus enough state to apply incremental sweeps.
-/// Constructed with a world-space stock bbox + cell size; the frontend
-/// then calls `advance()` with slices of `PipelineResponse.toolpath` as
-/// the playhead moves.
+/// Owns a `DexelField` plus enough state to apply incremental sweeps.
+/// Constructed with a world-space stock bbox + cell size + an explicit
+/// stock-bottom Z (the span floor the old `Heightmap` left implicit); the
+/// frontend then calls `advance()` with slices of `PipelineResponse.toolpath`
+/// as the playhead moves.
 #[wasm_bindgen]
 #[derive(Debug)]
 pub struct Simulator {
-    heightmap: Heightmap,
+    field: DexelField,
     /// Warnings collected by the most recent `advance()` call. The JS
     /// driver pulls these via `take_diagnostics()` after each frame so
     /// the playbar / scene can mark offending segments. Reset on every
@@ -62,45 +74,92 @@ pub struct Simulator {
     /// Merged into `last_diagnostics` on every advance so the JS
     /// driver's `take_diagnostics()` keeps seeing them.
     sticky_warnings: Vec<ivac_core::sim::diagnostics::SimWarning>,
-    /// Heightmap snapshots for fast backward scrubbing, keyed by the
+    /// Dexel snapshots for fast backward scrubbing, keyed by the
     /// segment boundary they represent (state = segments `[0, seg_idx)`
     /// carved). Kept sorted by `seg_idx`. The JS driver snapshots at
     /// clean segment boundaries during forward play and, on a backward
     /// scrub, restores the nearest snapshot ≤ the target so it only
-    /// replays the tail instead of re-simulating the whole prefix. See
+    /// replays the tail instead of re-simulating the whole prefix. Each
+    /// snapshot captures the dense top **and** the undercut sidecar, so a
+    /// restore round-trips form-tool voids too. See
     /// [`Simulator::checkpoint`] / [`Simulator::restore_checkpoint`].
-    checkpoints: Vec<HeightmapCheckpoint>,
+    checkpoints: Vec<DexelCheckpoint>,
     /// Per-segment fixture/holder/rapid diagnostics cache. A scrub-back
     /// re-sweep replays each already-swept segment's warnings instead of
     /// re-running the holder-footprint pass (the dominant re-sweep cost).
     /// Cleared whenever the toolpath or fixtures change.
     warning_cache: SegmentWarningCache,
+    /// Undercut sidecar flattened to CSR for zero-copy JS reads, rebuilt at
+    /// the end of every `advance()` / `partial_advance()` / restore. Empty
+    /// for a pure 3-axis job. Column `i` lives at flat cell
+    /// `undercut_col_index[i]`, its spans at
+    /// `undercut_spans[2*undercut_span_offsets[i] .. 2*undercut_span_offsets[i+1]]`
+    /// (`(lo, hi)` pairs). `undercut_span_offsets` is a CSR row-pointer with
+    /// `undercut_col_index.len() + 1` entries. JS re-takes the views after
+    /// every call (a growing WASM heap detaches them — same contract as
+    /// `data_ptr()`).
+    undercut_col_index: Vec<u32>,
+    undercut_span_offsets: Vec<u32>,
+    undercut_spans: Vec<f32>,
 }
 
-/// One backward-scrub heightmap snapshot. `data` mirrors
-/// `Heightmap::data` at the moment `[0, seg_idx)` had been carved.
+/// One backward-scrub dexel snapshot. `snapshot` captures the full carve
+/// state (dense top + undercut sidecar) at the moment `[0, seg_idx)` had
+/// been carved.
 #[derive(Debug)]
-struct HeightmapCheckpoint {
+struct DexelCheckpoint {
     seg_idx: u32,
-    data: Vec<f32>,
+    snapshot: DexelSnapshot,
 }
 
 #[wasm_bindgen]
 impl Simulator {
     /// Build a fresh simulator covering the rectangle
     /// `[min_x, max_x] × [min_y, max_y]` with `cell_size`-mm cells. Every
-    /// cell starts at `top_z` (i.e. the un-cut stock surface).
+    /// column starts as a single full-height solid span from `stock_bottom_z`
+    /// up to `top_z` (the un-cut stock surface); the dense top reads `top_z`.
+    ///
+    /// `stock_bottom_z` is the span floor — the physical stock bottom
+    /// (`top_z − thickness`). A bad value (`>= top_z`, or `NaN`) is guarded
+    /// down to `top_z − 1.0` so the constructor never traps the wasm module;
+    /// the frontend always passes a valid floor.
     #[wasm_bindgen(constructor)]
     #[must_use]
-    pub fn new(min_x: f64, min_y: f64, max_x: f64, max_y: f64, cell_size: f64, top_z: f32) -> Self {
+    pub fn new(
+        min_x: f64,
+        min_y: f64,
+        max_x: f64,
+        max_y: f64,
+        cell_size: f64,
+        top_z: f32,
+        stock_bottom_z: f32,
+    ) -> Self {
+        // Guard only invalid input (NaN compares false → fallback); a valid
+        // floor passes through untouched so thin stock keeps its real bottom.
+        let stock_bottom_z = if stock_bottom_z < top_z {
+            stock_bottom_z
+        } else {
+            top_z - 1.0
+        };
         Self {
-            heightmap: Heightmap::from_bbox(min_x, min_y, max_x, max_y, cell_size, top_z),
+            field: DexelField::from_bbox(
+                min_x,
+                min_y,
+                max_x,
+                max_y,
+                cell_size,
+                top_z,
+                stock_bottom_z,
+            ),
             last_diagnostics: SimDiagnostics::new(),
             fixtures: Vec::new(),
             toolpath: Vec::new(),
             sticky_warnings: Vec::new(),
             checkpoints: Vec::new(),
             warning_cache: SegmentWarningCache::new(),
+            undercut_col_index: Vec::new(),
+            undercut_span_offsets: vec![0],
+            undercut_spans: Vec::new(),
         }
     }
 
@@ -108,8 +167,9 @@ impl Simulator {
     /// when a new Generate response replaces the toolpath the simulator
     /// was tracking.
     pub fn reset(&mut self) {
-        self.heightmap.reset();
+        self.field.reset();
         self.last_diagnostics = SimDiagnostics::new();
+        self.refresh_undercut_csr();
     }
 
     /// Snapshot the current heightfield under `seg_idx` for fast backward
@@ -120,15 +180,15 @@ impl Simulator {
     /// (idempotent re-snapshot of the same state). Snapshots stay sorted
     /// by `seg_idx`.
     pub fn checkpoint(&mut self, seg_idx: u32) {
-        let data = self.heightmap.data.clone();
+        let snapshot = self.field.snapshot();
         match self
             .checkpoints
             .binary_search_by_key(&seg_idx, |c| c.seg_idx)
         {
-            Ok(i) => self.checkpoints[i].data = data,
+            Ok(i) => self.checkpoints[i].snapshot = snapshot,
             Err(i) => self
                 .checkpoints
-                .insert(i, HeightmapCheckpoint { seg_idx, data }),
+                .insert(i, DexelCheckpoint { seg_idx, snapshot }),
         }
     }
 
@@ -145,11 +205,13 @@ impl Simulator {
         else {
             return false;
         };
-        self.heightmap
-            .data
-            .copy_from_slice(&self.checkpoints[i].data);
-        self.heightmap.mark_all_dirty();
+        // `restore` copies back the dense top + undercut sidecar and marks
+        // the whole grid dirty so the renderer re-uploads everything. Disjoint
+        // field borrows (`self.field` vs `self.checkpoints`) let this skip a
+        // snapshot clone.
+        self.field.restore(&self.checkpoints[i].snapshot);
         self.last_diagnostics = SimDiagnostics::new();
+        self.refresh_undercut_csr();
         true
     }
 
@@ -286,14 +348,14 @@ impl Simulator {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             // Inline the body that advance_inner provides for the test-only
             // path. We need disjoint borrows of `self.toolpath` (read) and
-            // `self.heightmap` / `self.last_diagnostics` (mutate), which
+            // `self.field` / `self.last_diagnostics` (mutate), which
             // Rust's field-level split borrowing allows here.
-            self.heightmap.clear_dirty();
+            self.field.clear_dirty();
             self.last_diagnostics = SimDiagnostics::new();
             let profile = ToolProfile::from_tool(&tool_entry);
             let holder = HolderProfile::from_tool(&tool_entry);
-            let touched = sweep_range_cached(
-                &mut self.heightmap,
+            let touched = sweep_range_cached_dexel(
+                &mut self.field,
                 &self.toolpath,
                 from_idx as usize,
                 to_idx as usize,
@@ -310,7 +372,10 @@ impl Simulator {
             // doesn't wall-clock itself — the JS driver can pair this
             // with a Performance.now() delta when persisting.
             SimRunSummary::from_diagnostics(&self.last_diagnostics, u64::from(touched), 0.0).log();
-            match self.heightmap.dirty_aabb() {
+            // Re-flatten the undercut sidecar so the JS driver can read the
+            // fresh CSR (empty for 3-axis work; only form tools populate it).
+            self.refresh_undercut_csr();
+            match self.field.dirty_aabb() {
                 Some((ix0, iy0, ix1, iy1)) => vec![ix0, iy0, ix1, iy1],
                 None => Vec::new(),
             }
@@ -344,12 +409,12 @@ impl Simulator {
         // Same catch_unwind guard as advance() — a sweep panic in
         // the per-frame partial carve must not trap the wasm module.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.heightmap.clear_dirty();
+            self.field.clear_dirty();
             self.last_diagnostics = SimDiagnostics::new();
             let profile = ToolProfile::from_tool(&tool_entry);
             let holder = HolderProfile::from_tool(&tool_entry);
-            let _touched = sweep_segment_partial(
-                &mut self.heightmap,
+            let _touched = sweep_segment_partial_dexel(
+                &mut self.field,
                 &self.toolpath[idx],
                 &profile,
                 idx,
@@ -359,7 +424,8 @@ impl Simulator {
                 t_start,
                 t_end,
             );
-            match self.heightmap.dirty_aabb() {
+            self.refresh_undercut_csr();
+            match self.field.dirty_aabb() {
                 Some((ix0, iy0, ix1, iy1)) => vec![ix0, iy0, ix1, iy1],
                 None => Vec::new(),
             }
@@ -370,49 +436,62 @@ impl Simulator {
     /// Number of grid columns (X cells).
     #[must_use]
     pub fn cols(&self) -> u32 {
-        self.heightmap.cols
+        self.field.cols
     }
 
     /// Number of grid rows (Y cells).
     #[must_use]
     pub fn rows(&self) -> u32 {
-        self.heightmap.rows
+        self.field.rows
     }
 
     /// Cell side length in world units (mm).
     #[must_use]
     pub fn cell_size(&self) -> f64 {
-        self.heightmap.cell
+        self.field.cell
     }
 
-    /// World X of the heightmap origin (cell `(0, 0)`'s lower-left corner).
+    /// World X of the field origin (cell `(0, 0)`'s lower-left corner).
     #[must_use]
     pub fn origin_x(&self) -> f64 {
-        self.heightmap.origin.x
+        self.field.origin.x
     }
 
-    /// World Y of the heightmap origin.
+    /// World Y of the field origin.
     #[must_use]
     pub fn origin_y(&self) -> f64 {
-        self.heightmap.origin.y
+        self.field.origin.y
     }
 
     /// Stock-top Z. Cells the cutter has not reached still report this.
     #[must_use]
     pub fn top_z(&self) -> f32 {
-        self.heightmap.top_z
+        self.field.top_z
     }
 
-    /// Serialize the carved heightfield as a binary STL. The mesh
+    /// Serialize the carved stock as a binary STL. The mesh
     /// drops to `stock_bottom_z` at every perimeter sample so the result
     /// is watertight. Wired up via the File menu's "Export simulated
     /// stock as STL..." entry.
+    ///
+    /// This exports the **dense top surface** only (a heightfield built from
+    /// `DexelField::top`, byte-identical to the pre-flip `Heightmap` mesh for
+    /// 3-axis jobs). Undercut voids below the top aren't meshed here yet —
+    /// that's a separate follow-up once the undercut renderer lands.
     #[must_use]
     pub fn export_stl(&self, stock_bottom_z: f32) -> Vec<u8> {
-        ivac_core::sim::stl::heightmap_to_stl_binary(&self.heightmap, stock_bottom_z)
+        let mut hm = Heightmap::new(
+            self.field.origin,
+            self.field.cell,
+            self.field.cols,
+            self.field.rows,
+            self.field.top_z,
+        );
+        hm.data.copy_from_slice(self.field.top());
+        ivac_core::sim::stl::heightmap_to_stl_binary(&hm, stock_bottom_z)
     }
 
-    /// Pointer to the f32 heightmap buffer. JS wraps it as
+    /// Pointer to the dense top-surface f32 buffer. JS wraps it as
     /// `new Float32Array(wasm.memory.buffer, sim.data_ptr(),
     /// sim.cols() * sim.rows())`.
     ///
@@ -424,11 +503,73 @@ impl Simulator {
     /// call. The construction itself is O(1).
     #[must_use]
     pub fn data_ptr(&self) -> *const f32 {
-        self.heightmap.data_ptr()
+        self.field.top_ptr()
+    }
+
+    /// Number of columns currently carrying an undercut sidecar entry (`0`
+    /// for any pure 3-axis job). The JS driver checks this to skip the
+    /// undercut upload entirely when there's nothing to draw.
+    #[must_use]
+    pub fn undercut_column_count(&self) -> u32 {
+        self.undercut_col_index.len() as u32
+    }
+
+    /// Pointer to the flat cell-index buffer (one `u32` per undercut column).
+    /// See the CSR contract on [`Simulator::undercut_spans_ptr`]. Re-take the
+    /// `Uint32Array` view after every `advance()` — a growing heap detaches it.
+    #[must_use]
+    pub fn undercut_col_index_ptr(&self) -> *const u32 {
+        self.undercut_col_index.as_ptr()
+    }
+
+    /// Length of the undercut cell-index buffer (== `undercut_column_count`).
+    #[must_use]
+    pub fn undercut_col_index_len(&self) -> u32 {
+        self.undercut_col_index.len() as u32
+    }
+
+    /// Pointer to the CSR row-pointer buffer: `undercut_column_count + 1`
+    /// `u32`s where column `i`'s spans occupy `undercut_spans[2*off[i] ..
+    /// 2*off[i+1]]`. Re-take the `Uint32Array` view after every `advance()`.
+    #[must_use]
+    pub fn undercut_span_offsets_ptr(&self) -> *const u32 {
+        self.undercut_span_offsets.as_ptr()
+    }
+
+    /// Length of the CSR row-pointer buffer (`undercut_column_count + 1`).
+    #[must_use]
+    pub fn undercut_span_offsets_len(&self) -> u32 {
+        self.undercut_span_offsets.len() as u32
+    }
+
+    /// Pointer to the flat span buffer — consecutive `(lo, hi)` `f32` pairs,
+    /// sliced per column by `undercut_span_offsets`. JS wraps it as
+    /// `new Float32Array(wasm.memory.buffer, sim.undercut_spans_ptr(),
+    /// sim.undercut_spans_len())`. Re-take the view after every `advance()`.
+    #[must_use]
+    pub fn undercut_spans_ptr(&self) -> *const f32 {
+        self.undercut_spans.as_ptr()
+    }
+
+    /// Length of the flat span buffer (`2 × total span count`).
+    #[must_use]
+    pub fn undercut_spans_len(&self) -> u32 {
+        self.undercut_spans.len() as u32
     }
 }
 
 impl Simulator {
+    /// Re-flatten the [`DexelField`]'s undercut sidecar into the CSR buffers
+    /// JS reads. Called at the end of every mutation entry point. O(total
+    /// undercut spans) — effectively free for a pure 3-axis job (empty
+    /// sidecar → `undercut_span_offsets == [0]`, the other two empty).
+    fn refresh_undercut_csr(&mut self) {
+        let (col_index, span_offsets, spans) = self.field.undercut_csr();
+        self.undercut_col_index = col_index;
+        self.undercut_span_offsets = span_offsets;
+        self.undercut_spans = spans;
+    }
+
     /// Pure-Rust core of `advance()` — used by tests that don't want to
     /// route through `JsValue`. Gated behind `#[cfg(test)]` to silence
     /// `dead_code` on the wasm production build.
@@ -440,12 +581,12 @@ impl Simulator {
         from_idx: u32,
         to_idx: u32,
     ) -> Vec<u32> {
-        self.heightmap.clear_dirty();
+        self.field.clear_dirty();
         self.last_diagnostics = SimDiagnostics::new();
         let profile = ToolProfile::from_tool(tool);
         let holder = HolderProfile::from_tool(tool);
-        let _touched = sweep_range_cached(
-            &mut self.heightmap,
+        let _touched = sweep_range_cached_dexel(
+            &mut self.field,
             segments,
             from_idx as usize,
             to_idx as usize,
@@ -455,7 +596,8 @@ impl Simulator {
             &mut self.last_diagnostics,
             &mut self.warning_cache,
         );
-        match self.heightmap.dirty_aabb() {
+        self.refresh_undercut_csr();
+        match self.field.dirty_aabb() {
             Some((ix0, iy0, ix1, iy1)) => vec![ix0, iy0, ix1, iy1],
             None => Vec::new(),
         }
@@ -473,14 +615,14 @@ impl Simulator {
         t_start: f64,
         t_end: f64,
     ) -> Vec<u32> {
-        self.heightmap.clear_dirty();
+        self.field.clear_dirty();
         self.last_diagnostics = SimDiagnostics::new();
         let profile = ToolProfile::from_tool(tool);
         let holder = HolderProfile::from_tool(tool);
         let idx = seg_idx as usize;
         if idx < segments.len() {
-            let _touched = sweep_segment_partial(
-                &mut self.heightmap,
+            let _touched = sweep_segment_partial_dexel(
+                &mut self.field,
                 &segments[idx],
                 &profile,
                 idx,
@@ -491,18 +633,19 @@ impl Simulator {
                 t_end,
             );
         }
-        match self.heightmap.dirty_aabb() {
+        self.refresh_undercut_csr();
+        match self.field.dirty_aabb() {
             Some((ix0, iy0, ix1, iy1)) => vec![ix0, iy0, ix1, iy1],
             None => Vec::new(),
         }
     }
 
-    /// Test-only handle on the inner heightmap. Lets the unit tests
+    /// Test-only handle on the inner dexel field. Lets the unit tests
     /// inspect cells without going through `data_ptr` (which would force
     /// `unsafe` to deref).
     #[cfg(test)]
-    pub(crate) fn heightmap(&self) -> &Heightmap {
-        &self.heightmap
+    pub(crate) fn field(&self) -> &DexelField {
+        &self.field
     }
 
     /// Test-only: number of segments with cached diagnostics.
@@ -538,7 +681,42 @@ mod tests {
     #![allow(clippy::cast_precision_loss)]
     use super::*;
     use ivac_core::gcode::preview::{MoveKind, Pose3, ToolpathSegment};
-    use ivac_core::project::{Coolant, SpindleDirection, ToolKind};
+    use ivac_core::project::{Coolant, FormProfileSample, SpindleDirection, ToolKind};
+
+    /// Construct a `Simulator` with a deep stock floor so 3-axis carves never
+    /// reach it (staying on the dense fast path). The dexel flip is otherwise
+    /// transparent to the legacy tests, which only touch the top surface.
+    fn new_sim(min_x: f64, min_y: f64, max_x: f64, max_y: f64, cell: f64, top_z: f32) -> Simulator {
+        Simulator::new(min_x, min_y, max_x, max_y, cell, top_z, top_z - 1000.0)
+    }
+
+    /// A T-slot form tool: a wide disk (r=8) over the tip band z∈[0,4] and a
+    /// narrow neck (r=2) above it (z∈[4,12]). Plunged into stock it leaves a
+    /// genuine undercut — a void with a surviving overhang — the single-Z
+    /// heightmap couldn't represent. Mirrors the core sweep test's profile.
+    fn tslot_tool() -> ToolEntry {
+        let mut tool = endmill(16.0);
+        tool.kind = ToolKind::FormProfile;
+        tool.form_profile_mm = vec![
+            FormProfileSample {
+                z_mm: 0.0,
+                r_mm: 8.0,
+            },
+            FormProfileSample {
+                z_mm: 4.0,
+                r_mm: 8.0,
+            },
+            FormProfileSample {
+                z_mm: 4.0,
+                r_mm: 2.0,
+            },
+            FormProfileSample {
+                z_mm: 12.0,
+                r_mm: 2.0,
+            },
+        ];
+        tool
+    }
 
     fn endmill(diameter: f64) -> ToolEntry {
         ToolEntry {
@@ -610,7 +788,7 @@ mod tests {
 
     #[test]
     fn new_initializes_heightmap_to_top_z() {
-        let sim = Simulator::new(0.0, 0.0, 20.0, 20.0, 1.0, 0.0);
+        let sim = new_sim(0.0, 0.0, 20.0, 20.0, 1.0, 0.0);
         // ceil(width / cell) + 1 grid lines — the +1 fencepost (see
         // Heightmap::from_bbox) so the bbox max-corner stays on-grid.
         // 20 mm / 1 mm = 20 cells → 21 nodes per axis.
@@ -618,12 +796,12 @@ mod tests {
         assert_eq!(sim.rows(), 21);
         assert!((sim.cell_size() - 1.0).abs() < 1e-9);
         assert!((sim.top_z() - 0.0).abs() < 1e-6);
-        assert!(sim.heightmap().data.iter().all(|&z| (z - 0.0).abs() < 1e-6));
+        assert!(sim.field().top().iter().all(|&z| (z - 0.0).abs() < 1e-6));
     }
 
     #[test]
     fn advance_endmill_plunge_lowers_cells_and_returns_dirty_aabb() {
-        let mut sim = Simulator::new(0.0, 0.0, 40.0, 40.0, 1.0, 0.0);
+        let mut sim = new_sim(0.0, 0.0, 40.0, 40.0, 1.0, 0.0);
         let segs = vec![plunge(20.0, 20.0, 0.0, -1.0)];
         let tool = endmill(4.0);
         let aabb = sim.advance_inner(&segs, &tool, 0, 1);
@@ -631,29 +809,29 @@ mod tests {
         let (ix0, iy0, ix1, iy1) = (aabb[0], aabb[1], aabb[2], aabb[3]);
         assert!(ix0 < ix1 && iy0 < iy1, "AABB must be non-empty");
         // Cell directly under the plunge sits at the plunge depth.
-        let hm = sim.heightmap();
-        let center = hm.data[(20 * hm.cols + 20) as usize];
+        let hm = sim.field();
+        let center = hm.top()[(20 * hm.cols + 20) as usize];
         assert!(
             (center - -1.0).abs() < 1e-5,
             "plunge center expected -1, got {center}"
         );
         // At least one cell is below top_z.
-        assert!(hm.data.iter().any(|&z| z < hm.top_z));
+        assert!(hm.top().iter().any(|&z| z < hm.top_z));
     }
 
     #[test]
     fn reset_restores_top_z_and_no_dirty() {
-        let mut sim = Simulator::new(0.0, 0.0, 20.0, 20.0, 1.0, 0.0);
+        let mut sim = new_sim(0.0, 0.0, 20.0, 20.0, 1.0, 0.0);
         let _ = sim.advance_inner(&[plunge(10.0, 10.0, 0.0, -1.0)], &endmill(4.0), 0, 1);
         sim.reset();
-        let hm = sim.heightmap();
-        assert!(hm.data.iter().all(|&z| (z - 0.0).abs() < 1e-6));
+        let hm = sim.field();
+        assert!(hm.top().iter().all(|&z| (z - 0.0).abs() < 1e-6));
         assert!(hm.dirty_aabb().is_none());
     }
 
     #[test]
     fn advance_clears_previous_dirty_so_aabb_reflects_only_this_call() {
-        let mut sim = Simulator::new(0.0, 0.0, 40.0, 40.0, 1.0, 0.0);
+        let mut sim = new_sim(0.0, 0.0, 40.0, 40.0, 1.0, 0.0);
         let first = vec![plunge(5.0, 5.0, 0.0, -1.0)];
         let second = vec![plunge(30.0, 30.0, 0.0, -1.0)];
         let tool = endmill(2.0);
@@ -668,7 +846,7 @@ mod tests {
 
     #[test]
     fn advance_with_no_cuts_returns_empty_aabb() {
-        let mut sim = Simulator::new(0.0, 0.0, 20.0, 20.0, 1.0, 0.0);
+        let mut sim = new_sim(0.0, 0.0, 20.0, 20.0, 1.0, 0.0);
         let rapid = vec![ToolpathSegment {
             from: Pose3 {
                 x: 0.0,
@@ -693,9 +871,9 @@ mod tests {
 
     #[test]
     fn data_ptr_and_len_consistent_with_cols_rows() {
-        let sim = Simulator::new(0.0, 0.0, 10.0, 10.0, 0.5, 0.0);
+        let sim = new_sim(0.0, 0.0, 10.0, 10.0, 0.5, 0.0);
         let len = (sim.cols() as usize) * (sim.rows() as usize);
-        assert_eq!(len, sim.heightmap().data_len());
+        assert_eq!(len, sim.field().top_len());
         assert!(!sim.data_ptr().is_null());
     }
 
@@ -705,18 +883,18 @@ mod tests {
     /// same column to the final depth.
     #[test]
     fn partial_advance_plunge_grows_as_t_advances() {
-        let mut sim = Simulator::new(0.0, 0.0, 40.0, 40.0, 1.0, 0.0);
+        let mut sim = new_sim(0.0, 0.0, 40.0, 40.0, 1.0, 0.0);
         let segs = vec![plunge(20.0, 20.0, 0.0, -2.0)];
         let tool = endmill(4.0);
         let aabb_half = sim.partial_advance_inner(&segs, &tool, 0, 0.0, 0.5);
         assert_eq!(aabb_half.len(), 4, "expected non-empty AABB at half-plunge");
-        let center_after_half = sim.heightmap().data[(20 * sim.heightmap().cols + 20) as usize];
+        let center_after_half = sim.field().top()[(20 * sim.field().cols + 20) as usize];
         assert!(
             (center_after_half - -1.0).abs() < 1e-5,
             "plunge halfway should reach z=-1, got {center_after_half}"
         );
         let _ = sim.partial_advance_inner(&segs, &tool, 0, 0.5, 1.0);
-        let center_after_full = sim.heightmap().data[(20 * sim.heightmap().cols + 20) as usize];
+        let center_after_full = sim.field().top()[(20 * sim.field().cols + 20) as usize];
         assert!(
             (center_after_full - -2.0).abs() < 1e-5,
             "plunge fully should reach z=-2, got {center_after_full}"
@@ -728,7 +906,7 @@ mod tests {
     /// at `top_z`.
     #[test]
     fn partial_advance_cut_only_touches_swept_chunk() {
-        let mut sim = Simulator::new(0.0, 0.0, 40.0, 40.0, 1.0, 0.0);
+        let mut sim = new_sim(0.0, 0.0, 40.0, 40.0, 1.0, 0.0);
         let cut = ToolpathSegment {
             from: Pose3 {
                 x: 5.0,
@@ -747,21 +925,21 @@ mod tests {
         let segs = vec![cut];
         let tool = endmill(2.0);
         let _ = sim.partial_advance_inner(&segs, &tool, 0, 0.0, 0.5);
-        let hm = sim.heightmap();
+        let hm = sim.field();
         // Cell at x≈10 (within carved chunk [5..15]) is below top_z.
-        let near = hm.data[(20 * hm.cols + 10) as usize];
+        let near = hm.top()[(20 * hm.cols + 10) as usize];
         assert!(near < hm.top_z, "cell in carved half should be lowered");
         // Cell at x≈22 (in uncarved chunk [15..25]) is still at top_z.
-        let far = hm.data[(20 * hm.cols + 22) as usize];
+        let far = hm.top()[(20 * hm.cols + 22) as usize];
         assert!(
             (far - hm.top_z).abs() < 1e-6,
             "cell in un-carved half should still be at top_z, got {far}"
         );
         // After t goes 0.5→1, the right half also drops.
         let _ = sim.partial_advance_inner(&segs, &tool, 0, 0.5, 1.0);
-        let far_after = sim.heightmap().data[(20 * sim.heightmap().cols + 22) as usize];
+        let far_after = sim.field().top()[(20 * sim.field().cols + 22) as usize];
         assert!(
-            far_after < sim.heightmap().top_z,
+            far_after < sim.field().top_z,
             "right half should be carved after full partial sweep, got {far_after}"
         );
     }
@@ -792,36 +970,36 @@ mod tests {
         let n = segs.len() as u32;
 
         // Reference: carve the whole program in one go.
-        let mut full = Simulator::new(0.0, 0.0, 40.0, 40.0, 1.0, 0.0);
+        let mut full = new_sim(0.0, 0.0, 40.0, 40.0, 1.0, 0.0);
         let _ = full.advance_inner(&segs, &tool, 0, n);
 
         // Carve [0, k), snapshot, carve [k, n): a normal forward play
         // that drops a checkpoint partway. Sanity: same field as `full`.
-        let mut sim = Simulator::new(0.0, 0.0, 40.0, 40.0, 1.0, 0.0);
+        let mut sim = new_sim(0.0, 0.0, 40.0, 40.0, 1.0, 0.0);
         let _ = sim.advance_inner(&segs, &tool, 0, k);
         sim.checkpoint(k);
         let _ = sim.advance_inner(&segs, &tool, k, n);
         assert_eq!(
-            sim.heightmap().data,
-            full.heightmap().data,
+            sim.field().top(),
+            full.field().top(),
             "forward carve with a checkpoint must match a plain full carve"
         );
 
         // The checkpoint must hold exactly the [0, k) state.
-        let mut prefix = Simulator::new(0.0, 0.0, 40.0, 40.0, 1.0, 0.0);
+        let mut prefix = new_sim(0.0, 0.0, 40.0, 40.0, 1.0, 0.0);
         let _ = prefix.advance_inner(&segs, &tool, 0, k);
         assert!(sim.restore_checkpoint(k), "checkpoint k must exist");
         assert_eq!(
-            sim.heightmap().data,
-            prefix.heightmap().data,
+            sim.field().top(),
+            prefix.field().top(),
             "restore must reproduce the [0, k) heightfield exactly"
         );
 
         // Replay the tail from the restored base → back to the full field.
         let _ = sim.advance_inner(&segs, &tool, k, n);
         assert_eq!(
-            sim.heightmap().data,
-            full.heightmap().data,
+            sim.field().top(),
+            full.field().top(),
             "restore + tail replay must equal a full replay"
         );
     }
@@ -830,19 +1008,19 @@ mod tests {
     fn restore_checkpoint_marks_whole_grid_dirty() {
         let segs = staircase(10);
         let tool = endmill(3.0);
-        let mut sim = Simulator::new(0.0, 0.0, 40.0, 40.0, 1.0, 0.0);
+        let mut sim = new_sim(0.0, 0.0, 40.0, 40.0, 1.0, 0.0);
         let _ = sim.advance_inner(&segs, &tool, 0, 5);
         sim.checkpoint(5);
         let _ = sim.advance_inner(&segs, &tool, 5, 10);
-        sim.heightmap.clear_dirty();
+        sim.field.clear_dirty();
         assert!(sim.restore_checkpoint(5));
-        let aabb = sim.heightmap().dirty_aabb().expect("full grid dirty");
+        let aabb = sim.field().dirty_aabb().expect("full grid dirty");
         assert_eq!(aabb, (0, 0, sim.cols(), sim.rows()));
     }
 
     #[test]
     fn nearest_checkpoint_picks_largest_at_or_below_target() {
-        let mut sim = Simulator::new(0.0, 0.0, 10.0, 10.0, 1.0, 0.0);
+        let mut sim = new_sim(0.0, 0.0, 10.0, 10.0, 1.0, 0.0);
         assert_eq!(sim.nearest_checkpoint(100), -1, "no checkpoints yet");
         sim.checkpoint(10);
         sim.checkpoint(20);
@@ -862,21 +1040,25 @@ mod tests {
     /// duplicating, and snapshots stay sorted.
     #[test]
     fn checkpoint_same_index_overwrites() {
-        let mut sim = Simulator::new(0.0, 0.0, 40.0, 40.0, 1.0, 0.0);
+        let mut sim = new_sim(0.0, 0.0, 40.0, 40.0, 1.0, 0.0);
         let tool = endmill(3.0);
         let segs = staircase(20);
         let _ = sim.advance_inner(&segs, &tool, 0, 10);
         sim.checkpoint(10);
         // Carve more, then re-checkpoint the SAME index with the deeper
-        // field (a degenerate but defensible call).
+        // field (a degenerate but defensible call). Capture the deeper state
+        // so we can prove the restore reflects the overwritten snapshot.
         let _ = sim.advance_inner(&segs, &tool, 10, 20);
         sim.checkpoint(10);
+        let deeper = sim.field().top().to_vec();
         assert_eq!(sim.checkpoint_count(), 1, "no duplicate index");
+        // Rewind so restore has to actually re-lay the snapshot.
+        sim.reset();
         assert!(sim.restore_checkpoint(10));
         assert_eq!(
-            sim.heightmap().data,
-            sim.checkpoints[0].data,
-            "restore reflects the overwritten snapshot"
+            sim.field().top(),
+            deeper.as_slice(),
+            "restore reflects the overwritten (deeper) snapshot"
         );
     }
 
@@ -886,7 +1068,7 @@ mod tests {
     /// warnings the user sees are unchanged.
     #[test]
     fn re_sweep_replays_cached_diagnostics_identically() {
-        let mut sim = Simulator::new(0.0, 0.0, 40.0, 40.0, 1.0, 0.0);
+        let mut sim = new_sim(0.0, 0.0, 40.0, 40.0, 1.0, 0.0);
         // seg 0 plunges a hole; seg 1 is a rapid dragging through stock at
         // z=-2 → a rapid_through_material collision warning.
         let segs = vec![
@@ -938,7 +1120,7 @@ mod tests {
     /// take a `JsValue` so they're exercised in the browser, not here.)
     #[test]
     fn clear_toolpath_drops_warning_cache() {
-        let mut sim = Simulator::new(0.0, 0.0, 40.0, 40.0, 1.0, 0.0);
+        let mut sim = new_sim(0.0, 0.0, 40.0, 40.0, 1.0, 0.0);
         let segs = vec![plunge(10.0, 10.0, 0.0, -1.0)];
         let _ = sim.advance_inner(&segs, &endmill(4.0), 0, 1);
         assert_eq!(sim.warning_cache_len(), 1);
@@ -951,7 +1133,7 @@ mod tests {
     /// warning each frame. The first slice (`t_start ≈ 0`) emits once.
     #[test]
     fn partial_advance_emits_rapid_warning_only_on_first_slice() {
-        let mut sim = Simulator::new(0.0, 0.0, 40.0, 40.0, 1.0, 0.0);
+        let mut sim = new_sim(0.0, 0.0, 40.0, 40.0, 1.0, 0.0);
         // Rapid through material: starts below top_z, so check_rapid_against_stock
         // reports a collision.
         let rapid = ToolpathSegment {
@@ -982,6 +1164,108 @@ mod tests {
             sim.last_diagnostics.count("rapid_through_material"),
             0,
             "mid-segment partial slice must not re-emit the warning"
+        );
+    }
+
+    /// The headline flip deliverable: plunging a T-slot (form) tool through an
+    /// `advance()` grows a genuine undercut, so the simulator reports undercut
+    /// columns and the CSR buffers are populated with a consistent shape.
+    #[test]
+    fn form_tool_advance_populates_undercut_sidecar() {
+        let mut sim = new_sim(0.0, 0.0, 40.0, 40.0, 1.0, 0.0);
+        let segs = vec![plunge(20.0, 20.0, 0.0, -5.0)];
+        let _ = sim.advance_inner(&segs, &tslot_tool(), 0, 1);
+
+        let uc = sim.undercut_column_count();
+        assert!(
+            uc > 0,
+            "a form-tool advance must populate the undercut sidecar"
+        );
+        assert_eq!(
+            u32::try_from(sim.field().undercut_columns()).unwrap(),
+            uc,
+            "the CSR column count must match the field's sidecar"
+        );
+        // CSR shape: one cell index per column, a row-pointer of length uc+1,
+        // and 2 f32s (lo, hi) per span.
+        assert_eq!(sim.undercut_col_index_len(), uc);
+        assert_eq!(sim.undercut_span_offsets_len(), uc + 1);
+        let total_spans = *sim.undercut_span_offsets.last().unwrap();
+        assert_eq!(
+            sim.undercut_spans_len(),
+            2 * total_spans,
+            "span buffer holds (lo, hi) pairs"
+        );
+        assert!(total_spans >= uc, "each undercut column carries ≥1 span");
+        // Every span is well-formed (lo < hi) and the pointers are live.
+        assert!(!sim.undercut_col_index_ptr().is_null());
+        assert!(!sim.undercut_spans_ptr().is_null());
+        for pair in sim.undercut_spans.chunks_exact(2) {
+            assert!(pair[0] < pair[1], "span lo must be below hi");
+        }
+    }
+
+    /// A pure 3-axis (endmill) advance must NOT touch the sidecar — the dense
+    /// fast path is unchanged, so the CSR stays in its empty canonical form.
+    #[test]
+    fn three_axis_advance_keeps_sidecar_empty() {
+        let mut sim = new_sim(0.0, 0.0, 40.0, 40.0, 1.0, 0.0);
+        let segs = vec![plunge(20.0, 20.0, 0.0, -2.0)];
+        let _ = sim.advance_inner(&segs, &endmill(4.0), 0, 1);
+        assert_eq!(sim.undercut_column_count(), 0);
+        assert_eq!(sim.field().undercut_columns(), 0);
+        assert_eq!(
+            sim.undercut_span_offsets_len(),
+            1,
+            "empty CSR keeps its leading 0 row-pointer"
+        );
+        assert_eq!(sim.undercut_spans_len(), 0);
+        assert_eq!(sim.undercut_col_index_len(), 0);
+    }
+
+    /// Checkpoint/restore must round-trip the undercut sidecar, not just the
+    /// dense top — the acceptance criterion for form-tool scrubbing. Restore
+    /// after a full reset reproduces the exact CSR the checkpoint captured.
+    #[test]
+    fn checkpoint_restore_round_trips_undercut_sidecar() {
+        let mut sim = new_sim(0.0, 0.0, 40.0, 40.0, 1.0, 0.0);
+        let segs = vec![plunge(20.0, 20.0, 0.0, -5.0)];
+        let _ = sim.advance_inner(&segs, &tslot_tool(), 0, 1);
+        let uc = sim.field().undercut_columns();
+        assert!(uc > 0, "precondition: the form plunge grew undercuts");
+
+        // Capture the exact CSR the checkpoint should reproduce.
+        let csr_before = (
+            sim.undercut_col_index.clone(),
+            sim.undercut_span_offsets.clone(),
+            sim.undercut_spans.clone(),
+        );
+        sim.checkpoint(1);
+
+        // Wipe the field (sidecar included) so restore has real work to do.
+        sim.reset();
+        assert_eq!(sim.field().undercut_columns(), 0);
+        assert_eq!(sim.undercut_column_count(), 0);
+
+        assert!(sim.restore_checkpoint(1), "checkpoint at seg 1 must exist");
+        assert_eq!(
+            sim.field().undercut_columns(),
+            uc,
+            "restore must bring the sidecar voids back"
+        );
+        let csr_after = (
+            sim.undercut_col_index.clone(),
+            sim.undercut_span_offsets.clone(),
+            sim.undercut_spans.clone(),
+        );
+        assert_eq!(
+            csr_before, csr_after,
+            "checkpoint/restore must round-trip the undercut sidecar CSR exactly"
+        );
+        // The whole grid is marked dirty for a full re-upload after restore.
+        assert_eq!(
+            sim.field().dirty_aabb(),
+            Some((0, 0, sim.cols(), sim.rows()))
         );
     }
 }

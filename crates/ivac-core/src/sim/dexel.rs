@@ -167,6 +167,33 @@ pub struct DexelField {
     dirty: Option<(u32, u32, u32, u32)>,
 }
 
+/// An opaque, cloneable capture of a [`DexelField`]'s full carve state —
+/// the dense top surface **and** the undercut sidecar — for the live sim's
+/// backward-scrub checkpoints. Restoring one reproduces the field exactly
+/// (see [`DexelField::snapshot`] / [`DexelField::restore`]). Because carving
+/// is monotone, checkpoints stay orderable by the segment boundary they
+/// represent, exactly as the single-Z `Vec<f32>` snapshots did.
+#[derive(Debug, Clone)]
+pub struct DexelSnapshot {
+    top: Vec<f32>,
+    undercut: HashMap<usize, Vec<Span>>,
+}
+
+impl DexelSnapshot {
+    /// The captured dense top surface (same layout as
+    /// [`DexelField::top`]). Primarily for tests / inspection.
+    #[must_use]
+    pub fn top(&self) -> &[f32] {
+        &self.top
+    }
+
+    /// Number of columns carrying an undercut sidecar entry in this snapshot.
+    #[must_use]
+    pub fn undercut_columns(&self) -> usize {
+        self.undercut.len()
+    }
+}
+
 impl DexelField {
     /// # Panics
     ///
@@ -203,6 +230,51 @@ impl DexelField {
             undercut: HashMap::new(),
             dirty: None,
         }
+    }
+
+    /// Size a field to cover the world rectangle `[min_x, max_x] ×
+    /// [min_y, max_y]` with `cell`-mm cells — the `DexelField` analogue of
+    /// [`super::heightmap::Heightmap::from_bbox`], sharing its exact
+    /// cols/rows sizing (a `ceil` plus a one-cell fencepost pad) so the
+    /// dense grid is index-for-index identical to the heightmap the live sim
+    /// used to build. `stock_bottom_z` is the span floor the heightmap left
+    /// implicit.
+    ///
+    /// # Panics
+    ///
+    /// Panics on a non-positive `cell`, an empty bbox (`max_x <= min_x` or
+    /// `max_y <= min_y`), or `stock_bottom_z >= top_z`.
+    #[must_use]
+    pub fn from_bbox(
+        min_x: f64,
+        min_y: f64,
+        max_x: f64,
+        max_y: f64,
+        cell: f64,
+        top_z: f32,
+        stock_bottom_z: f32,
+    ) -> Self {
+        assert!(cell > 0.0, "DexelField cell size must be > 0");
+        assert!(
+            max_x > min_x && max_y > min_y,
+            "DexelField bbox must be non-empty"
+        );
+        // Identical fencepost sizing to `Heightmap::from_bbox` — see the note
+        // there for why the +1 pad keeps the bbox max-corner sampleable.
+        let cols = (((max_x - min_x) / cell).ceil() as u32)
+            .saturating_add(1)
+            .max(1);
+        let rows = (((max_y - min_y) / cell).ceil() as u32)
+            .saturating_add(1)
+            .max(1);
+        Self::new(
+            Point2::new(min_x, min_y),
+            cell,
+            cols,
+            rows,
+            top_z,
+            stock_bottom_z,
+        )
     }
 
     /// Build a `DexelField` from an existing [`super::heightmap::Heightmap`],
@@ -407,6 +479,73 @@ impl DexelField {
     #[must_use]
     pub fn spans_at(&self, ix: u32, iy: u32) -> Vec<Span> {
         self.spans_for(self.idx_of(ix, iy))
+    }
+
+    /// Capture the full carve state (dense top + undercut sidecar) for a
+    /// backward-scrub checkpoint. Cheap for a pure 3-axis job — the sidecar
+    /// clone is empty and only the dense `Vec<f32>` is copied, exactly the
+    /// old `Heightmap::data.clone()` cost.
+    #[must_use]
+    pub fn snapshot(&self) -> DexelSnapshot {
+        DexelSnapshot {
+            top: self.top.clone(),
+            undercut: self.undercut.clone(),
+        }
+    }
+
+    /// Restore a previously captured [`DexelSnapshot`], overwriting both the
+    /// dense top and the sidecar and marking the whole grid dirty so a
+    /// renderer re-uploads everything.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the snapshot's grid size differs from this field's (i.e. it
+    /// came from a differently-sized field).
+    pub fn restore(&mut self, snap: &DexelSnapshot) {
+        assert_eq!(
+            snap.top.len(),
+            self.top.len(),
+            "DexelSnapshot grid size mismatch on restore"
+        );
+        self.top.copy_from_slice(&snap.top);
+        self.undercut.clone_from(&snap.undercut);
+        self.mark_all_dirty();
+    }
+
+    /// Flatten the undercut sidecar into three parallel CSR buffers for a
+    /// zero-copy upload to JS (the renderer builds undercut walls/floors from
+    /// them). Columns are emitted **sorted by flat cell index** so the output
+    /// is deterministic regardless of the sidecar `HashMap`'s iteration order.
+    ///
+    /// Layout — for the `i`-th emitted column:
+    /// * `col_index[i]` is its flat cell index (`iy * cols + ix`),
+    /// * its spans are `spans[2 * span_offsets[i] .. 2 * span_offsets[i + 1]]`
+    ///   as consecutive `(lo, hi)` `f32` pairs.
+    ///
+    /// `span_offsets` is a CSR row-pointer with `col_index.len() + 1` entries:
+    /// `span_offsets[0] == 0` and the final entry is the total span count. For
+    /// a pure 3-axis job the sidecar is empty, so `col_index` and `spans` are
+    /// empty and `span_offsets == [0]`.
+    #[must_use]
+    pub fn undercut_csr(&self) -> (Vec<u32>, Vec<u32>, Vec<f32>) {
+        let mut keys: Vec<usize> = self.undercut.keys().copied().collect();
+        keys.sort_unstable();
+        let mut col_index = Vec::with_capacity(keys.len());
+        let mut span_offsets = Vec::with_capacity(keys.len() + 1);
+        let mut spans = Vec::new();
+        span_offsets.push(0u32);
+        let mut running = 0u32;
+        for idx in keys {
+            let column = &self.undercut[&idx];
+            col_index.push(idx as u32);
+            for s in column {
+                spans.push(s.lo);
+                spans.push(s.hi);
+            }
+            running += column.len() as u32;
+            span_offsets.push(running);
+        }
+        (col_index, span_offsets, spans)
     }
 }
 
@@ -682,6 +821,75 @@ mod tests {
         assert_eq!(df.undercut_columns(), 1);
         assert_eq!(df.spans_at(1, 1), spans(&[(2.0, 5.0)]));
         assert_eq!(df.top_at(1, 1), 5.0);
+    }
+
+    #[test]
+    fn from_bbox_matches_heightmap_sizing() {
+        // The dense grid must be index-for-index identical to the heightmap
+        // the live sim built before the flip, so the zero-copy top upload and
+        // every cell index carry over unchanged.
+        let hm = Heightmap::from_bbox(-3.0, 2.0, 17.0, 22.0, 0.75, 4.0);
+        let df = DexelField::from_bbox(-3.0, 2.0, 17.0, 22.0, 0.75, 4.0, -6.0);
+        assert_eq!(df.cols, hm.cols);
+        assert_eq!(df.rows, hm.rows);
+        assert_eq!(df.origin, hm.origin);
+        assert!((df.cell - hm.cell).abs() < 1e-12);
+        assert_eq!(df.top(), hm.data.as_slice());
+        assert!((df.stock_bottom_z - -6.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn snapshot_restore_round_trips_undercut_sidecar() {
+        let mut df = DexelField::new(Point2::new(0.0, 0.0), 1.0, 4, 4, 5.0, 0.0);
+        // Grow an undercut void in one column so the snapshot carries a
+        // non-empty sidecar (the whole point of storing top + undercut).
+        df.carve_cell(1, 1, 2.0, 3.0); // [0,2]+[3,5] — sidecar entry
+        assert_eq!(df.undercut_columns(), 1);
+        let snap = df.snapshot();
+        assert_eq!(snap.undercut_columns(), 1);
+        assert_eq!(snap.top(), df.top());
+
+        // Carve further (deepen an unrelated column + heal the undercut) so
+        // the live field diverges from the snapshot.
+        df.carve_cell(2, 2, 1.0, f32::INFINITY);
+        df.carve_cell(1, 1, 1.0, f32::INFINITY); // heals the void back to dense
+        assert_eq!(df.undercut_columns(), 0);
+
+        df.clear_dirty();
+        df.restore(&snap);
+        // The sidecar void and the dense top are both back, byte-identical.
+        assert_eq!(df.undercut_columns(), 1);
+        assert_eq!(df.spans_at(1, 1), spans(&[(0.0, 2.0), (3.0, 5.0)]));
+        assert_eq!(df.top(), snap.top());
+        // Restore marks the whole grid dirty for a full re-upload.
+        assert_eq!(df.dirty_aabb(), Some((0, 0, df.cols, df.rows)));
+    }
+
+    #[test]
+    fn undercut_csr_flattens_sidecar_sorted() {
+        let mut df = DexelField::new(Point2::new(0.0, 0.0), 1.0, 4, 4, 5.0, 0.0);
+        // Two undercut columns with a distinct span shape each, carved in
+        // reverse index order to prove the CSR sorts by flat cell index.
+        df.carve_cell(2, 2, 2.0, 3.0); // flat idx = 2*4 + 2 = 10 → [0,2]+[3,5]
+        df.carve_cell(1, 0, 1.0, 2.0); // flat idx = 0*4 + 1 = 1  → [0,1]+[2,5]
+        let (col_index, span_offsets, spans_flat) = df.undercut_csr();
+        assert_eq!(col_index, vec![1, 10], "columns sorted by flat cell index");
+        // Each column has 2 spans → offsets 0,2,4.
+        assert_eq!(span_offsets, vec![0, 2, 4]);
+        // Column 1 (idx 1): spans [0,1] and [2,5].
+        assert_eq!(&spans_flat[0..4], &[0.0, 1.0, 2.0, 5.0]);
+        // Column 10 (idx 10): spans [0,2] and [3,5].
+        assert_eq!(&spans_flat[4..8], &[0.0, 2.0, 3.0, 5.0]);
+    }
+
+    #[test]
+    fn undercut_csr_empty_for_top_down_only() {
+        let mut df = DexelField::new(Point2::new(0.0, 0.0), 1.0, 4, 4, 5.0, -10.0);
+        df.carve_cell(1, 1, 2.0, f32::INFINITY); // pure top-down
+        let (col_index, span_offsets, spans_flat) = df.undercut_csr();
+        assert!(col_index.is_empty());
+        assert!(spans_flat.is_empty());
+        assert_eq!(span_offsets, vec![0], "CSR row-pointer keeps its leading 0");
     }
 
     #[test]
