@@ -31,9 +31,9 @@
 )]
 
 use crate::gcode::preview::{MoveKind, ToolpathSegment};
-use crate::sim::heightmap::{Heightmap, ToolProfile};
+use crate::sim::heightmap::ToolProfile;
 use crate::sim::holder::HolderProfile;
-use crate::sim::sweep::{for_each_swept_cell, HeightmapLayout};
+use crate::sim::sweep::{for_each_swept_cell, HeightmapLayout, SurfaceField};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum RapidCheck {
@@ -63,16 +63,15 @@ pub enum RapidCollisionSubkind {
 // against `rapid_pz + holder_lower_z(r)` where `holder_lower_z(r)`
 // is the Z above the tip at which the envelope first reaches radius `r`.
 #[must_use]
-pub fn check_rapid_against_stock(
-    heightmap: &Heightmap,
+pub fn check_rapid_against_stock<S: SurfaceField>(
+    field: &S,
     segment: &ToolpathSegment,
     profile: &ToolProfile,
     holder: Option<&HolderProfile>,
 ) -> RapidCheck {
     debug_assert!(matches!(segment.kind, MoveKind::Rapid));
 
-    let layout = HeightmapLayout::of(heightmap);
-    let cols = heightmap.cols as usize;
+    let layout = HeightmapLayout::of_surface(field);
 
     // ─────────── (a) cutter-tip envelope walk ───────────
     // Fast reject: if both endpoints stay at-or-above the un-cut top,
@@ -80,9 +79,9 @@ pub fn check_rapid_against_stock(
     // below has its own gate.)
     let pz_min = segment.from.z.min(segment.to.z);
     let mut tip_worst: Option<(f32, u32, u32, f64)> = None;
-    if pz_min < f64::from(heightmap.top_z) {
+    if pz_min < f64::from(field.surface_top_z()) {
         for_each_swept_cell(&layout, segment, profile, |ix, iy, _r, cutter_pz, dz| {
-            let cell_z = heightmap.data[(iy as usize) * cols + ix as usize];
+            let cell_z = field.surface_z(ix, iy);
             let cutter_surface_z = cutter_pz as f32 + dz;
             if cell_z > cutter_surface_z {
                 let excess = cell_z - cutter_surface_z;
@@ -95,10 +94,10 @@ pub fn check_rapid_against_stock(
     }
 
     if let Some((_excess, ix, iy, rapid_pz)) = tip_worst {
-        let cell = heightmap.cell;
-        let worst_x = heightmap.origin.x + (f64::from(ix) + 0.5) * cell;
-        let worst_y = heightmap.origin.y + (f64::from(iy) + 0.5) * cell;
-        let worst_cell_z = heightmap.data[(iy as usize) * cols + ix as usize];
+        let cell = layout.cell;
+        let worst_x = layout.origin_x + (f64::from(ix) + 0.5) * cell;
+        let worst_y = layout.origin_y + (f64::from(iy) + 0.5) * cell;
+        let worst_cell_z = field.surface_z(ix, iy);
         return RapidCheck::Collision {
             worst_x,
             worst_y,
@@ -125,10 +124,10 @@ pub fn check_rapid_against_stock(
     // the shank can collide even when the tip itself is above top_z
     // — that's the whole point of this pass.
 
-    let cell = heightmap.cell;
+    let cell = layout.cell;
     let inv_cell = 1.0 / cell;
-    let max_col = heightmap.cols.saturating_sub(1);
-    let max_row = heightmap.rows.saturating_sub(1);
+    let max_col = layout.cols.saturating_sub(1);
+    let max_row = layout.rows.saturating_sub(1);
 
     let from = &segment.from;
     let to = &segment.to;
@@ -136,14 +135,14 @@ pub fn check_rapid_against_stock(
     let max_x = from.x.max(to.x) + max_r;
     let min_y = from.y.min(to.y) - max_r;
     let max_y = from.y.max(to.y) + max_r;
-    let fx0 = (min_x - heightmap.origin.x) * inv_cell;
-    let fy0 = (min_y - heightmap.origin.y) * inv_cell;
-    let fx1 = (max_x - heightmap.origin.x) * inv_cell;
-    let fy1 = (max_y - heightmap.origin.y) * inv_cell;
+    let fx0 = (min_x - layout.origin_x) * inv_cell;
+    let fy0 = (min_y - layout.origin_y) * inv_cell;
+    let fx1 = (max_x - layout.origin_x) * inv_cell;
+    let fy1 = (max_y - layout.origin_y) * inv_cell;
     if fx1 < 0.0 || fy1 < 0.0 {
         return RapidCheck::Clear;
     }
-    if fx0 > f64::from(heightmap.cols) || fy0 > f64::from(heightmap.rows) {
+    if fx0 > f64::from(layout.cols) || fy0 > f64::from(layout.rows) {
         return RapidCheck::Clear;
     }
     let ix0 = fx0.floor().max(0.0) as u32;
@@ -165,8 +164,8 @@ pub fn check_rapid_against_stock(
 
     for iy in iy0..=iy1 {
         for ix in ix0..=ix1 {
-            let cx = heightmap.origin.x + (f64::from(ix) + 0.5) * cell;
-            let cy = heightmap.origin.y + (f64::from(iy) + 0.5) * cell;
+            let cx = layout.origin_x + (f64::from(ix) + 0.5) * cell;
+            let cy = layout.origin_y + (f64::from(iy) + 0.5) * cell;
             let (r_sq, cutter_pz) = if pure_plunge {
                 let ex = cx - from.x;
                 let ey = cy - from.y;
@@ -191,7 +190,7 @@ pub fn check_rapid_against_stock(
             let Some(holder_lower_z) = holder.lowest_z_for_radius(r) else {
                 continue;
             };
-            let cell_z = heightmap.data[(iy as usize) * cols + ix as usize];
+            let cell_z = field.surface_z(ix, iy);
             // Shank/holder surface at radial offset r is at
             // `cutter_pz + holder_lower_z`. A cell strictly above that
             // height is a collision.
@@ -209,9 +208,9 @@ pub fn check_rapid_against_stock(
     match shank_worst {
         None => RapidCheck::Clear,
         Some((_excess, ix, iy, rapid_pz)) => {
-            let worst_x = heightmap.origin.x + (f64::from(ix) + 0.5) * cell;
-            let worst_y = heightmap.origin.y + (f64::from(iy) + 0.5) * cell;
-            let worst_cell_z = heightmap.data[(iy as usize) * cols + ix as usize];
+            let worst_x = layout.origin_x + (f64::from(ix) + 0.5) * cell;
+            let worst_y = layout.origin_y + (f64::from(iy) + 0.5) * cell;
+            let worst_cell_z = field.surface_z(ix, iy);
             RapidCheck::Collision {
                 worst_x,
                 worst_y,
@@ -229,6 +228,7 @@ mod tests {
     use crate::gcode::preview::{MoveKind, Pose3, ToolpathSegment};
     use crate::geometry::Point2;
     use crate::sim::diagnostics::SimDiagnostics;
+    use crate::sim::heightmap::Heightmap;
     use crate::sim::sweep::sweep_range;
 
     fn pose(x: f64, y: f64, z: f64) -> Pose3 {
@@ -496,6 +496,39 @@ mod tests {
             }
             other @ RapidCheck::Clear => panic!("expected Shank collision, got {other:?}"),
         }
+    }
+
+    /// The `SurfaceField` seam: the rapid check returns a byte-identical
+    /// `RapidCheck` whether the surface is a `Heightmap` or the `DexelField`
+    /// mirror of it. Covers both the tip pass (uncut stock) and the
+    /// shank pass (tall walls beside a cleared channel).
+    #[test]
+    fn dexel_surface_matches_heightmap_rapid_check() {
+        use crate::sim::dexel::DexelField;
+        let holder = holder_20mm_dia();
+        let mut map = fresh_map(50, 50, 50.0);
+        // 8 mm-wide channel down to z=0; tall (z=50) walls on either side.
+        for ix in 0..50 {
+            for iy in 21..=28 {
+                map.lower_at(ix, iy, 0.0);
+            }
+        }
+        let df = DexelField::from_heightmap(&map, -1000.0);
+        let small_endmill = ToolProfile::Endmill { r: 2.0 };
+        // Shank-collision rapid (tip clears the channel, holder hits walls).
+        let shank = rapid(pose(5.0, 25.0, 10.0), pose(45.0, 25.0, 10.0));
+        assert_eq!(
+            check_rapid_against_stock(&map, &shank, &small_endmill, Some(&holder)),
+            check_rapid_against_stock(&df, &shank, &small_endmill, Some(&holder)),
+            "shank-pass rapid check must be identical on the dexel mirror",
+        );
+        // Tip-collision rapid straight through the tall wall.
+        let tip = rapid(pose(5.0, 5.0, 10.0), pose(45.0, 5.0, 10.0));
+        assert_eq!(
+            check_rapid_against_stock(&map, &tip, &small_endmill, Some(&holder)),
+            check_rapid_against_stock(&df, &tip, &small_endmill, Some(&holder)),
+            "tip-pass rapid check must be identical on the dexel mirror",
+        );
     }
 
     #[test]

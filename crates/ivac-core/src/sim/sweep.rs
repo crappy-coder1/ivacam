@@ -29,6 +29,7 @@
 )]
 
 use crate::gcode::preview::{MoveKind, Pose3, ToolpathSegment};
+use crate::geometry::Point2;
 use crate::pipeline::CancelToken;
 use crate::project::Fixture;
 use crate::sim::dexel::DexelField;
@@ -69,7 +70,7 @@ pub fn sweep_segment(
     let shifted = apply_dragoff_offset(segment, profile);
     let effective = shifted.as_ref().unwrap_or(segment);
     run_segment_warnings(
-        heightmap,
+        &*heightmap,
         effective,
         profile,
         segment_idx,
@@ -121,7 +122,7 @@ pub fn sweep_segment_partial(
         let shifted = apply_dragoff_offset(segment, profile);
         let effective = shifted.as_ref().unwrap_or(segment);
         run_segment_warnings(
-            heightmap,
+            &*heightmap,
             effective,
             profile,
             segment_idx,
@@ -155,8 +156,8 @@ pub fn sweep_segment_partial(
 /// partial-carve path can run it on the original segment (full-length
 /// geometry) and skip the carve.
 #[allow(clippy::too_many_arguments)]
-fn run_segment_warnings(
-    heightmap: &Heightmap,
+fn run_segment_warnings<S: SurfaceField>(
+    field: &S,
     segment: &ToolpathSegment,
     profile: &ToolProfile,
     segment_idx: usize,
@@ -187,7 +188,7 @@ fn run_segment_warnings(
             wall_z,
             required_clearance_mm,
             cells,
-        } = check_segment_holder_against_walls(heightmap, segment, holder)
+        } = check_segment_holder_against_walls(field, segment, holder)
         {
             diagnostics.push(SimWarning::HolderCollision {
                 segment_idx,
@@ -206,7 +207,7 @@ fn run_segment_warnings(
             worst_cell_z,
             rapid_pz,
             subkind,
-        } = check_rapid_against_stock(heightmap, segment, profile, holder)
+        } = check_rapid_against_stock(field, segment, profile, holder)
         {
             // Map the rapid_check subkind (Tip vs Shank) onto the
             // serialized warning so the user knows whether to lower
@@ -370,14 +371,14 @@ fn apply_dragoff_offset(
     Some(shifted)
 }
 
-/// Partial carve for non-flat profiles: walk the same cells the
-/// full segment would touch, compute `(r, t_real)` against the real
-/// chord, and lower the cell only when `t_real ∈ [t_start, t_end]`.
-/// This preserves bitwise-identical final state across
-/// `[0..t][t..1]` partial pairs vs. a single `[0..1]` sweep, because
-/// every cell carved by either partial sees the same `cutter_pz +
-/// profile.eval(r)` it would see in the full sweep.
-#[allow(clippy::too_many_lines)]
+/// Partial carve for the generic [`CarveTarget`]: lower every cell the full
+/// segment's chunk `[t_start, t_end]` is responsible for, top-down. This
+/// preserves bitwise-identical final state across `[0..t][t..1]` partial
+/// pairs vs. a single `[0..1]` sweep, because every cell carved by either
+/// partial sees the same `cutter_pz + profile.eval(r)` it would see in the
+/// full sweep. The delicate cell-ownership walk lives in
+/// [`for_each_swept_cell_partial`]; this only applies the engagement-depth
+/// clamp and the monotone lower.
 fn sweep_chord_carve_partial<T: CarveTarget>(
     target: &mut T,
     segment: &ToolpathSegment,
@@ -404,122 +405,84 @@ fn sweep_chord_carve_partial<T: CarveTarget>(
         return 0;
     }
     let layout = target.carve_layout();
-    let dx = to.x - from.x;
-    let dy = to.y - from.y;
-    let len_sq = dx * dx + dy * dy;
-    let pure_plunge = len_sq < 1e-12;
-    // This partial is responsible for the boundary-clamped cells at
-    // t<0 only when it covers t=0, and at t>1 only when it covers
-    // t=1. Otherwise some other partial owns those cells.
-    let owns_t_lo = t_start <= 1e-9;
-    let owns_t_hi = t_end >= 1.0 - 1e-9;
-
-    // AABB inflated by r_tool. For the boundary-owning partials, the
-    // footprint extends past the chord endpoint by r_tool (the
-    // endpoint-clamped band carved by `t.clamp(0,1)` in
-    // `for_each_swept_cell`).
-    let p_start_x = from.x + dx * t_start;
-    let p_start_y = from.y + dy * t_start;
-    let p_end_x = from.x + dx * t_end;
-    let p_end_y = from.y + dy * t_end;
-    let mut min_x = p_start_x.min(p_end_x) - r_tool;
-    let mut max_x = p_start_x.max(p_end_x) + r_tool;
-    let mut min_y = p_start_y.min(p_end_y) - r_tool;
-    let mut max_y = p_start_y.max(p_end_y) + r_tool;
-    if owns_t_lo {
-        min_x = min_x.min(from.x - r_tool);
-        max_x = max_x.max(from.x + r_tool);
-        min_y = min_y.min(from.y - r_tool);
-        max_y = max_y.max(from.y + r_tool);
-    }
-    if owns_t_hi {
-        min_x = min_x.min(to.x - r_tool);
-        max_x = max_x.max(to.x + r_tool);
-        min_y = min_y.min(to.y - r_tool);
-        max_y = max_y.max(to.y + r_tool);
-    }
-    let Some((ix0, iy0, ix1, iy1)) = world_aabb_to_cells(&layout, min_x, min_y, max_x, max_y)
-    else {
-        return 0;
-    };
-
-    let cell = layout.cell;
-    let r_tool_sq = r_tool * r_tool;
     // Engagement-depth clamp — same semantics as `sweep_chord_carve`.
     let depth_floor_z = profile.max_engagement_depth().map(|d| top_z - f64::from(d));
     let mut touched = 0u32;
-    for iy in iy0..=iy1 {
-        let cy = layout.origin_y + (iy as f64 + 0.5) * cell;
-        // Clip the row to the full segment's stadium x-extent.
-        // Every cell this partial carves (interior chunk + any owned end
-        // cap) is within r_tool of the full [from, to] segment, so the
-        // full-segment stadium is a valid superset; the per-cell t-range
-        // and `r_sq > r_tool_sq` checks below stay the correctness gate.
-        let Some((rx0, rx1)) = swept_row_cell_range(
-            &layout,
-            from,
-            to,
-            r_tool,
-            r_tool_sq,
-            pure_plunge,
-            cy,
-            ix0,
-            ix1,
-        ) else {
-            continue;
-        };
-        for ix in rx0..=rx1 {
-            let cx = layout.origin_x + (ix as f64 + 0.5) * cell;
-            let (r_sq, cutter_pz) = if pure_plunge {
-                // Pure plunge: t is degenerate; clamp/restrict by the
-                // Z range corresponding to [t_start..t_end].
-                let ex = cx - from.x;
-                let ey = cy - from.y;
-                let lo_z = from.z + (to.z - from.z) * t_start;
-                let hi_z = from.z + (to.z - from.z) * t_end;
-                (ex * ex + ey * ey, lo_z.min(hi_z))
-            } else {
-                // Match `for_each_swept_cell`'s endpoint-clamp
-                // semantics: cells past the segment ends get t=0 or
-                // t=1 (the endpoint depth). This partial OWNS:
-                //   * t_raw in [t_start, t_end] (interior chunk)
-                //   * t_raw < 0 when owns_t_lo (start endpoint cap)
-                //   * t_raw > 1 when owns_t_hi (end endpoint cap)
-                // Other ranges are someone else's partial to carve.
-                let t_raw = ((cx - from.x) * dx + (cy - from.y) * dy) / len_sq;
-                let in_interior = t_raw >= t_start && t_raw <= t_end;
-                let in_lo_cap = owns_t_lo && t_raw < 0.0;
-                let in_hi_cap = owns_t_hi && t_raw > 1.0;
-                if !(in_interior || in_lo_cap || in_hi_cap) {
-                    continue;
-                }
-                let t = t_raw.clamp(0.0, 1.0);
-                let px = from.x + t * dx;
-                let py = from.y + t * dy;
-                let ex = cx - px;
-                let ey = cy - py;
-                (ex * ex + ey * ey, from.z + (to.z - from.z) * t)
-            };
-            if r_sq > r_tool_sq {
-                continue;
-            }
-            // r is bounded by r_tool ≤ tool diameter / 2, so the f32 cast
-            // here cannot overflow (matches `for_each_swept_cell`).
-            let dz = if profile.is_flat_bottom() {
-                0.0_f32
-            } else {
-                let r = r_sq.sqrt() as f32;
-                let Some(dz) = profile.eval(r) else {
-                    continue;
-                };
-                dz
-            };
+    for_each_swept_cell_partial(
+        &layout,
+        segment,
+        profile,
+        t_start,
+        t_end,
+        |ix, iy, _r, cutter_pz, dz| {
             let clamped_pz = depth_floor_z.map_or(cutter_pz, |floor| cutter_pz.max(floor));
             let surface_z = clamped_pz as f32 + dz;
             target.carve_top_down(ix, iy, surface_z);
             touched += 1;
-        }
+        },
+    );
+    touched
+}
+
+/// Undercut-aware partial carve into a [`DexelField`] — the partial-`t`
+/// sibling of [`sweep_chord_carve_dexel`], sharing the cell-ownership walk
+/// with [`sweep_chord_carve_partial`] via [`for_each_swept_cell_partial`] so
+/// the 60 fps partial-advance sim can grow undercuts without drift. For every
+/// non-form tool `eval_interval` yields `[eval(r), +∞]`, so this reduces to
+/// the same top-down monotone-min as the heightmap partial carve
+/// (byte-identical top, sidecar untouched); only a `FormProfile`'s disk /
+/// dovetail band takes the interior-removal slow path.
+pub fn sweep_chord_carve_partial_dexel(
+    field: &mut DexelField,
+    segment: &ToolpathSegment,
+    profile: &ToolProfile,
+    t_start: f64,
+    t_end: f64,
+) -> u32 {
+    if matches!(segment.kind, MoveKind::Rapid) {
+        return 0;
     }
+    let r_tool = profile.radius() as f64;
+    if r_tool <= 0.0 {
+        return 0;
+    }
+    let shifted = apply_dragoff_offset(segment, profile);
+    let segment = shifted.as_ref().unwrap_or(segment);
+    let from = &segment.from;
+    let to = &segment.to;
+    let top_z = f64::from(field.top_z);
+    if from.z >= top_z && to.z >= top_z {
+        return 0;
+    }
+    let layout = field.carve_layout();
+    let depth_floor_z = profile.max_engagement_depth().map(|d| top_z - f64::from(d));
+    let mut touched = 0u32;
+    for_each_swept_cell_partial(
+        &layout,
+        segment,
+        profile,
+        t_start,
+        t_end,
+        |ix, iy, r, cutter_pz, _dz| {
+            // Mirror of `sweep_chord_carve_dexel`'s per-cell write: take both
+            // interval bounds from `eval_interval` so the finite ceiling stays
+            // consistent with the lower surface. `for_each_swept_cell_partial`
+            // already skipped cells the tool can't reach, so this is `Some`.
+            let Some((lo, hi)) = profile.eval_interval(r) else {
+                return;
+            };
+            let clamped_pz = depth_floor_z.map_or(cutter_pz, |floor| cutter_pz.max(floor));
+            let pz = clamped_pz as f32;
+            let removed_lo = pz + lo;
+            let removed_hi = if hi.is_infinite() {
+                f32::INFINITY
+            } else {
+                pz + hi
+            };
+            field.carve_cell(ix, iy, removed_lo, removed_hi);
+            touched += 1;
+        },
+    );
     touched
 }
 
@@ -543,6 +506,19 @@ impl HeightmapLayout {
             cell: h.cell,
             cols: h.cols,
             rows: h.rows,
+        }
+    }
+
+    /// Grid layout for any [`SurfaceField`] (a `Heightmap` or a `DexelField`),
+    /// so the diagnostic passes can build their swept-cell walk from either.
+    pub(super) fn of_surface<S: SurfaceField>(f: &S) -> Self {
+        let origin = f.origin();
+        Self {
+            origin_x: origin.x,
+            origin_y: origin.y,
+            cell: f.cell(),
+            cols: f.cols(),
+            rows: f.rows(),
         }
     }
 }
@@ -604,6 +580,86 @@ impl CarveTarget for DexelField {
         // Top-reaching removal ⇒ the fast path, which is monotone-min on the
         // dense top — byte-identical to `Heightmap::lower_at_unchecked`.
         self.carve_cell(ix, iy, surface_z, f32::INFINITY);
+    }
+}
+
+/// Read-only view of a material field's dense top surface and grid, shared by
+/// the diagnostic passes so the holder / rapid checks run identically against
+/// a legacy [`Heightmap`] or a [`DexelField`]. Those checks only ever read the
+/// highest solid Z per column — the "wall" a holder or a rapid could strike —
+/// which both fields expose (`Heightmap::data` / `DexelField::top`). An
+/// undercut void *below* the top is invisible to a holder, so the top surface
+/// is exactly the right thing to test.
+pub trait SurfaceField {
+    /// Grid origin (min-XY corner of cell `(0, 0)`).
+    fn origin(&self) -> Point2;
+    /// Square cell size in world units.
+    fn cell(&self) -> f64;
+    /// Column count (along X).
+    fn cols(&self) -> u32;
+    /// Row count (along Y).
+    fn rows(&self) -> u32;
+    /// Uncut stock-top plane.
+    fn surface_top_z(&self) -> f32;
+    /// Highest solid Z at cell `(ix, iy)`. The caller keeps `(ix, iy)` in
+    /// bounds (the diagnostic walks clamp to the grid rectangle).
+    fn surface_z(&self, ix: u32, iy: u32) -> f32;
+}
+
+impl SurfaceField for Heightmap {
+    #[inline]
+    fn origin(&self) -> Point2 {
+        self.origin
+    }
+    #[inline]
+    fn cell(&self) -> f64 {
+        self.cell
+    }
+    #[inline]
+    fn cols(&self) -> u32 {
+        self.cols
+    }
+    #[inline]
+    fn rows(&self) -> u32 {
+        self.rows
+    }
+    #[inline]
+    fn surface_top_z(&self) -> f32 {
+        self.top_z
+    }
+    #[inline]
+    fn surface_z(&self, ix: u32, iy: u32) -> f32 {
+        self.data[(iy as usize) * (self.cols as usize) + ix as usize]
+    }
+}
+
+impl SurfaceField for DexelField {
+    #[inline]
+    fn origin(&self) -> Point2 {
+        self.origin
+    }
+    #[inline]
+    fn cell(&self) -> f64 {
+        self.cell
+    }
+    #[inline]
+    fn cols(&self) -> u32 {
+        self.cols
+    }
+    #[inline]
+    fn rows(&self) -> u32 {
+        self.rows
+    }
+    #[inline]
+    fn surface_top_z(&self) -> f32 {
+        self.top_z
+    }
+    #[inline]
+    fn surface_z(&self, ix: u32, iy: u32) -> f32 {
+        // Dense top mirrors `Heightmap::data`; on an undercut column it still
+        // holds the highest solid surface (`spans.last().hi`), the wall a
+        // holder would hit.
+        self.top_at(ix, iy)
     }
 }
 
@@ -807,6 +863,144 @@ pub(super) fn for_each_swept_cell<F>(
     }
 }
 
+/// Partial-segment analogue of [`for_each_swept_cell`]: walk exactly the
+/// cells the chunk `[t_start, t_end]` of `segment` is responsible for — the
+/// interior cells plus the endpoint caps this partial owns — invoking `body`
+/// with the per-cell `(ix, iy, r, cutter_pz, dz)`. The caller supplies the
+/// already-dragoff-shifted segment and applies the engagement-depth clamp;
+/// this walker only decides *which* cells and at what `(r, cutter_pz, dz)`.
+///
+/// Shared by [`sweep_chord_carve_partial`] (top-down) and
+/// [`sweep_chord_carve_partial_dexel`] (interval) so the drift-free
+/// ownership logic that keeps `[0..t][t..1]` splits bitwise-identical to a
+/// single `[0..1]` sweep lives in exactly one place.
+#[allow(clippy::too_many_lines)]
+pub(super) fn for_each_swept_cell_partial<F>(
+    layout: &HeightmapLayout,
+    segment: &ToolpathSegment,
+    profile: &ToolProfile,
+    t_start: f64,
+    t_end: f64,
+    mut body: F,
+) where
+    F: FnMut(u32, u32, f32, f64, f32),
+{
+    let r_tool = profile.radius() as f64;
+    if r_tool <= 0.0 {
+        return;
+    }
+    let from = &segment.from;
+    let to = &segment.to;
+    let dx = to.x - from.x;
+    let dy = to.y - from.y;
+    let len_sq = dx * dx + dy * dy;
+    let pure_plunge = len_sq < 1e-12;
+    // This partial is responsible for the boundary-clamped cells at
+    // t<0 only when it covers t=0, and at t>1 only when it covers
+    // t=1. Otherwise some other partial owns those cells.
+    let owns_t_lo = t_start <= 1e-9;
+    let owns_t_hi = t_end >= 1.0 - 1e-9;
+
+    // AABB inflated by r_tool. For the boundary-owning partials, the
+    // footprint extends past the chord endpoint by r_tool (the
+    // endpoint-clamped band carved by `t.clamp(0,1)` below).
+    let p_start_x = from.x + dx * t_start;
+    let p_start_y = from.y + dy * t_start;
+    let p_end_x = from.x + dx * t_end;
+    let p_end_y = from.y + dy * t_end;
+    let mut min_x = p_start_x.min(p_end_x) - r_tool;
+    let mut max_x = p_start_x.max(p_end_x) + r_tool;
+    let mut min_y = p_start_y.min(p_end_y) - r_tool;
+    let mut max_y = p_start_y.max(p_end_y) + r_tool;
+    if owns_t_lo {
+        min_x = min_x.min(from.x - r_tool);
+        max_x = max_x.max(from.x + r_tool);
+        min_y = min_y.min(from.y - r_tool);
+        max_y = max_y.max(from.y + r_tool);
+    }
+    if owns_t_hi {
+        min_x = min_x.min(to.x - r_tool);
+        max_x = max_x.max(to.x + r_tool);
+        min_y = min_y.min(to.y - r_tool);
+        max_y = max_y.max(to.y + r_tool);
+    }
+    let Some((ix0, iy0, ix1, iy1)) = world_aabb_to_cells(layout, min_x, min_y, max_x, max_y) else {
+        return;
+    };
+
+    let cell = layout.cell;
+    let r_tool_sq = r_tool * r_tool;
+    let flat_bottom = profile.is_flat_bottom();
+    for iy in iy0..=iy1 {
+        let cy = layout.origin_y + (iy as f64 + 0.5) * cell;
+        // Clip the row to the full segment's stadium x-extent.
+        // Every cell this partial carves (interior chunk + any owned end
+        // cap) is within r_tool of the full [from, to] segment, so the
+        // full-segment stadium is a valid superset; the per-cell t-range
+        // and `r_sq > r_tool_sq` checks below stay the correctness gate.
+        let Some((rx0, rx1)) = swept_row_cell_range(
+            layout,
+            from,
+            to,
+            r_tool,
+            r_tool_sq,
+            pure_plunge,
+            cy,
+            ix0,
+            ix1,
+        ) else {
+            continue;
+        };
+        for ix in rx0..=rx1 {
+            let cx = layout.origin_x + (ix as f64 + 0.5) * cell;
+            let (r_sq, cutter_pz) = if pure_plunge {
+                // Pure plunge: t is degenerate; clamp/restrict by the
+                // Z range corresponding to [t_start..t_end].
+                let ex = cx - from.x;
+                let ey = cy - from.y;
+                let lo_z = from.z + (to.z - from.z) * t_start;
+                let hi_z = from.z + (to.z - from.z) * t_end;
+                (ex * ex + ey * ey, lo_z.min(hi_z))
+            } else {
+                // Match `for_each_swept_cell`'s endpoint-clamp
+                // semantics: cells past the segment ends get t=0 or
+                // t=1 (the endpoint depth). This partial OWNS:
+                //   * t_raw in [t_start, t_end] (interior chunk)
+                //   * t_raw < 0 when owns_t_lo (start endpoint cap)
+                //   * t_raw > 1 when owns_t_hi (end endpoint cap)
+                // Other ranges are someone else's partial to carve.
+                let t_raw = ((cx - from.x) * dx + (cy - from.y) * dy) / len_sq;
+                let in_interior = t_raw >= t_start && t_raw <= t_end;
+                let in_lo_cap = owns_t_lo && t_raw < 0.0;
+                let in_hi_cap = owns_t_hi && t_raw > 1.0;
+                if !(in_interior || in_lo_cap || in_hi_cap) {
+                    continue;
+                }
+                let t = t_raw.clamp(0.0, 1.0);
+                let px = from.x + t * dx;
+                let py = from.y + t * dy;
+                let ex = cx - px;
+                let ey = cy - py;
+                (ex * ex + ey * ey, from.z + (to.z - from.z) * t)
+            };
+            if r_sq > r_tool_sq {
+                continue;
+            }
+            // r is bounded by r_tool ≤ tool diameter / 2, so the f32 cast
+            // here cannot overflow (matches `for_each_swept_cell`).
+            if flat_bottom {
+                body(ix, iy, 0.0, cutter_pz, 0.0);
+            } else {
+                let r = r_sq.sqrt() as f32;
+                let Some(dz) = profile.eval(r) else {
+                    continue;
+                };
+                body(ix, iy, r, cutter_pz, dz);
+            }
+        }
+    }
+}
+
 /// Apply every segment in `segments[from_idx..to_idx]` to the heightmap.
 /// Returns the total cell-write count; useful as a perf signal in tests.
 /// `fixtures` is forwarded to every per-segment check; pass `&[]` for a
@@ -955,6 +1149,173 @@ pub fn sweep_range_cached(
             // the warnings this segment pushed for future replay.
             let before = diagnostics.warnings.len();
             total += sweep_segment(heightmap, seg, profile, idx, fixtures, holder, diagnostics);
+            let produced = diagnostics.warnings[before..].to_vec();
+            cache.by_segment.insert(idx, produced);
+        }
+    }
+    total
+}
+
+// ─────────────────────── DexelField sweep entry points ──────────────────────
+// Undercut-capable mirrors of the `Heightmap` `sweep_*` family: identical
+// diagnostics (holder / fixture / rapid, run against the dense top surface via
+// `SurfaceField`) but carving through the interval-aware
+// `sweep_chord_carve_dexel` / `sweep_chord_carve_partial_dexel` so a form tool
+// grows a genuine undercut. For every non-form tool these reduce to the same
+// top-down result as the `Heightmap` path. Not yet wired into the live sim —
+// landing #5.2 flips the WASM `Simulator` onto these.
+
+/// [`sweep_segment`] for a [`DexelField`]. Runs the once-per-segment
+/// diagnostics against the dexel's top surface, then carves the interval.
+#[allow(clippy::too_many_arguments)]
+pub fn sweep_segment_dexel(
+    field: &mut DexelField,
+    segment: &ToolpathSegment,
+    profile: &ToolProfile,
+    segment_idx: usize,
+    fixtures: &[Fixture],
+    holder: Option<&HolderProfile>,
+    diagnostics: &mut SimDiagnostics,
+) -> u32 {
+    let shifted = apply_dragoff_offset(segment, profile);
+    let effective = shifted.as_ref().unwrap_or(segment);
+    run_segment_warnings(
+        &*field,
+        effective,
+        profile,
+        segment_idx,
+        fixtures,
+        holder,
+        diagnostics,
+    );
+    sweep_chord_carve_dexel(field, segment, profile)
+}
+
+/// [`sweep_segment_partial`] for a [`DexelField`] — carves only the chunk
+/// `[t_start, t_end]`, firing the diagnostics once at `t_start ≈ 0`.
+#[allow(clippy::too_many_arguments)]
+pub fn sweep_segment_partial_dexel(
+    field: &mut DexelField,
+    segment: &ToolpathSegment,
+    profile: &ToolProfile,
+    segment_idx: usize,
+    fixtures: &[Fixture],
+    holder: Option<&HolderProfile>,
+    diagnostics: &mut SimDiagnostics,
+    t_start: f64,
+    t_end: f64,
+) -> u32 {
+    let lo = t_start.clamp(0.0, 1.0);
+    let hi = t_end.clamp(0.0, 1.0);
+    if hi <= lo {
+        return 0;
+    }
+    if lo <= 1e-9 {
+        let shifted = apply_dragoff_offset(segment, profile);
+        let effective = shifted.as_ref().unwrap_or(segment);
+        run_segment_warnings(
+            &*field,
+            effective,
+            profile,
+            segment_idx,
+            fixtures,
+            holder,
+            diagnostics,
+        );
+    }
+    if matches!(segment.kind, MoveKind::Rapid) {
+        return 0;
+    }
+    sweep_chord_carve_partial_dexel(field, segment, profile, lo, hi)
+}
+
+/// [`sweep_range`] for a [`DexelField`].
+#[allow(clippy::too_many_arguments)]
+pub fn sweep_range_dexel(
+    field: &mut DexelField,
+    segments: &[ToolpathSegment],
+    from_idx: usize,
+    to_idx: usize,
+    profile: &ToolProfile,
+    fixtures: &[Fixture],
+    holder: Option<&HolderProfile>,
+    diagnostics: &mut SimDiagnostics,
+) -> u32 {
+    sweep_range_cancellable_dexel(
+        field,
+        segments,
+        from_idx,
+        to_idx,
+        profile,
+        fixtures,
+        holder,
+        diagnostics,
+        None,
+    )
+}
+
+/// Cancellable variant of [`sweep_range_dexel`], mirroring
+/// [`sweep_range_cancellable`].
+#[allow(clippy::too_many_arguments)]
+pub fn sweep_range_cancellable_dexel(
+    field: &mut DexelField,
+    segments: &[ToolpathSegment],
+    from_idx: usize,
+    to_idx: usize,
+    profile: &ToolProfile,
+    fixtures: &[Fixture],
+    holder: Option<&HolderProfile>,
+    diagnostics: &mut SimDiagnostics,
+    cancel: Option<&CancelToken>,
+) -> u32 {
+    let lo = from_idx.min(segments.len());
+    let hi = to_idx.min(segments.len());
+    let mut total = 0u32;
+    for (offset, seg) in segments[lo..hi].iter().enumerate() {
+        if offset % 100 == 0 && cancel.is_some_and(CancelToken::is_cancelled) {
+            return total;
+        }
+        total += sweep_segment_dexel(
+            field,
+            seg,
+            profile,
+            lo + offset,
+            fixtures,
+            holder,
+            diagnostics,
+        );
+    }
+    total
+}
+
+/// [`sweep_range_cached`] for a [`DexelField`]: replay cached warnings on a
+/// hit (carve-only), compute + capture them on a miss. The carve always runs,
+/// so the field is identical to a plain [`sweep_range_dexel`].
+#[allow(clippy::too_many_arguments)]
+pub fn sweep_range_cached_dexel(
+    field: &mut DexelField,
+    segments: &[ToolpathSegment],
+    from_idx: usize,
+    to_idx: usize,
+    profile: &ToolProfile,
+    fixtures: &[Fixture],
+    holder: Option<&HolderProfile>,
+    diagnostics: &mut SimDiagnostics,
+    cache: &mut SegmentWarningCache,
+) -> u32 {
+    let lo = from_idx.min(segments.len());
+    let hi = to_idx.min(segments.len());
+    let mut total = 0u32;
+    for (offset, seg) in segments[lo..hi].iter().enumerate() {
+        let idx = lo + offset;
+        if let Some(cached) = cache.by_segment.get(&idx) {
+            for w in cached {
+                diagnostics.push(w.clone());
+            }
+            total += sweep_chord_carve_dexel(field, seg, profile);
+        } else {
+            let before = diagnostics.warnings.len();
+            total += sweep_segment_dexel(field, seg, profile, idx, fixtures, holder, diagnostics);
             let produced = diagnostics.warnings[before..].to_vec();
             cache.by_segment.insert(idx, produced);
         }
@@ -2274,5 +2635,346 @@ mod tests {
                 assert_eq!(a.to_bits(), b.to_bits(), "{profile:?}: surface diverged");
             }
         }
+    }
+
+    // --- Landing #5.1: DexelField range / partial sweep + diagnostics seam ---
+
+    /// A multi-segment range sweep drives a `DexelField` (via
+    /// `sweep_range_dexel`) to a byte-identical top surface, matching touched
+    /// count and dirty AABB, and never populates the sidecar — for every
+    /// non-form tool. The range-level analogue of
+    /// `dexel_full_carve_matches_heightmap_bitwise`.
+    #[test]
+    fn dexel_range_carve_matches_heightmap_bitwise_for_non_form() {
+        let segments = vec![
+            seg(MoveKind::Cut, pose(4.0, 8.0, -1.0), pose(30.0, 12.0, -1.5)),
+            // Rapid above stock — no carve, no collision.
+            seg(
+                MoveKind::Rapid,
+                pose(30.0, 12.0, 5.0),
+                pose(10.0, 30.0, 5.0),
+            ),
+            seg(
+                MoveKind::Plunge,
+                pose(10.0, 30.0, 0.0),
+                pose(10.0, 30.0, -2.0),
+            ),
+            seg(
+                MoveKind::Cut,
+                pose(10.0, 30.0, -2.0),
+                pose(34.0, 30.0, -0.8),
+            ),
+        ];
+        let profiles = [
+            ("endmill", ToolProfile::Endmill { r: 2.0 }),
+            ("ballnose", ToolProfile::BallNose { r: 2.5 }),
+            (
+                "vbit",
+                ToolProfile::VBit {
+                    r: 3.0,
+                    tip_r: 0.2,
+                    half_angle_rad: 0.6,
+                },
+            ),
+        ];
+        for (name, profile) in &profiles {
+            let mut hm = fresh_map(40, 40);
+            let mut dh = diag();
+            let t_hm = sweep_range(
+                &mut hm,
+                &segments,
+                0,
+                segments.len(),
+                profile,
+                &[],
+                None,
+                &mut dh,
+            );
+            let mut df = fresh_dexel();
+            let mut dd = diag();
+            let t_df = sweep_range_dexel(
+                &mut df,
+                &segments,
+                0,
+                segments.len(),
+                profile,
+                &[],
+                None,
+                &mut dd,
+            );
+            assert_eq!(t_hm, t_df, "{name}: touched diverged");
+            assert_eq!(
+                df.undercut_columns(),
+                0,
+                "{name}: non-form range sweep stays dense"
+            );
+            assert_eq!(df.dirty_aabb(), hm.dirty_aabb(), "{name}: dirty diverged");
+            for (a, b) in df.top().iter().zip(hm.data.iter()) {
+                assert_eq!(a.to_bits(), b.to_bits(), "{name}: surface diverged");
+            }
+        }
+    }
+
+    /// A form-tool range sweep grows a genuine undercut: the T-slot disk band
+    /// populates the sidecar. Proves the interval carve reaches through the
+    /// `sweep_range_dexel` entry point, not just the raw chord carve.
+    #[test]
+    fn dexel_range_form_tool_populates_undercut_sidecar() {
+        let profile = ToolProfile::FormProfile {
+            segments: vec![(0.0, 8.0), (4.0, 8.0), (4.0, 2.0), (12.0, 2.0)],
+        };
+        let segments = vec![
+            seg(
+                MoveKind::Plunge,
+                pose(20.0, 20.0, 0.0),
+                pose(20.0, 20.0, -5.0),
+            ),
+            seg(
+                MoveKind::Cut,
+                pose(20.0, 20.0, -5.0),
+                pose(30.0, 20.0, -5.0),
+            ),
+        ];
+        let mut df = fresh_dexel();
+        let mut d = diag();
+        let touched = sweep_range_dexel(
+            &mut df,
+            &segments,
+            0,
+            segments.len(),
+            &profile,
+            &[],
+            None,
+            &mut d,
+        );
+        assert!(touched > 0);
+        assert!(
+            df.undercut_columns() > 0,
+            "form-tool range sweep must grow undercuts"
+        );
+    }
+
+    /// The dexel partial-advance path is byte-identical to the heightmap
+    /// partial per slice, and summing slices reproduces the whole-segment
+    /// carve — the split-invariance the 60 fps sim relies on, now through the
+    /// public `sweep_segment_partial_dexel` entry point.
+    #[test]
+    fn dexel_segment_partial_matches_heightmap_and_is_split_invariant() {
+        let profile = ToolProfile::BallNose { r: 2.5 };
+        let segment = seg(MoveKind::Cut, pose(4.0, 6.0, -0.5), pose(32.0, 30.0, -2.2));
+        let seams = [0.0_f64, 0.17, 0.5, 0.83, 1.0];
+
+        for w in seams.windows(2) {
+            let (t0, t1) = (w[0], w[1]);
+            let mut hm = fresh_map(40, 40);
+            let mut dh = diag();
+            let t_hm =
+                sweep_segment_partial(&mut hm, &segment, &profile, 0, &[], None, &mut dh, t0, t1);
+            let mut df = fresh_dexel();
+            let mut dd = diag();
+            let t_df = sweep_segment_partial_dexel(
+                &mut df,
+                &segment,
+                &profile,
+                0,
+                &[],
+                None,
+                &mut dd,
+                t0,
+                t1,
+            );
+            assert_eq!(t_hm, t_df, "slice [{t0},{t1}]: touched diverged");
+            assert_eq!(df.dirty_aabb(), hm.dirty_aabb(), "slice [{t0},{t1}]: dirty");
+            for (a, b) in df.top().iter().zip(hm.data.iter()) {
+                assert_eq!(a.to_bits(), b.to_bits(), "slice [{t0},{t1}]: surface");
+            }
+        }
+
+        // Split carve (all slices) == whole-segment carve, on the dexel.
+        let mut whole = fresh_dexel();
+        let mut dw = diag();
+        sweep_segment_dexel(&mut whole, &segment, &profile, 0, &[], None, &mut dw);
+        let mut split = fresh_dexel();
+        let mut dsp = diag();
+        for w in seams.windows(2) {
+            sweep_segment_partial_dexel(
+                &mut split,
+                &segment,
+                &profile,
+                0,
+                &[],
+                None,
+                &mut dsp,
+                w[0],
+                w[1],
+            );
+        }
+        assert_eq!(split.undercut_columns(), 0);
+        assert_eq!(split.dirty_aabb(), whole.dirty_aabb());
+        for (a, b) in split.top().iter().zip(whole.top().iter()) {
+            assert_eq!(a.to_bits(), b.to_bits(), "split partial != whole");
+        }
+    }
+
+    /// `sweep_range_cached_dexel` replays cached warnings and re-carves to a
+    /// surface identical to the uncached `sweep_range_dexel` — the scrub-back
+    /// hot path stays correct on the dexel.
+    #[test]
+    fn sweep_range_cached_dexel_matches_uncached() {
+        let profile = ToolProfile::Endmill { r: 2.0 };
+        let segments = vec![
+            seg(MoveKind::Cut, pose(4.0, 10.0, -1.0), pose(30.0, 10.0, -1.0)),
+            seg(
+                MoveKind::Plunge,
+                pose(20.0, 20.0, 0.0),
+                pose(20.0, 20.0, -1.5),
+            ),
+            seg(MoveKind::Cut, pose(6.0, 25.0, -1.0), pose(34.0, 25.0, -1.0)),
+        ];
+        let mut plain = fresh_dexel();
+        let mut dp = diag();
+        let t_plain = sweep_range_dexel(
+            &mut plain,
+            &segments,
+            0,
+            segments.len(),
+            &profile,
+            &[],
+            None,
+            &mut dp,
+        );
+
+        // First cached pass populates the cache (miss path).
+        let mut cache = SegmentWarningCache::new();
+        let mut cached = fresh_dexel();
+        let mut dc = diag();
+        sweep_range_cached_dexel(
+            &mut cached,
+            &segments,
+            0,
+            segments.len(),
+            &profile,
+            &[],
+            None,
+            &mut dc,
+            &mut cache,
+        );
+        // Second cached pass replays from the cache (hit path).
+        let mut cached2 = fresh_dexel();
+        let mut dc2 = diag();
+        let t_cached2 = sweep_range_cached_dexel(
+            &mut cached2,
+            &segments,
+            0,
+            segments.len(),
+            &profile,
+            &[],
+            None,
+            &mut dc2,
+            &mut cache,
+        );
+
+        assert_eq!(t_plain, t_cached2, "cached-replay touched diverged");
+        for (a, b) in cached.top().iter().zip(plain.top().iter()) {
+            assert_eq!(
+                a.to_bits(),
+                b.to_bits(),
+                "cached miss-pass surface diverged"
+            );
+        }
+        for (a, b) in cached2.top().iter().zip(plain.top().iter()) {
+            assert_eq!(a.to_bits(), b.to_bits(), "cached hit-pass surface diverged");
+        }
+    }
+
+    /// A rapid through uncut stock raises exactly one `rapid_through_material`
+    /// warning via `sweep_range_dexel`, identical to the heightmap pipeline —
+    /// proving the rapid diagnostic reads the dexel surface through the
+    /// `SurfaceField` seam.
+    #[test]
+    fn dexel_range_emits_rapid_warning_like_heightmap() {
+        let segments = vec![
+            seg(MoveKind::Cut, pose(5.0, 10.0, -1.0), pose(15.0, 10.0, -1.0)),
+            seg(
+                MoveKind::Rapid,
+                pose(15.0, 20.0, -2.0),
+                pose(25.0, 20.0, -2.0),
+            ),
+            seg(
+                MoveKind::Plunge,
+                pose(20.0, 30.0, 0.0),
+                pose(20.0, 30.0, -1.0),
+            ),
+        ];
+        let profile = ToolProfile::Endmill { r: 2.0 };
+        let mut hm = fresh_map(40, 40);
+        let mut dh = diag();
+        sweep_range(
+            &mut hm,
+            &segments,
+            0,
+            segments.len(),
+            &profile,
+            &[],
+            None,
+            &mut dh,
+        );
+        let mut df = fresh_dexel();
+        let mut dd = diag();
+        sweep_range_dexel(
+            &mut df,
+            &segments,
+            0,
+            segments.len(),
+            &profile,
+            &[],
+            None,
+            &mut dd,
+        );
+        assert_eq!(dd.count("rapid_through_material"), 1);
+        assert_eq!(
+            dd.count("rapid_through_material"),
+            dh.count("rapid_through_material"),
+            "dexel rapid warning must match the heightmap pipeline",
+        );
+    }
+
+    /// A fixture collision raises a warning through `sweep_range_dexel` — the
+    /// fixture check is field-independent, but this proves the dexel entry
+    /// point wires it up.
+    #[test]
+    fn dexel_range_emits_fixture_warning() {
+        use crate::project::{Fixture, FixtureKind};
+        let segments = vec![seg(
+            MoveKind::Cut,
+            pose(0.0, 20.0, -1.0),
+            pose(40.0, 20.0, -1.0),
+        )];
+        let fixtures = vec![Fixture {
+            id: 11,
+            name: "clamp".into(),
+            kind: FixtureKind::Box {
+                width: 10.0,
+                depth: 10.0,
+            },
+            origin: (20.0, 20.0),
+            z_bottom: -2.0,
+            z_top: 5.0,
+            color: 0xFFA0_50C0,
+        }];
+        let profile = ToolProfile::Endmill { r: 2.0 };
+        let mut df = fresh_dexel();
+        let mut dd = diag();
+        sweep_range_dexel(
+            &mut df,
+            &segments,
+            0,
+            segments.len(),
+            &profile,
+            &fixtures,
+            None,
+            &mut dd,
+        );
+        assert_eq!(dd.count("fixture_collision"), 1);
     }
 }

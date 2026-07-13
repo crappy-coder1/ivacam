@@ -23,8 +23,8 @@
 #![allow(clippy::similar_names)]
 
 use crate::gcode::preview::ToolpathSegment;
-use crate::sim::heightmap::Heightmap;
 use crate::sim::holder::HolderProfile;
+use crate::sim::sweep::SurfaceField;
 
 #[allow(
     clippy::cast_possible_truncation,
@@ -79,8 +79,8 @@ pub struct HolderCollisionCell {
     // mutable `warnings` + per-cell state across helpers.
     clippy::too_many_lines
 )]
-pub fn check_segment_holder_against_walls(
-    heightmap: &Heightmap,
+pub fn check_segment_holder_against_walls<S: SurfaceField>(
+    field: &S,
     segment: &ToolpathSegment,
     holder: &HolderProfile,
 ) -> HolderCheck {
@@ -94,15 +94,16 @@ pub fn check_segment_holder_against_walls(
 
     // Skip moves that stay above the un-cut stock — the holder is
     // outside the material on every cell along the way.
-    let top_z = heightmap.top_z as f64;
+    let top_z = field.surface_top_z() as f64;
     if from.z >= top_z && to.z >= top_z {
         return HolderCheck::Clear;
     }
 
-    let cell = heightmap.cell;
+    let origin = field.origin();
+    let cell = field.cell();
     let inv_cell = 1.0 / cell;
-    let max_col = heightmap.cols.saturating_sub(1);
-    let max_row = heightmap.rows.saturating_sub(1);
+    let max_col = field.cols().saturating_sub(1);
+    let max_row = field.rows().saturating_sub(1);
 
     // AABB of the segment in XY, inflated by the holder's max radius.
     let min_x = from.x.min(to.x) - max_r;
@@ -110,14 +111,14 @@ pub fn check_segment_holder_against_walls(
     let min_y = from.y.min(to.y) - max_r;
     let max_y = from.y.max(to.y) + max_r;
 
-    let fx0 = (min_x - heightmap.origin.x) * inv_cell;
-    let fy0 = (min_y - heightmap.origin.y) * inv_cell;
-    let fx1 = (max_x - heightmap.origin.x) * inv_cell;
-    let fy1 = (max_y - heightmap.origin.y) * inv_cell;
+    let fx0 = (min_x - origin.x) * inv_cell;
+    let fy0 = (min_y - origin.y) * inv_cell;
+    let fx1 = (max_x - origin.x) * inv_cell;
+    let fy1 = (max_y - origin.y) * inv_cell;
     if fx1 < 0.0 || fy1 < 0.0 {
         return HolderCheck::Clear;
     }
-    if fx0 > heightmap.cols as f64 || fy0 > heightmap.rows as f64 {
+    if fx0 > field.cols() as f64 || fy0 > field.rows() as f64 {
         return HolderCheck::Clear;
     }
     let ix0 = fx0.floor().max(0.0) as u32;
@@ -140,7 +141,6 @@ pub fn check_segment_holder_against_walls(
     // envelope, not the wall.
     let cutting_r = holder.cutting_radius();
     let cutting_r_sq = cutting_r * cutting_r;
-    let cols = heightmap.cols as usize;
 
     // Collect EVERY offending cell, not just the worst-excess one.
     // The previous code kept a single (max-required) tuple — mid-range
@@ -154,9 +154,9 @@ pub fn check_segment_holder_against_walls(
     // Shares the helper the material sweep uses; the per-cell
     // `r_sq > max_r_sq` test below stays the correctness gate, so the
     // row range only has to be a superset.
-    let layout = crate::sim::sweep::HeightmapLayout::of(heightmap);
+    let layout = crate::sim::sweep::HeightmapLayout::of_surface(field);
     for iy in iy0..=iy1 {
-        let cy = heightmap.origin.y + (iy as f64 + 0.5) * cell;
+        let cy = origin.y + (iy as f64 + 0.5) * cell;
         let Some((rx0, rx1)) = crate::sim::sweep::swept_row_cell_range(
             &layout,
             from,
@@ -171,7 +171,7 @@ pub fn check_segment_holder_against_walls(
             continue;
         };
         for ix in rx0..=rx1 {
-            let cx = heightmap.origin.x + (ix as f64 + 0.5) * cell;
+            let cx = origin.x + (ix as f64 + 0.5) * cell;
             let (r_sq, cutter_pz) = if pure_plunge {
                 let ex = cx - from.x;
                 let ey = cy - from.y;
@@ -200,7 +200,7 @@ pub fn check_segment_holder_against_walls(
             let Some(holder_lower_z) = holder.lowest_z_for_radius(r) else {
                 continue;
             };
-            let cell_z = heightmap.data[(iy as usize) * cols + ix as usize];
+            let cell_z = field.surface_z(ix, iy);
             let wall_height = cell_z as f64 - cutter_pz;
             // Wall has to actually exist above the tip for the holder to
             // care; if `wall_height <= holder_lower_z` the holder is
@@ -210,8 +210,8 @@ pub fn check_segment_holder_against_walls(
             }
             let required = (wall_height - holder_lower_z) as f32;
             offenders.push(HolderCollisionCell {
-                cell_x: heightmap.origin.x + (ix as f64 + 0.5) * cell,
-                cell_y: heightmap.origin.y + (iy as f64 + 0.5) * cell,
+                cell_x: origin.x + (ix as f64 + 0.5) * cell,
+                cell_y: origin.y + (iy as f64 + 0.5) * cell,
                 wall_z: cell_z,
                 required_clearance_mm: required,
             });
@@ -244,6 +244,7 @@ mod tests {
     use crate::gcode::preview::{MoveKind, Pose3, ToolpathSegment};
     use crate::geometry::Point2;
     use crate::project::{Coolant, HolderShape, ToolEntry, ToolKind};
+    use crate::sim::heightmap::Heightmap;
 
     fn tool(
         diameter: f64,
@@ -500,6 +501,34 @@ mod tests {
                 "cell has zero required clearance: {c:?}",
             );
         }
+    }
+
+    /// The `SurfaceField` seam: the holder check returns a byte-identical
+    /// `HolderCheck` whether the surface is a `Heightmap` or the `DexelField`
+    /// mirror of it (`from_heightmap` copies the top surface exactly). This is
+    /// the diagnostics-fork resolution for landing #5.1 — no separate dexel
+    /// code path, one generic check reading the top surface.
+    #[test]
+    fn dexel_surface_matches_heightmap_holder_check() {
+        use crate::sim::dexel::DexelField;
+        let t = tool(
+            6.0,
+            Some(15.0),
+            Some(6.0),
+            Some(HolderShape::Cylinder {
+                diameter_mm: 20.0,
+                length_mm: 30.0,
+            }),
+        );
+        let holder = HolderProfile::from_tool(&t).expect("holder set");
+        let hm = build_pocket(60, 60, -30.0, 5.0);
+        let df = DexelField::from_heightmap(&hm, -1000.0);
+        let s = seg((5.0, 30.0, -25.0), (55.0, 30.0, -25.0));
+        assert_eq!(
+            check_segment_holder_against_walls(&hm, &s, &holder),
+            check_segment_holder_against_walls(&df, &s, &holder),
+            "holder check must be identical on a dexel mirror of the heightmap",
+        );
     }
 
     #[test]
