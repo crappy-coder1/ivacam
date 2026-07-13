@@ -127,6 +127,154 @@ impl SurfaceField {
         Self::new(origin, cell, cols, rows, z)
     }
 
+    /// Rasterize a triangle mesh into a target surface: a **Z-max height
+    /// buffer** over the mesh's XY footprint, then shifted so the mesh's
+    /// highest point sits at the stock top (`z = 0`) with everything below
+    /// carved downward — the same "drop the model onto the stock top"
+    /// convention [`SurfaceField::from_grayscale`] bakes in. Taking the max
+    /// Z per column yields the visible TOP surface, which is exactly what
+    /// the vertical drop-cutter in [`crate::cam::surface_mill`] should
+    /// follow; undercuts a 3-axis tool cannot reach are correctly ignored.
+    ///
+    /// `tris` are `[v0, v1, v2]` triangles of `[x, y, z]` in mm (Z up), as
+    /// [`crate::sim::stl::parse_stl`] returns. `cell` is the grid resolution
+    /// in mm; the grid is sized to the mesh's XY bounding box. Cells that no
+    /// triangle covers (holes, or the gap between a non-rectangular outline
+    /// and its bounding box) stay at [`SURFACE_TOP_Z`] — no relief there, so
+    /// a ball-nose probing them sees uncut stock and won't gouge below it.
+    ///
+    /// Returns `None` when the mesh has no positive-area XY footprint (empty,
+    /// or every triangle is a vertical sliver seen from above): there is no
+    /// surface to sample.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `cell <= 0`.
+    #[must_use]
+    pub fn from_mesh(tris: &[[[f32; 3]; 3]], cell: f64) -> Option<Self> {
+        assert!(cell > 0.0, "SurfaceField cell size must be > 0");
+
+        // XY bounding box over every vertex.
+        let mut min_x = f64::INFINITY;
+        let mut min_y = f64::INFINITY;
+        let mut max_x = f64::NEG_INFINITY;
+        let mut max_y = f64::NEG_INFINITY;
+        for tri in tris {
+            for v in tri {
+                min_x = min_x.min(v[0] as f64);
+                min_y = min_y.min(v[1] as f64);
+                max_x = max_x.max(v[0] as f64);
+                max_y = max_y.max(v[1] as f64);
+            }
+        }
+        // Empty, or the whole mesh collapses to a line/point in XY.
+        if !min_x.is_finite() || max_x <= min_x || max_y <= min_y {
+            return None;
+        }
+
+        let cols = (((max_x - min_x) / cell).ceil() as u32).max(1);
+        let rows = (((max_y - min_y) / cell).ceil() as u32).max(1);
+        let cols_us = cols as usize;
+        let rows_us = rows as usize;
+        // Max Z per cell; NEG_INFINITY marks "no triangle covered this cell".
+        let mut buf = vec![f32::NEG_INFINITY; cols_us * rows_us];
+
+        for tri in tris {
+            let (a, b, c) = (tri[0], tri[1], tri[2]);
+            let (ax, ay) = (a[0] as f64, a[1] as f64);
+            let (bx, by) = (b[0] as f64, b[1] as f64);
+            let (cx, cy) = (c[0] as f64, c[1] as f64);
+            // Signed double-area in XY (also the barycentric denominator).
+            // Skip vertical / degenerate triangles that project to ~zero
+            // area — their top edge Z is picked up by the horizontal
+            // triangles that share it.
+            let denom = (bx - ax) * (cy - ay) - (cx - ax) * (by - ay);
+            if denom.abs() < 1e-12 {
+                continue;
+            }
+
+            // Triangle XY bbox → the block of cell centers it can cover. A
+            // cell `(ix, iy)` centers at `min + (i + 0.5) * cell`, so invert
+            // that to bound the index range.
+            let tmin_x = ax.min(bx).min(cx);
+            let tmax_x = ax.max(bx).max(cx);
+            let tmin_y = ay.min(by).min(cy);
+            let tmax_y = ay.max(by).max(cy);
+            let ix_lo = (((tmin_x - min_x) / cell) - 0.5).ceil().max(0.0);
+            let iy_lo = (((tmin_y - min_y) / cell) - 0.5).ceil().max(0.0);
+            let ix_hi = (((tmax_x - min_x) / cell) - 0.5)
+                .floor()
+                .min((cols - 1) as f64);
+            let iy_hi = (((tmax_y - min_y) / cell) - 0.5)
+                .floor()
+                .min((rows - 1) as f64);
+            if ix_hi < ix_lo || iy_hi < iy_lo {
+                continue;
+            }
+            let (ix_lo, ix_hi) = (ix_lo as usize, ix_hi as usize);
+            let (iy_lo, iy_hi) = (iy_lo as usize, iy_hi as usize);
+
+            for iy in iy_lo..=iy_hi {
+                let py = min_y + (iy as f64 + 0.5) * cell;
+                for ix in ix_lo..=ix_hi {
+                    let px = min_x + (ix as f64 + 0.5) * cell;
+                    // Barycentric weights relative to vertex `c`.
+                    let l1 = ((by - cy) * (px - cx) + (cx - bx) * (py - cy)) / denom;
+                    let l2 = ((cy - ay) * (px - cx) + (ax - cx) * (py - cy)) / denom;
+                    let l3 = 1.0 - l1 - l2;
+                    // A small negative tolerance keeps cell centers that land
+                    // exactly on a shared edge claimed by at least one
+                    // triangle, so there are no seam holes. Double-covering an
+                    // edge cell is harmless under the Z-max reduction.
+                    const BARY_EPS: f64 = 1e-9;
+                    if l1 < -BARY_EPS || l2 < -BARY_EPS || l3 < -BARY_EPS {
+                        continue;
+                    }
+                    let z = (l1 * a[2] as f64 + l2 * b[2] as f64 + l3 * c[2] as f64) as f32;
+                    let idx = iy * cols_us + ix;
+                    if z > buf[idx] {
+                        buf[idx] = z;
+                    }
+                }
+            }
+        }
+
+        // The mesh's highest sampled point becomes the stock top.
+        let global_max = buf
+            .iter()
+            .copied()
+            .filter(|z| z.is_finite())
+            .fold(f32::NEG_INFINITY, f32::max);
+        if !global_max.is_finite() {
+            // Every triangle was degenerate in XY — nothing got covered.
+            return None;
+        }
+        let z: Vec<f32> = buf
+            .iter()
+            .map(|&v| {
+                if v.is_finite() {
+                    v - global_max
+                } else {
+                    SURFACE_TOP_Z
+                }
+            })
+            .collect();
+        Some(Self::new(Point2::new(min_x, min_y), cell, cols, rows, z))
+    }
+
+    /// Parse an STL byte stream (binary or ASCII) and rasterize it into a
+    /// target surface via [`SurfaceField::from_mesh`]. `cell` is the grid
+    /// resolution in mm. Returns `Ok(None)` when the mesh has no XY footprint
+    /// to sample (see [`SurfaceField::from_mesh`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::sim::stl::StlError`] if the bytes are not a valid STL.
+    pub fn from_stl(bytes: &[u8], cell: f64) -> Result<Option<Self>, crate::sim::stl::StlError> {
+        let tris = crate::sim::stl::parse_stl(bytes)?;
+        Ok(Self::from_mesh(&tris, cell))
+    }
+
     /// Target Z at cell `(ix, iy)`. Returns [`SURFACE_TOP_Z`] for indices
     /// outside the grid (no relief there).
     #[must_use]
@@ -205,6 +353,10 @@ mod tests {
 
     fn approx(a: f32, b: f32) {
         assert!((a - b).abs() < 1e-5, "expected {b}, got {a}");
+    }
+
+    fn approx_tol(a: f32, b: f32, tol: f32) {
+        assert!((a - b).abs() <= tol, "expected {b} ± {tol}, got {a}");
     }
 
     #[test]
@@ -350,5 +502,189 @@ mod tests {
     #[should_panic(expected = "z length must equal")]
     fn new_rejects_mismatched_z_length() {
         let _ = SurfaceField::new(Point2::new(0.0, 0.0), 1.0, 2, 2, vec![0.0; 3]);
+    }
+
+    // ---- from_mesh / from_stl (STL rasterizer) ------------------------
+
+    /// Two triangles tiling a `[0,10]²` square at a constant height rasterize
+    /// to a uniform field pinned at the stock top (0): a flat top means no
+    /// relief to cut.
+    #[test]
+    fn from_mesh_flat_quad_is_uniform_stock_top() {
+        let tris = vec![
+            [[0.0, 0.0, 4.0], [10.0, 0.0, 4.0], [0.0, 10.0, 4.0]],
+            [[10.0, 0.0, 4.0], [10.0, 10.0, 4.0], [0.0, 10.0, 4.0]],
+        ];
+        let f = SurfaceField::from_mesh(&tris, 1.0).expect("has footprint");
+        assert_eq!((f.cols, f.rows), (10, 10));
+        for &v in &f.z {
+            approx(v, SURFACE_TOP_Z);
+        }
+    }
+
+    /// A tilted plane `z = y` reproduces its shape: every sampled cell center
+    /// matches the plane, shifted so the highest point sits at stock top.
+    #[test]
+    fn from_mesh_ramp_reproduces_plane_shifted_to_top() {
+        // z == y over [0,10]².
+        let tris = vec![
+            [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 10.0, 10.0]],
+            [[10.0, 0.0, 0.0], [10.0, 10.0, 10.0], [0.0, 10.0, 10.0]],
+        ];
+        let f = SurfaceField::from_mesh(&tris, 1.0).expect("has footprint");
+        // Highest cell center is at y = 9.5, so the field shifts by -9.5.
+        for iy in 0..f.rows {
+            for ix in 0..f.cols {
+                let px = 0.5 + f64::from(ix);
+                let py = 0.5 + f64::from(iy);
+                let expected = (py - 9.5) as f32;
+                approx(f.sample(px, py), expected);
+            }
+        }
+        // The top row lands exactly on the stock top.
+        approx(f.sample(5.5, 9.5), SURFACE_TOP_Z);
+    }
+
+    /// A gap between two disjoint triangles leaves interior cells uncovered,
+    /// which read as stock top (no relief) rather than garbage.
+    #[test]
+    fn from_mesh_uncovered_cells_are_stock_top() {
+        // Two flat patches at z = 0, separated by a bare strip in x ∈ (3, 7).
+        let tris = vec![
+            [[0.0, 0.0, 0.0], [3.0, 0.0, 0.0], [0.0, 4.0, 0.0]],
+            [[3.0, 0.0, 0.0], [3.0, 4.0, 0.0], [0.0, 4.0, 0.0]],
+            [[7.0, 0.0, 0.0], [10.0, 0.0, 0.0], [7.0, 4.0, 0.0]],
+            [[10.0, 0.0, 0.0], [10.0, 4.0, 0.0], [7.0, 4.0, 0.0]],
+        ];
+        let f = SurfaceField::from_mesh(&tris, 1.0).expect("has footprint");
+        // A cell center in the bare strip (x = 5.5) is uncovered → stock top.
+        approx(f.sample(5.5, 2.0), SURFACE_TOP_Z);
+        // A covered cell is also at the top here (flat mesh).
+        approx(f.sample(1.5, 2.0), SURFACE_TOP_Z);
+    }
+
+    /// Empty and edge-on (zero XY footprint) meshes have no surface.
+    #[test]
+    fn from_mesh_degenerate_meshes_return_none() {
+        assert!(SurfaceField::from_mesh(&[], 1.0).is_none());
+        // A vertical triangle in the x-z plane: zero extent in y.
+        let vertical = vec![[[0.0, 5.0, 0.0], [10.0, 5.0, 0.0], [5.0, 5.0, 8.0]]];
+        assert!(SurfaceField::from_mesh(&vertical, 1.0).is_none());
+    }
+
+    /// End-to-end through the ASCII path: bytes → parse → rasterize.
+    #[test]
+    fn from_stl_ascii_end_to_end() {
+        let ascii = "solid s\n\
+             facet normal 0 0 1 outer loop \
+               vertex 0 0 2 vertex 4 0 2 vertex 0 4 2 endloop endfacet\n\
+             facet normal 0 0 1 outer loop \
+               vertex 4 0 2 vertex 4 4 2 vertex 0 4 2 endloop endfacet\n\
+             endsolid s";
+        let f = SurfaceField::from_stl(ascii.as_bytes(), 1.0)
+            .expect("valid STL")
+            .expect("has footprint");
+        assert_eq!((f.cols, f.rows), (4, 4));
+        // Flat mesh → whole field at stock top.
+        for &v in &f.z {
+            approx(v, SURFACE_TOP_Z);
+        }
+    }
+
+    /// The acceptance case: a real binary STL emitted by the heightmap
+    /// exporter parses and rasterizes back to the ORIGINAL top shape (within
+    /// cell tolerance). Sampled on interior cells, the reconstructed relief
+    /// matches the source heightmap's relative depths.
+    #[test]
+    fn from_stl_binary_roundtrips_a_heightmap_shape() {
+        use crate::sim::heightmap::Heightmap;
+        use crate::sim::stl::heightmap_to_stl_binary;
+
+        // 12×12 heightmap, cell 1mm, a linear ramp top = -x (so a plane the
+        // interpolated export reproduces exactly). Stock bottom well below.
+        let cols = 12u32;
+        let rows = 12u32;
+        let mut hm = Heightmap::new(Point2::new(0.0, 0.0), 1.0, cols, rows, 0.0);
+        for iy in 0..rows {
+            for ix in 0..cols {
+                let idx = (iy * cols + ix) as usize;
+                hm.data[idx] = -(f64::from(ix) as f32); // top ramps 0 → -11 in x
+            }
+        }
+        let bytes = heightmap_to_stl_binary(&hm, -20.0);
+
+        let f = SurfaceField::from_stl(&bytes, 1.0)
+            .expect("valid STL")
+            .expect("has footprint");
+
+        // Compare RELATIVE depth between two interior columns (avoid the
+        // outer half-cell wall ring, and the export's global shift-to-top).
+        // Heightmap top drops by 1mm per +1 in x, so between x≈3.5 and x≈8.5
+        // the surface should drop ~5mm.
+        let z_lo = f.sample(3.5, 5.5);
+        let z_hi = f.sample(8.5, 5.5);
+        approx_tol(z_lo - z_hi, 5.0, 0.25);
+        // Constant along y at fixed x (a ramp in x only).
+        approx_tol(f.sample(5.5, 3.5) - f.sample(5.5, 8.5), 0.0, 0.25);
+    }
+
+    /// A drop-cutter finishing pass over a `from_mesh` field never gouges:
+    /// every emitted tip Z stays at or above the target surface it samples.
+    #[test]
+    fn surface_mill_over_from_mesh_is_gouge_free() {
+        use crate::cam::surface_mill::{surface_mill, ScanDirection, SurfaceMillParams};
+
+        // A shallow dome: z peaks at the center, falls toward the edges.
+        // Build it as a fan of triangles over a 20×20 grid.
+        let n = 21usize;
+        let span = 20.0f64;
+        let vert = |i: usize, j: usize| -> [f32; 3] {
+            let x = (i as f64) / (n as f64 - 1.0) * span;
+            let y = (j as f64) / (n as f64 - 1.0) * span;
+            // Dome: 0 at rim, ~ -0 at center → use downward relief.
+            let r2 = ((x - 10.0).powi(2) + (y - 10.0).powi(2)) / 100.0;
+            let z = -(r2 * 5.0); // center 0, rim about -10
+            [x as f32, y as f32, z as f32]
+        };
+        let mut tris = Vec::new();
+        for j in 0..n - 1 {
+            for i in 0..n - 1 {
+                let (a, b, c, d) = (
+                    vert(i, j),
+                    vert(i + 1, j),
+                    vert(i + 1, j + 1),
+                    vert(i, j + 1),
+                );
+                tris.push([a, b, c]);
+                tris.push([a, c, d]);
+            }
+        }
+        let field = SurfaceField::from_mesh(&tris, 0.5).expect("has footprint");
+
+        let params = SurfaceMillParams {
+            tool_radius_mm: 1.5,
+            corner_radius_mm: 1.5, // ball-nose
+            scallop_height_mm: 0.05,
+            stepover_mm: None,
+            along_step_mm: 0.5,
+            direction: ScanDirection::AlongX,
+            z_floor_mm: -20.0,
+            z_top_mm: 0.0,
+        };
+        let paths = surface_mill(&field, &params);
+        assert!(!paths.is_empty(), "expected finishing scanlines");
+
+        // No point of the ball may dip below the target anywhere in its
+        // footprint. Checking the tip against the sampled target at its own
+        // XY is the necessary local condition the drop-cutter guarantees.
+        for line in &paths {
+            for &(x, y, z_tip) in line {
+                let target = f64::from(field.sample(x, y));
+                assert!(
+                    z_tip >= target - 1e-3,
+                    "gouge at ({x:.2},{y:.2}): tip {z_tip:.4} < target {target:.4}"
+                );
+            }
+        }
     }
 }

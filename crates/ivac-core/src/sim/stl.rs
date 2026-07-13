@@ -649,6 +649,119 @@ fn triangle_normal(tri: &[[f32; 3]; 3]) -> [f32; 3] {
     }
 }
 
+// ---------------------------------------------------------------------------
+// STL reading — the input counterpart to the exporters above. Lets an STL
+// mesh feed the CAM side (e.g. `SurfaceField::from_stl` rasterizes the
+// triangles this returns into a drop-cutter target surface). Vertices come
+// back in the same `[v0, v1, v2]` / `[x, y, z]` layout the serializer writes.
+// ---------------------------------------------------------------------------
+
+/// A triangle read from an STL: three vertices, each `[x, y, z]` in mm.
+/// The file's per-facet normal is *ignored* on read (STL normals are
+/// advisory and frequently wrong / absent); recompute from winding if you
+/// need one, as [`triangle_normal`] does.
+pub type StlTriangle = [[f32; 3]; 3];
+
+/// Why an STL byte stream could not be parsed into triangles.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum StlError {
+    /// The stream ended mid-record (binary) or mid-facet (ASCII): a vertex
+    /// was missing a coordinate, or the ASCII vertex count wasn't a
+    /// multiple of three.
+    #[error("STL data is truncated: {0}")]
+    Truncated(&'static str),
+    /// An ASCII STL token could not be parsed (non-UTF-8, or a `vertex`
+    /// coordinate that isn't a float).
+    #[error("STL ASCII parse error: {0}")]
+    BadAscii(String),
+}
+
+/// Parse a binary or ASCII STL byte stream into its triangle list.
+///
+/// Detection is **size-based**, the only robust method: a binary STL is
+/// exactly `84 + 50·n` bytes (80-byte header + `u32` facet count + 50 bytes
+/// per facet), and its header may itself begin with the ASCII keyword
+/// `solid`, so sniffing the leading bytes is unreliable. We read the claimed
+/// facet count at offset 80 and, if the total length matches the binary
+/// layout for that count, parse as binary; otherwise fall back to ASCII.
+///
+/// An empty-but-valid solid returns `Ok(vec![])` — emptiness is the caller's
+/// concern (e.g. [`crate::cam::surface::SurfaceField::from_mesh`] returns
+/// `None`), not a parse error.
+///
+/// # Errors
+///
+/// Returns [`StlError`] when the bytes are neither a well-formed binary STL
+/// of the claimed length nor parseable ASCII.
+pub fn parse_stl(bytes: &[u8]) -> Result<Vec<StlTriangle>, StlError> {
+    if bytes.len() >= 84 {
+        let count = u32::from_le_bytes([bytes[80], bytes[81], bytes[82], bytes[83]]) as usize;
+        if count
+            .checked_mul(50)
+            .and_then(|body| body.checked_add(84))
+            .is_some_and(|expected| expected == bytes.len())
+        {
+            return Ok(parse_binary_stl(bytes, count));
+        }
+    }
+    parse_ascii_stl(bytes)
+}
+
+/// Parse the `count` 50-byte facet records of a binary STL. The caller has
+/// already verified `bytes.len() == 84 + 50 * count`, so every index below
+/// is in bounds.
+fn parse_binary_stl(bytes: &[u8], count: usize) -> Vec<StlTriangle> {
+    let mut tris = Vec::with_capacity(count);
+    for i in 0..count {
+        // Skip the 12-byte facet normal; read the three 12-byte vertices.
+        let base = 84 + i * 50 + 12;
+        let mut tri = [[0.0f32; 3]; 3];
+        for (v, vert) in tri.iter_mut().enumerate() {
+            for (c, coord) in vert.iter_mut().enumerate() {
+                let off = base + (v * 3 + c) * 4;
+                *coord = f32::from_le_bytes([
+                    bytes[off],
+                    bytes[off + 1],
+                    bytes[off + 2],
+                    bytes[off + 3],
+                ]);
+            }
+        }
+        tris.push(tri);
+    }
+    tris
+}
+
+/// Parse an ASCII STL leniently: collect every `vertex x y z` triple in
+/// document order and group them into triangles of three, ignoring
+/// `facet`/`normal`/`loop` keywords and arbitrary whitespace. This tolerates
+/// the format variations real exporters emit.
+fn parse_ascii_stl(bytes: &[u8]) -> Result<Vec<StlTriangle>, StlError> {
+    let text = std::str::from_utf8(bytes).map_err(|_| StlError::BadAscii("not UTF-8".into()))?;
+    let mut verts: Vec<[f32; 3]> = Vec::new();
+    let mut it = text.split_whitespace();
+    while let Some(tok) = it.next() {
+        if tok.eq_ignore_ascii_case("vertex") {
+            let mut v = [0.0f32; 3];
+            for slot in &mut v {
+                let s = it
+                    .next()
+                    .ok_or(StlError::Truncated("ASCII vertex missing a coordinate"))?;
+                *slot = s
+                    .parse::<f32>()
+                    .map_err(|_| StlError::BadAscii(format!("bad vertex coordinate '{s}'")))?;
+            }
+            verts.push(v);
+        }
+    }
+    if verts.len() % 3 != 0 {
+        return Err(StlError::Truncated(
+            "ASCII vertex count is not a multiple of three",
+        ));
+    }
+    Ok(verts.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1026,7 +1139,11 @@ mod tests {
 
     /// Quantized vertex key for edge bookkeeping (mm at 1e-3 resolution).
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    fn qkey(v: [f32; 3]) -> (i32, i32, i32) {
+    /// Quantized vertex key (mm rounded to µm as integers) for matching
+    /// coincident vertices / directed edges without f32 equality hazards.
+    type QKey = (i32, i32, i32);
+
+    fn qkey(v: [f32; 3]) -> QKey {
         (
             (v[0] * 1000.0).round() as i32,
             (v[1] * 1000.0).round() as i32,
@@ -1041,7 +1158,7 @@ mod tests {
     fn assert_closed_manifold(bytes: &[u8]) {
         use std::collections::HashMap;
         let count = tri_count(bytes);
-        let mut edges: HashMap<((i32, i32, i32), (i32, i32, i32)), i32> = HashMap::new();
+        let mut edges: HashMap<(QKey, QKey), i32> = HashMap::new();
         for i in 0..count {
             let vs = tri_verts(bytes, i);
             for e in 0..3 {
@@ -1256,5 +1373,104 @@ mod tests {
         let smooth = dexel_to_stl_binary(&df, -2.0);
         let solid = dexel_to_stl_solid_binary(&df);
         assert_ne!(smooth, solid, "stair-stepped solid must differ from smooth");
+    }
+
+    // ---- STL reading (parse_stl) --------------------------------------
+
+    /// Vertices survive a round trip through the binary serializer: emit a
+    /// known triangle set, parse it back, get the same coordinates. (The
+    /// serializer recomputes normals, which the reader drops, so only the
+    /// vertices must match.)
+    #[test]
+    fn parse_binary_roundtrips_the_serializer() {
+        let tris: Vec<StlTriangle> = vec![
+            [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 3.0, 1.5]],
+            [[2.0, 0.0, 0.0], [2.0, 3.0, 4.0], [0.0, 3.0, 1.5]],
+        ];
+        let bytes = serialize_binary_stl(&tris);
+        let back = parse_stl(&bytes).expect("valid binary STL");
+        assert_eq!(back, tris);
+    }
+
+    /// Size-based detection must classify a binary STL whose 80-byte header
+    /// *starts with* the ASCII keyword "solid" as binary (the leading-bytes
+    /// sniff every naive loader gets wrong).
+    #[test]
+    fn parse_detects_binary_even_with_solid_header() {
+        let tris: Vec<StlTriangle> = vec![[[1.0, 1.0, 1.0], [2.0, 1.0, 1.0], [1.0, 2.0, 2.0]]];
+        let mut bytes = serialize_binary_stl(&tris);
+        // Overwrite the banner header with a "solid ..." string.
+        let hdr = b"solid trap";
+        bytes[..hdr.len()].copy_from_slice(hdr);
+        let back = parse_stl(&bytes).expect("binary despite solid header");
+        assert_eq!(back, tris);
+    }
+
+    /// A hand-written ASCII STL parses into the right vertices, ignoring the
+    /// facet-normal / loop keywords and tolerating irregular whitespace.
+    #[test]
+    fn parse_ascii_reads_vertices() {
+        let ascii = "solid demo\n\
+             facet normal 0 0 1\n\
+               outer loop\n\
+                 vertex 0 0 0\n\
+                 vertex 1 0 0\n\
+                 vertex 0 1 2.5\n\
+               endloop\n\
+             endfacet\n\
+             facet normal 0 0 1\n\
+               outer loop\n\
+                 vertex 1 0 0\n\
+                 vertex 1 1 3\n\
+                 vertex 0 1 2.5\n\
+               endloop\n\
+             endfacet\n\
+             endsolid demo\n";
+        let tris = parse_stl(ascii.as_bytes()).expect("valid ASCII STL");
+        assert_eq!(
+            tris,
+            vec![
+                [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 2.5]],
+                [[1.0, 0.0, 0.0], [1.0, 1.0, 3.0], [0.0, 1.0, 2.5]],
+            ]
+        );
+    }
+
+    /// ASCII scientific notation (as some CAD exporters emit) parses.
+    #[test]
+    fn parse_ascii_accepts_scientific_notation() {
+        let ascii = "solid s facet normal 0 0 1 outer loop \
+             vertex 1.0e1 -2.5e0 0 vertex 20 0 0 vertex 10 1e1 5 \
+             endloop endfacet endsolid s";
+        let tris = parse_stl(ascii.as_bytes()).expect("scientific notation");
+        assert_eq!(
+            tris,
+            vec![[[10.0, -2.5, 0.0], [20.0, 0.0, 0.0], [10.0, 10.0, 5.0]]]
+        );
+    }
+
+    /// An empty-but-valid ASCII solid is not an error — it yields no
+    /// triangles and the caller decides what that means.
+    #[test]
+    fn parse_ascii_empty_solid_is_ok_empty() {
+        let tris = parse_stl(b"solid empty\nendsolid empty\n").expect("empty solid ok");
+        assert!(tris.is_empty());
+    }
+
+    /// A non-float vertex coordinate is a parse error, not a silent skip.
+    #[test]
+    fn parse_ascii_bad_coordinate_errors() {
+        let ascii = "solid s facet normal 0 0 1 outer loop \
+             vertex 0 0 0 vertex 1 oops 0 vertex 0 1 0 endloop endfacet endsolid s";
+        let err = parse_stl(ascii.as_bytes()).unwrap_err();
+        assert!(matches!(err, StlError::BadAscii(_)), "got {err:?}");
+    }
+
+    /// A vertex missing its final coordinate is reported as truncated.
+    #[test]
+    fn parse_ascii_truncated_vertex_errors() {
+        let ascii = "solid s vertex 0 0 0 vertex 1 0";
+        let err = parse_stl(ascii.as_bytes()).unwrap_err();
+        assert!(matches!(err, StlError::Truncated(_)), "got {err:?}");
     }
 }
