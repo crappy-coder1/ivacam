@@ -30,9 +30,22 @@ export type WasmModule = {
   renderText: (request: RenderTextRequest) => RenderTextResponse;
   renderTextLayer: (layer: WireTextLayer) => RenderTextLayerResponse;
   computeHelixRadius: (request: HelixRadiusRequest) => HelixRadiusResponse;
+  /// Rasterize an STL byte stream to a relief height grid — the serialized
+  /// SurfaceField `{origin,cell,cols,rows,z}`, or null when the mesh has no
+  /// XY footprint. `maxDim` bounds the longer XY side's cell count. Loaded
+  /// on demand by the client-side STL relief path (see state/relief_stl.ts).
+  fromStl?: (bytes: Uint8Array, maxDim: number) => unknown;
 };
 
 let modPromise: Promise<WasmModule> | null = null;
+
+/// Lazily load (once) the ivac-wasm module on the current thread. Exported
+/// so client-side helpers that call a core binding directly — e.g. STL
+/// relief rasterization — can reuse the same instance the WASM transport
+/// uses, instead of routing through the WiacClient transport seam.
+export function loadWasmModule(): Promise<WasmModule> {
+  return loadModule();
+}
 
 async function loadModule(): Promise<WasmModule> {
   if (!modPromise) {

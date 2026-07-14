@@ -627,7 +627,7 @@ describe('relief mill (f60x-D)', () => {
           cell: 0.5,
           cols: 4,
           rows: 4,
-          brightness: new Array(16).fill(0.5),
+          grid: { kind: 'grayscale', brightness: new Array(16).fill(0.5) },
         },
       ],
     });
@@ -651,7 +651,57 @@ describe('relief mill (f60x-D)', () => {
         cell: 0.5,
         cols: 4,
         rows: 4,
-        brightness: new Array(16).fill(0.5),
+        grid: { kind: 'grayscale', brightness: new Array(16).fill(0.5) },
+      },
+    ]);
+  });
+
+  it('passes an STL heightgrid source through as a heightgrid grid', () => {
+    const reliefOp = {
+      id: 1,
+      name: 'Relief',
+      enabled: true,
+      kind: 'relief_mill',
+      toolId: 1,
+      sourceLayers: null,
+      depth: 0,
+      startDepth: 0,
+      step: -1,
+      sourceId: 9,
+      zMinMm: 0,
+      zMaxMm: 0,
+      invert: false,
+      scallopHeightMm: 0.05,
+      stepoverMm: null,
+      scanDirection: 'along_x',
+      alongStepMm: 0.5,
+    } as unknown as OpEntry;
+    const project = buildProject({
+      transformedImport: fakeImport(),
+      machine: baseMachine(),
+      tools: [baseTool({ kind: 'ball_nose' })],
+      operations: [reliefOp],
+      reliefSources: [
+        {
+          id: 9,
+          name: 'model.stl',
+          origin: { x: 0, y: 0 },
+          cell: 1,
+          cols: 2,
+          rows: 2,
+          grid: { kind: 'heightgrid', z: [0, -1, -2, -3] },
+        },
+      ],
+    });
+    expect(project!.relief_sources).toEqual([
+      {
+        id: 9,
+        name: 'model.stl',
+        origin: { x: 0, y: 0 },
+        cell: 1,
+        cols: 2,
+        rows: 2,
+        grid: { kind: 'heightgrid', z: [0, -1, -2, -3] },
       },
     ]);
   });
@@ -700,7 +750,7 @@ describe('raster engrave (rt1.12)', () => {
           cell: 0.25,
           cols: 4,
           rows: 4,
-          brightness: new Array(16).fill(0.5),
+          grid: { kind: 'grayscale', brightness: new Array(16).fill(0.5) },
         },
       ],
     });

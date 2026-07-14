@@ -763,7 +763,7 @@ describe('updateReliefSourceCommand (rt1.12 j7b4)', () => {
         cell: 0.5,
         cols: 4,
         rows: 4,
-        brightness: new Array(16).fill(0.5),
+        grid: { kind: 'grayscale', brightness: new Array(16).fill(0.5) },
       },
     ];
     return t;

@@ -813,7 +813,9 @@ function buildReliefSource(rs: ReliefSource): WireReliefSource {
     cell: rs.cell,
     cols: rs.cols,
     rows: rs.rows,
-    brightness: rs.brightness,
+    // The tagged grid (grayscale{brightness} | heightgrid{z}) is already the
+    // wire shape — pass it through.
+    grid: rs.grid,
   };
 }
 

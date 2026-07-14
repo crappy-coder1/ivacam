@@ -765,12 +765,30 @@ export interface ProjectFile {
   machineProfileId?: string;
 }
 
+/// The per-cell payload of a `ReliefSource`, tagged by `kind`. Mirror of
+/// `ivac_core::project::ReliefGrid`. Placement (origin/cell/cols/rows) is
+/// shared on the source; only this differs between an image relief and an
+/// STL height grid.
+export type ReliefGrid =
+  | {
+      kind: 'grayscale';
+      /// Row-major normalized brightness in [0, 1]. Remapped to Z by the
+      /// `relief_mill` op (or to laser power by `raster_engrave`).
+      brightness: number[];
+    }
+  | {
+      kind: 'heightgrid';
+      /// Row-major real target Z per cell (mm), stock top at 0, relief
+      /// carved downward — an STL rasterized via wasm `fromStl`. Cut
+      /// directly by `relief_mill` (clamped to tool reach), not remapped.
+      z: number[];
+    };
+
 /// A target surface source for relief / ball-nose surfacing. Mirror
-/// of `ivac_core::project::ReliefSource`. Holds a row-major
-/// normalized-brightness grid (each value in [0, 1]) plus its world
-/// placement; the depth mapping (brightness → Z) lives on the `relief_mill`
-/// op so depth retunes without re-decoding the image. Produced by
-/// `decodeImageToReliefSource` from a loaded grayscale image.
+/// of `ivac_core::project::ReliefSource`. Holds a row-major grid (see
+/// `ReliefGrid`) plus its world placement; the depth mapping lives on the
+/// `relief_mill` op. Produced from a decoded grayscale image
+/// (`grayscale`) or an STL rasterized at load (`heightgrid`).
 export interface ReliefSource {
   id: number;
   name: string;
@@ -780,8 +798,9 @@ export interface ReliefSource {
   cell: number;
   cols: number;
   rows: number;
-  /// Row-major normalized brightness in [0, 1], length cols * rows.
-  brightness: number[];
+  /// Per-cell surface data (brightness grid or real-Z height grid),
+  /// length cols * rows. See `ReliefGrid`.
+  grid: ReliefGrid;
 }
 
 /// Persistent text entity — editable text + typography + transform.

@@ -135,7 +135,10 @@ export class ToolpathBuilder implements PickableLineBuilder {
       if (o.kind !== 'raster_engrave' || !o.enabled) continue;
       const src = input.reliefSources.find((s) => s.id === o.sourceId);
       if (!src || src.cols <= 0 || src.rows <= 0) continue;
-      const powers = powerGrid(o.powerCurve, src.brightness, src.cols, src.rows);
+      // Raster engrave needs a brightness grid; a heightgrid (STL) source
+      // carries none, so it emits no heat overlay.
+      if (src.grid.kind !== 'grayscale') continue;
+      const powers = powerGrid(o.powerCurve, src.grid.brightness, src.cols, src.rows);
       if (powers.length === 0) continue;
       rasterHeat.set(o.id, {
         grid: {

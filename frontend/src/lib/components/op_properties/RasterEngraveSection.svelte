@@ -17,6 +17,7 @@
   } from '../../state/project.svelte';
   import { t } from '../../i18n';
   import { decodeImageFile } from '../../state/relief_image';
+  import { reliefBrightness } from '../../state/relief';
   import {
     powerGrid,
     maxPower,
@@ -87,7 +88,9 @@
   $effect(() => {
     const cv = previewCanvas;
     if (!cv || !source) return;
-    const { cols, rows, brightness } = source;
+    const { cols, rows } = source;
+    const brightness = reliefBrightness(source);
+    if (!brightness) return; // heightgrid (STL) has no brightness to engrave
     const grid = powerGrid(op.powerCurve, brightness, cols, rows);
     if (grid.length === 0) return;
     cv.width = cols;
@@ -103,8 +106,10 @@
   $effect(() => {
     const cv = histCanvas;
     if (!cv || !source) return;
+    const brightness = reliefBrightness(source);
+    if (!brightness) return; // heightgrid (STL) has no brightness histogram
     const bins = 48;
-    const hist = brightnessHistogram(source.brightness, bins);
+    const hist = brightnessHistogram(brightness, bins);
     const peak = Math.max(1, ...hist);
     const W = 200;
     const H = 56;
@@ -150,7 +155,7 @@
         cell,
         cols: grid.cols,
         rows: grid.rows,
-        brightness: grid.brightness,
+        grid: { kind: 'grayscale', brightness: grid.brightness },
       });
       patch('sourceId', added.id);
     } catch (err) {

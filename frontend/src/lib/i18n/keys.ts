@@ -910,12 +910,17 @@ export type MsgKey =
   | "ops.relief.scan.along_y"
   | "ops.relief.source.legend"
   | "ops.relief_mill.decoding"
+  | "ops.relief_mill.depth_limit.help"
+  | "ops.relief_mill.depth_limit.hint"
+  | "ops.relief_mill.depth_limit.label"
+  | "ops.relief_mill.depth_limit.placeholder"
   | "ops.relief_mill.dimensions.hint"
   | "ops.relief_mill.image.label"
   | "ops.relief_mill.invert.help"
   | "ops.relief_mill.invert.label"
   | "ops.relief_mill.load_error.hint"
   | "ops.relief_mill.load_image"
+  | "ops.relief_mill.load_stl"
   | "ops.relief_mill.scallop.help"
   | "ops.relief_mill.scallop.label"
   | "ops.relief_mill.scan.label"
@@ -924,9 +929,12 @@ export type MsgKey =
   | "ops.relief_mill.stepover.help"
   | "ops.relief_mill.stepover.label"
   | "ops.relief_mill.stepover.placeholder"
+  | "ops.relief_mill.stl.dimensions.hint"
+  | "ops.relief_mill.stl.no_footprint"
   | "ops.relief_mill.surfacing.hint"
   | "ops.relief_mill.width.help"
   | "ops.relief_mill.width.label"
+  | "ops.relief_mill.width.stl_locked"
   | "ops.relief_mill.z_max.help"
   | "ops.relief_mill.z_max.label"
   | "ops.relief_mill.z_min.help"
@@ -2397,12 +2405,17 @@ export const MSG_KEYS: readonly MsgKey[] = [
   "ops.relief.scan.along_y",
   "ops.relief.source.legend",
   "ops.relief_mill.decoding",
+  "ops.relief_mill.depth_limit.help",
+  "ops.relief_mill.depth_limit.hint",
+  "ops.relief_mill.depth_limit.label",
+  "ops.relief_mill.depth_limit.placeholder",
   "ops.relief_mill.dimensions.hint",
   "ops.relief_mill.image.label",
   "ops.relief_mill.invert.help",
   "ops.relief_mill.invert.label",
   "ops.relief_mill.load_error.hint",
   "ops.relief_mill.load_image",
+  "ops.relief_mill.load_stl",
   "ops.relief_mill.scallop.help",
   "ops.relief_mill.scallop.label",
   "ops.relief_mill.scan.label",
@@ -2411,9 +2424,12 @@ export const MSG_KEYS: readonly MsgKey[] = [
   "ops.relief_mill.stepover.help",
   "ops.relief_mill.stepover.label",
   "ops.relief_mill.stepover.placeholder",
+  "ops.relief_mill.stl.dimensions.hint",
+  "ops.relief_mill.stl.no_footprint",
   "ops.relief_mill.surfacing.hint",
   "ops.relief_mill.width.help",
   "ops.relief_mill.width.label",
+  "ops.relief_mill.width.stl_locked",
   "ops.relief_mill.z_max.help",
   "ops.relief_mill.z_max.label",
   "ops.relief_mill.z_min.help",

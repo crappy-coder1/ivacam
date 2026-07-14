@@ -1,28 +1,31 @@
 import { brightnessToRgba } from '../../cam/raster_preview';
-import type { ReliefSource } from '../../state/project-types';
+import type { ReliefGrid, ReliefSource } from '../../state/project-types';
+import { reliefDisplayBrightness } from '../../state/relief';
 import type { ProjectFn } from './types';
 
-/// Cache of the decoded brightness image per relief source, keyed by
-/// source id. Invalidated when the source's `brightness` array
-/// reference changes (origin / cell edits keep the same array, so a
-/// drag never rebuilds the 256² ImageData).
+/// Cache of the decoded preview image per relief source, keyed by source
+/// id. Invalidated when the source's `grid` reference changes (origin /
+/// cell edits keep the same grid object, so a drag never rebuilds the 256²
+/// ImageData). Grayscale sources render their brightness; heightgrid (STL)
+/// sources render their z normalized to a heatmap (see
+/// `reliefDisplayBrightness`), so both kinds get a placement preview.
 export class RasterImageCache {
-  private cache = new Map<number, { brightness: readonly number[]; canvas: HTMLCanvasElement }>();
+  private cache = new Map<number, { grid: ReliefGrid; canvas: HTMLCanvasElement }>();
 
   canvasFor(src: ReliefSource): HTMLCanvasElement | null {
     if (src.cols <= 0 || src.rows <= 0) return null;
     const cached = this.cache.get(src.id);
-    if (cached && cached.brightness === src.brightness) return cached.canvas;
+    if (cached && cached.grid === src.grid) return cached.canvas;
     const cv = document.createElement('canvas');
     cv.width = src.cols;
     cv.height = src.rows;
     const ictx = cv.getContext('2d');
     if (!ictx) return null;
-    const rgba = brightnessToRgba(src.brightness, src.cols, src.rows);
+    const rgba = brightnessToRgba(reliefDisplayBrightness(src.grid), src.cols, src.rows);
     const img = ictx.createImageData(src.cols, src.rows);
     img.data.set(rgba);
     ictx.putImageData(img, 0, 0);
-    this.cache.set(src.id, { brightness: src.brightness, canvas: cv });
+    this.cache.set(src.id, { grid: src.grid, canvas: cv });
     return cv;
   }
 }
