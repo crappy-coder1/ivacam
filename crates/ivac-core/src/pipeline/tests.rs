@@ -227,7 +227,10 @@ fn pipeline_relief_mill_heightgrid_cuts_real_z_without_depth_range() {
         |_, _, _| {},
     )
     .expect("heightgrid relief pipeline should run end-to-end");
-    assert!(resp.gcode.contains("; OP 1"), "no op marker for heightgrid relief");
+    assert!(
+        resp.gcode.contains("; OP 1"),
+        "no op marker for heightgrid relief"
+    );
     let cut_zs: Vec<f64> = resp
         .toolpath
         .iter()

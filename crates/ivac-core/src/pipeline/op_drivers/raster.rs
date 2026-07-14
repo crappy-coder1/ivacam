@@ -158,8 +158,7 @@ pub(in crate::pipeline) fn run_raster_op<P: PostProcessor>(
         });
         return Ok(());
     }
-    let (brightness, cols, rows) =
-        resample(src_brightness, in_cols, in_rows, cell, *resolution_mm);
+    let (brightness, cols, rows) = resample(src_brightness, in_cols, in_rows, cell, *resolution_mm);
 
     // Per-pixel power, computed once over the whole grid (Floyd–Steinberg
     // diffuses across rows, so the row walk must see the full result).

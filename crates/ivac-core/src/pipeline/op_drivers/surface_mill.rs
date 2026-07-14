@@ -126,8 +126,13 @@ pub(in crate::pipeline) fn run_relief_op<P: PostProcessor>(
             (field, z_top, z_floor)
         }
         ReliefGrid::Heightgrid { z } => {
-            let field =
-                SurfaceField::new(source.origin, source.cell, source.cols, source.rows, z.clone());
+            let field = SurfaceField::new(
+                source.origin,
+                source.cell,
+                source.cols,
+                source.rows,
+                z.clone(),
+            );
             let (field_min, field_max) = field.z_range();
             let z_top = f64::from(field_max).min(0.0);
             // A user-set negative limit clamps the floor shallower than the
