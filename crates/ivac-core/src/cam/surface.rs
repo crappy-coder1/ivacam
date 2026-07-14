@@ -28,10 +28,29 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::geometry::Point2;
+use crate::sim::dexel::DexelField;
 
 /// Z (mm) returned when sampling outside the field footprint: the stock
 /// top, i.e. "no relief here, don't cut below the surface".
 pub const SURFACE_TOP_Z: f32 = 0.0;
+
+/// How a carved simulation cell deviates from the target surface — the
+/// per-cell class behind the red/green deviation overlay
+/// ([`SurfaceField::deviation_of`]). The discriminants are the stable wire
+/// values the WASM bridge hands JS as a `Uint8Array`, so JS can map them to
+/// vertex colors without a second lookup table.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Deviation {
+    /// Carved surface within ±tol of the target — neutral (no tint).
+    OnTarget = 0,
+    /// Carved more than `tol` mm BELOW the target: material removed that
+    /// should have remained. Rendered RED.
+    Gouge = 1,
+    /// Solid left more than `tol` mm ABOVE the target: rest stock still to
+    /// remove. Rendered GREEN.
+    RestStock = 2,
+}
 
 /// A target Z(x,y) surface over a rectangular footprint. Row-major
 /// `cols * rows` cells; cell `(ix, iy)`'s center sits at
@@ -384,6 +403,63 @@ impl SurfaceField {
         } else {
             (0.0, 0.0)
         }
+    }
+
+    /// Classify how a carved simulation field deviates from this target
+    /// surface, cell-for-cell — the data behind the red/green deviation
+    /// overlay (GrblGru structurally can't offer this: it never carves). For
+    /// every cell of `field` the carved top surface is compared against the
+    /// target Z sampled at that cell's world center:
+    ///
+    /// * [`Deviation::Gouge`] — carved more than `tol` mm BELOW target
+    ///   (material removed that should have stayed). Rendered red.
+    /// * [`Deviation::RestStock`] — solid left more than `tol` mm ABOVE target
+    ///   (uncut stock still to remove). Rendered green.
+    /// * [`Deviation::OnTarget`] — within ±`tol` mm of the target. Neutral.
+    ///
+    /// `surface_z0` is the world Z that this field's `z = 0` datum maps to.
+    /// The target's z=0 is its highest point, dropped onto the stock top by
+    /// [`SurfaceField::from_mesh`] / [`SurfaceField::from_grayscale`], so a
+    /// relief job passes the simulator's stock-top Z (`field.top_z`). `tol` is
+    /// the on-target band half-width in mm; a negative `tol` is clamped to 0.
+    ///
+    /// The result is a row-major `field.cols * field.rows` byte grid aligned
+    /// index-for-index with [`DexelField::top`], each byte a [`Deviation`]
+    /// `as u8`, so the WASM bridge can hand JS a `Uint8Array` for per-cell
+    /// vertex coloring off the same dirty-AABB the carve already reports.
+    ///
+    /// The two grids need not share dimensions or origin — the comparison
+    /// samples the target at each carved cell's world center, so any relative
+    /// placement works. Cells the target footprint doesn't cover sample as the
+    /// stock top (0), so uncut stock beyond the relief reads as on-target. For
+    /// a form-tool undercut, `top` holds only the highest surface, so the
+    /// overlay compares that (the deepest void is not represented — undercuts
+    /// are out of scope for a 3-axis relief verify).
+    #[must_use]
+    pub fn deviation_of(&self, field: &DexelField, surface_z0: f32, tol: f32) -> Vec<u8> {
+        let tol = tol.max(0.0);
+        let cols = field.cols as usize;
+        let rows = field.rows as usize;
+        let top = field.top();
+        let mut out = vec![Deviation::OnTarget as u8; cols * rows];
+        for iy in 0..rows {
+            let cy = field.origin.y + (iy as f64 + 0.5) * field.cell;
+            for ix in 0..cols {
+                let cx = field.origin.x + (ix as f64 + 0.5) * field.cell;
+                // target_world lifts the target's stock-top-relative Z into the
+                // simulator's world frame so both sides share a datum.
+                let target_world = surface_z0 + self.sample(cx, cy);
+                let delta = top[iy * cols + ix] - target_world;
+                out[iy * cols + ix] = if delta > tol {
+                    Deviation::RestStock as u8
+                } else if delta < -tol {
+                    Deviation::Gouge as u8
+                } else {
+                    Deviation::OnTarget as u8
+                };
+            }
+        }
+        out
     }
 }
 
@@ -759,5 +835,106 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ---- deviation_of (red/green verify overlay) ----------------------
+    // `Deviation`, `DexelField`, `SurfaceField` and `Point2` all arrive via
+    // the module's `use super::*;` above.
+
+    /// The hand-checked acceptance case: a 3-cell field where one column is
+    /// carved exactly to target (on-target), one is over-cut (gouge), and one
+    /// is left uncut (rest stock). All three classes appear at their expected
+    /// indices.
+    #[test]
+    fn deviation_of_classifies_gouge_ontarget_reststock() {
+        // 3×1 field, 1mm cells, stock top at z=0, floor well below.
+        let mut field = DexelField::new(Point2::new(0.0, 0.0), 1.0, 3, 1, 0.0, -10.0);
+        // Target: cut 2mm down in every column. z=0 datum == stock top.
+        let target = SurfaceField::new(Point2::new(0.0, 0.0), 1.0, 3, 1, vec![-2.0, -2.0, -2.0]);
+
+        field.lower_at(0, 0, -2.0); // exactly on target
+        field.lower_at(1, 0, -3.0); // 1mm below target → gouge
+                                    // column 2 stays at 0.0 → 2mm above target → rest stock
+
+        let dev = target.deviation_of(&field, field.top_z, 0.1);
+        assert_eq!(
+            dev,
+            vec![
+                Deviation::OnTarget as u8,
+                Deviation::Gouge as u8,
+                Deviation::RestStock as u8,
+            ],
+        );
+    }
+
+    /// The tolerance band widens what reads as on-target: with `tol = 1.5` the
+    /// 1mm over-cut falls inside the band (on-target) while the 2mm of rest
+    /// stock still exceeds it.
+    #[test]
+    fn deviation_of_tolerance_band_absorbs_small_deltas() {
+        let mut field = DexelField::new(Point2::new(0.0, 0.0), 1.0, 3, 1, 0.0, -10.0);
+        let target = SurfaceField::new(Point2::new(0.0, 0.0), 1.0, 3, 1, vec![-2.0, -2.0, -2.0]);
+        field.lower_at(0, 0, -2.0);
+        field.lower_at(1, 0, -3.0); // 1mm below → within a 1.5mm band
+        let dev = target.deviation_of(&field, field.top_z, 1.5);
+        assert_eq!(
+            dev,
+            vec![
+                Deviation::OnTarget as u8,
+                Deviation::OnTarget as u8,
+                Deviation::RestStock as u8, // 2mm above still exceeds 1.5
+            ],
+        );
+    }
+
+    /// `surface_z0` re-datums the target into the simulator's Z frame: a stock
+    /// top at world Z=5 with a target that wants a 2mm cut is on-target when
+    /// the carved surface sits at world Z=3.
+    #[test]
+    fn deviation_of_honors_surface_z0_offset() {
+        let mut field = DexelField::new(Point2::new(0.0, 0.0), 1.0, 1, 1, 5.0, -10.0);
+        let target = SurfaceField::new(Point2::new(0.0, 0.0), 1.0, 1, 1, vec![-2.0]);
+        field.lower_at(0, 0, 3.0); // 2mm below the world-Z=5 stock top
+        let dev = target.deviation_of(&field, field.top_z, 0.05);
+        assert_eq!(dev, vec![Deviation::OnTarget as u8]);
+        // Mis-datuming (surface_z0 = 0) drops the target to world Z=-2 while
+        // the carve sits at world Z=3, so the same cut now reads as 5mm of
+        // rest stock — proving the offset actually shifts the comparison.
+        let dev_wrong = target.deviation_of(&field, 0.0, 0.05);
+        assert_eq!(dev_wrong, vec![Deviation::RestStock as u8]);
+    }
+
+    /// A negative tolerance is clamped to 0 (exact-match band) rather than
+    /// producing an inverted comparison.
+    #[test]
+    fn deviation_of_clamps_negative_tolerance() {
+        let mut field = DexelField::new(Point2::new(0.0, 0.0), 1.0, 1, 1, 0.0, -10.0);
+        let target = SurfaceField::new(Point2::new(0.0, 0.0), 1.0, 1, 1, vec![-1.0]);
+        field.lower_at(0, 0, -1.0); // exactly on target
+        let dev = target.deviation_of(&field, field.top_z, -5.0);
+        assert_eq!(dev, vec![Deviation::OnTarget as u8]);
+    }
+
+    /// Cells whose centers fall outside the target footprint sample as the
+    /// stock top (0): uncut stock beyond the relief reads as on-target, but
+    /// carving there (below the implied stock top) shows as a gouge.
+    #[test]
+    fn deviation_of_outside_target_footprint_is_stock_top() {
+        // Field spans x∈[0,3]; target only covers the first cell.
+        let mut field = DexelField::new(Point2::new(0.0, 0.0), 1.0, 3, 1, 0.0, -10.0);
+        let target = SurfaceField::new(Point2::new(0.0, 0.0), 1.0, 1, 1, vec![-2.0]);
+        field.lower_at(2, 0, -1.0); // carve a column with no target coverage
+        let dev = target.deviation_of(&field, field.top_z, 0.1);
+        // col 0: uncut (0) vs target -2 → 2mm above → rest stock.
+        // col 1: uncut, outside footprint → target 0, carved 0 → on target.
+        // col 2: carved -1, outside footprint target 0 → gouge.
+        assert_eq!(
+            dev,
+            vec![
+                Deviation::RestStock as u8,
+                Deviation::OnTarget as u8,
+                Deviation::Gouge as u8,
+            ],
+        );
     }
 }

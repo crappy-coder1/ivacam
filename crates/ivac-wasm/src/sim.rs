@@ -499,6 +499,31 @@ impl Simulator {
         self.field.top_ptr()
     }
 
+    /// Classify the carved stock against a target relief surface for the
+    /// red/green deviation overlay — the correctness view GrblGru can't offer
+    /// (it never carves). `surface` is a serde-serialized
+    /// [`ivac_core::cam::surface::SurfaceField`] (`snake_case` fields, same
+    /// shape the STL rasterizer returns); `surface_z0` is the world Z its
+    /// `z = 0` datum maps to (pass `top_z()` for a relief job); `tol` is the
+    /// on-target band half-width in mm.
+    ///
+    /// Returns a row-major `cols * rows` `Uint8Array` of
+    /// [`ivac_core::cam::surface::Deviation`] codes (0 = on-target, 1 = gouge,
+    /// 2 = rest stock), aligned index-for-index with `data_ptr()` so the JS
+    /// driver can drive per-cell vertex colors off the same dirty AABB the
+    /// carve reports. The target grid need not match the sim grid — each sim
+    /// cell samples the target at its own world center.
+    pub fn deviation_vs(
+        &self,
+        surface: JsValue,
+        surface_z0: f32,
+        tol: f32,
+    ) -> Result<Vec<u8>, JsValue> {
+        let field: ivac_core::cam::surface::SurfaceField =
+            serde_wasm_bindgen::from_value(surface).map_err(into_js_error)?;
+        Ok(field.deviation_of(&self.field, surface_z0, tol))
+    }
+
     /// Number of columns currently carrying an undercut sidecar entry (`0`
     /// for any pure 3-axis job). The JS driver checks this to skip the
     /// undercut upload entirely when there's nothing to draw.
@@ -1157,6 +1182,48 @@ mod tests {
             sim.last_diagnostics.count("rapid_through_material"),
             0,
             "mid-segment partial slice must not re-emit the warning"
+        );
+    }
+
+    /// Deviation overlay: after carving, comparing the sim's field against a
+    /// target surface classifies over-cut cells as gouges and uncut cells as
+    /// rest stock. Exercises the same `SurfaceField::deviation_of` the
+    /// `deviation_vs` JS binding wraps (the `JsValue` path can't run in a
+    /// plain unit test), against a real carved `Simulator` field.
+    #[test]
+    fn deviation_vs_flags_gouge_under_plunge_and_reststock_around_it() {
+        use ivac_core::cam::surface::{Deviation, SurfaceField};
+        use ivac_core::geometry::Point2;
+
+        let mut sim = new_sim(0.0, 0.0, 4.0, 4.0, 1.0, 0.0);
+        // 4mm endmill plunged 2mm deep at the grid center.
+        let segs = vec![plunge(2.0, 2.0, 0.0, -2.0)];
+        let _ = sim.advance_inner(&segs, &endmill(4.0), 0, 1);
+
+        let (cols, rows) = (sim.cols(), sim.rows());
+        // Target wants a uniform 1mm cut everywhere over the same footprint.
+        let target = SurfaceField::new(
+            Point2::new(0.0, 0.0),
+            1.0,
+            cols,
+            rows,
+            vec![-1.0; (cols * rows) as usize],
+        );
+        let dev = target.deviation_of(sim.field(), sim.top_z(), 0.25);
+        assert_eq!(dev.len(), (cols * rows) as usize);
+
+        // Cell under the plunge is carved to -2 (1mm past the -1 target) → gouge.
+        let center = dev[(2 * cols + 2) as usize];
+        assert_eq!(
+            center,
+            Deviation::Gouge as u8,
+            "over-cut center must be a gouge"
+        );
+        // A far corner is uncut (0), 1mm above the -1 target → rest stock.
+        assert_eq!(
+            dev[0],
+            Deviation::RestStock as u8,
+            "uncut corner must read as rest stock"
         );
     }
 
