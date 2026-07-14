@@ -1,7 +1,9 @@
 //! Relief / 3-axis ball-nose surfacing driver.
 //!
 //! Resolves the op's [`crate::project::ReliefSource`] into a target
-//! [`SurfaceField`] (mapping brightness → Z with the op's depth range),
+//! [`SurfaceField`] — remapping brightness → Z across the op's depth range
+//! for an image source, or cutting the STL's real Z directly (clamped to
+//! tool reach) for a height-grid source — then
 //! runs the drop-cutter raster engine ([`surface_mill`]) to get gouge-free
 //! XYZ scanlines, and emits them with [`emit_vcarve_block`] — the same
 //! per-point-Z emitter the `VCarve` / `Halfpipe` / `Thread` drivers use.
@@ -14,7 +16,7 @@ use crate::gcode::{emit_vcarve_block, PostProcessor};
 use crate::geometry::Point2;
 use crate::pipeline::warnings::push_tool_fit_kind_warnings;
 use crate::pipeline::{CancelToken, PipelineError, PipelineWarning};
-use crate::project::{Op, OpKind, Project, ReliefSource};
+use crate::project::{Op, OpKind, Project, ReliefGrid, ReliefSource};
 
 fn find_source(project: &Project, id: u32) -> Option<&ReliefSource> {
     project.relief_sources.iter().find(|s| s.id == id)
@@ -26,7 +28,7 @@ pub(in crate::pipeline) fn relief_would_emit(op: &Op, project: &Project) -> bool
     let OpKind::ReliefMill { source_id, .. } = &op.kind else {
         return false;
     };
-    find_source(project, *source_id).is_some_and(|s| !s.brightness.is_empty())
+    find_source(project, *source_id).is_some_and(|s| !s.grid.is_empty())
 }
 
 /// Emit a relief-surfacing op. No-op (with a warning) when the source is
@@ -72,13 +74,13 @@ pub(in crate::pipeline) fn run_relief_op<P: PostProcessor>(
     if source.cols == 0
         || source.rows == 0
         || source.cell <= 0.0
-        || source.brightness.len() as u64 != expected
+        || source.grid.len() as u64 != expected
     {
         warnings.push(PipelineWarning {
             op_id: Some(op.id),
             kind: "relief_source_invalid".into(),
             message: format!(
-                "Relief op '{}': source #{source_id} has a malformed grid (cols × rows must equal the brightness length and be non-empty).",
+                "Relief op '{}': source #{source_id} has a malformed grid (cols × rows must equal the grid length and be non-empty).",
                 op.name
             ),
         });
@@ -99,10 +101,47 @@ pub(in crate::pipeline) fn run_relief_op<P: PostProcessor>(
         _ => radius,
     };
 
-    // Ceiling: the shallowest of the two range ends, never above the stock
-    // top. Floor: the deeper end, clamped to what the flutes can reach.
-    let z_top = z_min_mm.max(*z_max_mm).min(0.0);
-    let mut z_floor = z_min_mm.min(*z_max_mm);
+    // Resolve the source into a target field plus the tip Z window
+    // [z_floor, z_top] the drop-cutter clamps to. The two grid kinds map
+    // depth differently:
+    //   * Grayscale: brightness is remapped to Z across [z_min, z_max]; the
+    //     window is exactly that user range (ceiling never above stock top).
+    //   * Heightgrid: the Z is REAL geometry (STL top already at 0), so the
+    //     op's range degrades to a clamp — cut the full model depth by
+    //     default (z_min == z_max == 0), or a shallower user-set floor.
+    let (field, z_top, mut z_floor) = match &source.grid {
+        ReliefGrid::Grayscale { brightness } => {
+            let z_top = z_min_mm.max(*z_max_mm).min(0.0);
+            let z_floor = z_min_mm.min(*z_max_mm);
+            let field = SurfaceField::from_grayscale(
+                source.origin,
+                source.cell,
+                source.cols,
+                source.rows,
+                brightness,
+                *z_min_mm,
+                *z_max_mm,
+                *invert,
+            );
+            (field, z_top, z_floor)
+        }
+        ReliefGrid::Heightgrid { z } => {
+            let field =
+                SurfaceField::new(source.origin, source.cell, source.cols, source.rows, z.clone());
+            let (field_min, field_max) = field.z_range();
+            let z_top = f64::from(field_max).min(0.0);
+            // A user-set negative limit clamps the floor shallower than the
+            // model; the default (0) means "reach the model's deepest point".
+            let user_floor = z_min_mm.min(*z_max_mm);
+            let z_floor = if user_floor < 0.0 {
+                f64::from(field_min).max(user_floor)
+            } else {
+                f64::from(field_min)
+            };
+            (field, z_top, z_floor)
+        }
+    };
+    // Floor is clamped to what the flutes can reach (shared across kinds).
     if let Some(flute) = tool.flute_length_mm.filter(|v| *v > 0.0) {
         if z_floor < -flute {
             z_floor = -flute;
@@ -117,16 +156,6 @@ pub(in crate::pipeline) fn run_relief_op<P: PostProcessor>(
         }
     }
 
-    let field = SurfaceField::from_grayscale(
-        source.origin,
-        source.cell,
-        source.cols,
-        source.rows,
-        &source.brightness,
-        *z_min_mm,
-        *z_max_mm,
-        *invert,
-    );
     let params = SurfaceMillParams {
         tool_radius_mm: radius,
         corner_radius_mm: corner_radius,

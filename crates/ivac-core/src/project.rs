@@ -122,13 +122,13 @@ pub struct Project {
 }
 
 /// A target surface source for relief / ball-nose surfacing. Holds a
-/// row-major normalized-brightness grid (each value in `[0, 1]`) plus its
-/// world placement; the depth mapping (brightness → Z) lives on the
-/// [`OpKind::ReliefMill`] op so the user can retune depth without
-/// re-uploading the image. The first producer decodes a grayscale
-/// image frontend-side; a future STL rasterizer would populate the same
-/// grid. The driver turns it into a [`crate::cam::surface::SurfaceField`]
-/// via `SurfaceField::from_grayscale`.
+/// row-major grid (see [`ReliefGrid`]) plus its world placement. Two
+/// producers feed the same type: a grayscale image decoded frontend-side
+/// ([`ReliefGrid::Grayscale`]) and an STL rasterized to real geometry Z
+/// ([`ReliefGrid::Heightgrid`], via `SurfaceField::from_stl`). The
+/// [`OpKind::ReliefMill`] driver turns either kind into a
+/// [`crate::cam::surface::SurfaceField`]; the placement (`origin` / `cell`
+/// / `cols` / `rows`) is shared, only the per-cell payload differs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ReliefSource {
     /// Stable id referenced by [`OpKind::ReliefMill::source_id`].
@@ -142,9 +142,61 @@ pub struct ReliefSource {
     pub cell: f64,
     pub cols: u32,
     pub rows: u32,
-    /// Row-major normalized brightness in `[0, 1]`. Length must be
-    /// `cols * rows`.
-    pub brightness: Vec<f32>,
+    /// The per-cell surface data — a normalized-brightness grid (image
+    /// relief) or a real target-Z height grid (STL). Length must be
+    /// `cols * rows`. See [`ReliefGrid`].
+    pub grid: ReliefGrid,
+}
+
+impl ReliefSource {
+    /// The brightness grid, if this is a [`ReliefGrid::Grayscale`] source;
+    /// `None` for a height grid (which the raster-engrave driver can't use —
+    /// there is no brightness to modulate laser power from).
+    #[must_use]
+    pub fn brightness(&self) -> Option<&[f32]> {
+        match &self.grid {
+            ReliefGrid::Grayscale { brightness } => Some(brightness),
+            ReliefGrid::Heightgrid { .. } => None,
+        }
+    }
+}
+
+/// The per-cell payload of a [`ReliefSource`], tagged by `kind`. Decoupled
+/// from the shared placement so both producers reuse the same footprint
+/// plumbing. A [`OpKind::ReliefMill`] op accepts either kind; a
+/// [`OpKind::RasterEngrave`] op only accepts [`ReliefGrid::Grayscale`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ReliefGrid {
+    /// Row-major normalized brightness in `[0, 1]`. The op remaps it to Z
+    /// through `z_min_mm` / `z_max_mm` at planning time
+    /// (`SurfaceField::from_grayscale`), so depth is a cheap op-level knob
+    /// that retunes without re-decoding the image.
+    Grayscale { brightness: Vec<f32> },
+    /// Row-major real target Z per cell (mm), stock top at 0 and relief
+    /// carved downward — the geometry an STL rasterizes to
+    /// (`SurfaceField::from_stl` / `from_mesh`, which already shift the
+    /// model top to 0). The op cuts this Z directly (clamped to tool
+    /// reach), NOT through a brightness → Z remap.
+    Heightgrid { z: Vec<f32> },
+}
+
+impl ReliefGrid {
+    /// Number of cells in the grid (brightness or Z length). Must equal
+    /// `cols * rows` on the owning [`ReliefSource`].
+    #[must_use]
+    pub fn len(&self) -> usize {
+        match self {
+            ReliefGrid::Grayscale { brightness } => brightness.len(),
+            ReliefGrid::Heightgrid { z } => z.len(),
+        }
+    }
+
+    /// True when the grid carries no cells.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 /// Resolved stock box. See [`Project::stock`]. Kept deliberately

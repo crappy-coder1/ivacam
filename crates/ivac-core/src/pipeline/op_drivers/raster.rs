@@ -42,7 +42,8 @@ pub(in crate::pipeline) fn raster_would_emit(op: &Op, project: &Project) -> bool
         return false;
     };
     matches!(project.machine.mode, MachineMode::Laser)
-        && find_source(project, *source_id).is_some_and(|s| !s.brightness.is_empty())
+        && find_source(project, *source_id)
+            .is_some_and(|s| s.brightness().is_some_and(|b| !b.is_empty()))
 }
 
 /// Post-resample grid dimensions for a `target_pitch`, computed WITHOUT
@@ -126,7 +127,13 @@ pub(in crate::pipeline) fn run_raster_op<P: PostProcessor>(
     let Some(source) = find_source(project, *source_id) else {
         return Ok(());
     };
-    if source.brightness.is_empty() || source.cols == 0 || source.rows == 0 {
+    // Raster engrave needs a brightness grid; a height-grid (STL) source has
+    // none, so it's a no-op here (the op×source-kind mismatch is screened by
+    // `raster_would_emit`).
+    let Some(src_brightness) = source.brightness() else {
+        return Ok(());
+    };
+    if src_brightness.is_empty() || source.cols == 0 || source.rows == 0 {
         return Ok(());
     }
 
@@ -152,7 +159,7 @@ pub(in crate::pipeline) fn run_raster_op<P: PostProcessor>(
         return Ok(());
     }
     let (brightness, cols, rows) =
-        resample(&source.brightness, in_cols, in_rows, cell, *resolution_mm);
+        resample(src_brightness, in_cols, in_rows, cell, *resolution_mm);
 
     // Per-pixel power, computed once over the whole grid (Floyd–Steinberg
     // diffuses across rows, so the row walk must see the full result).

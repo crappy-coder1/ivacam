@@ -29,7 +29,7 @@ use std::sync::Arc;
 fn pipeline_relief_mill_emits_varying_z_ballnose_surface() {
     use crate::cam::surface_mill::ScanDirection;
     use crate::geometry::Point2;
-    use crate::project::ReliefSource;
+    use crate::project::{ReliefGrid, ReliefSource};
 
     // 6x6 brightness ramp: dark (deep) at x=0 → bright (top) at x=max.
     let cols = 6u32;
@@ -47,7 +47,7 @@ fn pipeline_relief_mill_emits_varying_z_ballnose_surface() {
         cell: 2.0,
         cols,
         rows,
-        brightness,
+        grid: ReliefGrid::Grayscale { brightness },
     };
     let mut ball = endmill(1, 4.0);
     ball.kind = ToolKind::BallNose;
@@ -149,6 +149,104 @@ fn pipeline_relief_mill_emits_varying_z_ballnose_surface() {
             .any(|w| w.kind == "tool_kind_mismatch"),
         "non-ball-nose relief should warn tool_kind_mismatch: {:?}",
         resp2.warnings
+    );
+}
+
+/// A `ReliefMill` op over a `Heightgrid` source (the STL path) cuts the
+/// grid's REAL Z directly — no brightness remap — and reaches the full
+/// model depth with the op's depth range left at its default (0, 0). The
+/// emitted Z follows the geometry ramp and stays within the model's range.
+#[test]
+fn pipeline_relief_mill_heightgrid_cuts_real_z_without_depth_range() {
+    use crate::cam::surface_mill::ScanDirection;
+    use crate::geometry::Point2;
+    use crate::project::{ReliefGrid, ReliefSource};
+
+    // 8x8 real-Z ramp: top (0) at the +x edge, deepest (-4.2) at x=0. The
+    // model top already sits at the stock top (0), as `from_mesh` shifts it.
+    let cols = 8u32;
+    let rows = 8u32;
+    let mut z = Vec::new();
+    for _iy in 0..rows {
+        for ix in 0..cols {
+            z.push(-0.6 * ((cols - 1 - ix) as f32));
+        }
+    }
+    let source = ReliefSource {
+        id: 3,
+        name: "model.stl".into(),
+        origin: Point2::new(0.0, 0.0),
+        cell: 2.0,
+        cols,
+        rows,
+        grid: ReliefGrid::Heightgrid { z },
+    };
+    let mut ball = endmill(1, 3.0);
+    ball.kind = ToolKind::BallNose;
+    ball.flute_length_mm = Some(20.0);
+    let op = Op {
+        id: 1,
+        name: "Relief".into(),
+        enabled: true,
+        kind: OpKind::ReliefMill {
+            source_id: 3,
+            // Depth range left at its default — for a height grid this means
+            // "cut the full model depth", so the real Z drives everything.
+            z_min_mm: 0.0,
+            z_max_mm: 0.0,
+            invert: false,
+            scallop_height_mm: 0.0,
+            stepover_mm: Some(2.0),
+            scan_direction: ScanDirection::AlongX,
+            along_step_mm: 1.0,
+        },
+        tool_id: 1,
+        finish_tool_id: None,
+        source: OpSource::All,
+        params: OpParams::mill_default(),
+        group: None,
+        pin_order: false,
+    };
+    let project = Project {
+        segments: Vec::new(),
+        machine: MachineConfig::default(),
+        tools: vec![ball],
+        operations: vec![op],
+        fixtures: Vec::default(),
+        text_layers: Vec::new(),
+        work_offset: crate::project::WorkOffset::default(),
+        stock: None,
+        relief_sources: vec![source],
+        group_ops_by_tool: false,
+    };
+    let resp = run_pipeline(
+        PipelineRequest {
+            project,
+            post_processor: Some(PostProcessorKind::Linuxcnc),
+        },
+        |_, _, _| {},
+    )
+    .expect("heightgrid relief pipeline should run end-to-end");
+    assert!(resp.gcode.contains("; OP 1"), "no op marker for heightgrid relief");
+    let cut_zs: Vec<f64> = resp
+        .toolpath
+        .iter()
+        .filter(|s| s.op_id == 1 && matches!(s.kind, crate::gcode::preview::MoveKind::Cut))
+        .map(|s| s.to.z)
+        .collect();
+    assert!(!cut_zs.is_empty(), "heightgrid relief emitted no cut moves");
+    let zmin = cut_zs.iter().copied().fold(f64::INFINITY, f64::min);
+    let zmax = cut_zs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    // The real ramp Z is cut directly: it varies (not flat) and stays within
+    // the model's [-4.2, 0] range — depth was NOT clamped flat to 0 despite
+    // the default (0, 0) op range.
+    assert!(
+        zmax - zmin > 1.0,
+        "heightgrid Z should follow the real ramp (got span {zmin}..{zmax})"
+    );
+    assert!(
+        zmin >= -4.2 - 1e-6 && zmax <= 1e-6,
+        "heightgrid Z out of the model's real range: {zmin}..{zmax}"
     );
 }
 
@@ -831,7 +929,7 @@ fn raster_engrave_emits_power_modulated_scanlines() {
     use crate::cam::raster::{PowerCurve, RasterLink};
     use crate::cam::surface_mill::ScanDirection;
     use crate::geometry::Point2;
-    use crate::project::ReliefSource;
+    use crate::project::{ReliefGrid, ReliefSource};
 
     let mut tool = endmill(1, 0.1);
     tool.kind = ToolKind::LaserBeam;
@@ -846,7 +944,9 @@ fn raster_engrave_emits_power_modulated_scanlines() {
         cell: 1.0,
         cols: 3,
         rows: 1,
-        brightness: vec![0.0, 1.0, 0.0], // black, white, black
+        grid: ReliefGrid::Grayscale {
+            brightness: vec![0.0, 1.0, 0.0], // black, white, black
+        },
     };
     let project = Project {
         segments: Vec::new(),
@@ -905,7 +1005,7 @@ fn raster_scan_direction_sets_scanline_count() {
     use crate::cam::raster::{PowerCurve, RasterLink};
     use crate::cam::surface_mill::ScanDirection;
     use crate::geometry::Point2;
-    use crate::project::ReliefSource;
+    use crate::project::{ReliefGrid, ReliefSource};
 
     let raster_gcode = |dir: ScanDirection| -> String {
         let mut tool = endmill(1, 0.1);
@@ -950,7 +1050,9 @@ fn raster_scan_direction_sets_scanline_count() {
                 cell: 1.0,
                 cols: 2,
                 rows: 1,
-                brightness: vec![0.0, 1.0], // black, white
+                grid: ReliefGrid::Grayscale {
+                    brightness: vec![0.0, 1.0], // black, white
+                },
             }],
             group_ops_by_tool: false,
         };

@@ -856,6 +856,7 @@ mod tests {
         let tool = endmill();
         let machine = MachineConfig::default();
         let wo = WorkOffset::default();
+        use crate::project::ReliefGrid;
         let rs1 = ReliefSource {
             id: 1,
             name: "heightmap".into(),
@@ -863,10 +864,14 @@ mod tests {
             cell: 0.5,
             cols: 2,
             rows: 2,
-            brightness: vec![0.1, 0.2, 0.3, 0.4],
+            grid: ReliefGrid::Grayscale {
+                brightness: vec![0.1, 0.2, 0.3, 0.4],
+            },
         };
         let mut rs2 = rs1.clone();
-        rs2.brightness[3] = 0.99;
+        if let ReliefGrid::Grayscale { brightness } = &mut rs2.grid {
+            brightness[3] = 0.99;
+        }
         let k1 =
             op_cache_key_with_finish(&op, &tool, None, &machine, &segs, &[], &[], &[rs1], &wo, 0);
         let k2 =
