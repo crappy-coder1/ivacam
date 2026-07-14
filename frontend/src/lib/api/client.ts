@@ -11,6 +11,7 @@ import type {
   RenderTextRequest,
   RenderTextResponse,
   RenderTextLayerResponse,
+  SurfaceField,
   WireTextLayer,
   VersionResponse,
   WiacError,
@@ -65,6 +66,16 @@ export interface WiacClient {
    * `Auto (detected: …)` before gcode generation.
    */
   computeHelixRadius(request: HelixRadiusRequest): Promise<HelixRadiusResponse>;
+  /**
+   * Rasterize an STL byte stream into a relief height grid — the serialized
+   * `SurfaceField` (`{origin, cell, cols, rows, z}`, real target Z with the
+   * model top shifted to 0), or `null` when the mesh has no XY footprint to
+   * sample. `maxDim` caps the longer XY side's cell count. Runs the Rust
+   * rasterizer through the active transport (worker message / native Tauri
+   * command / server route) so no transport pulls in a second wasm instance
+   * or the wasm bundle just for this one-shot load. See ivac-fm06.
+   */
+  rasterizeStl(bytes: Uint8Array, maxDim: number): Promise<SurfaceField | null>;
 }
 
 export interface ProgressEvent {

@@ -13,6 +13,7 @@ import type {
   RenderTextRequest,
   RenderTextResponse,
   RenderTextLayerResponse,
+  SurfaceField,
   WireTextLayer,
   VersionResponse,
 } from './types';
@@ -33,19 +34,13 @@ export type WasmModule = {
   /// Rasterize an STL byte stream to a relief height grid — the serialized
   /// SurfaceField `{origin,cell,cols,rows,z}`, or null when the mesh has no
   /// XY footprint. `maxDim` bounds the longer XY side's cell count. Loaded
-  /// on demand by the client-side STL relief path (see state/relief_stl.ts).
-  fromStl?: (bytes: Uint8Array, maxDim: number) => unknown;
+  /// on demand by the STL relief path (see state/relief_stl.ts). Returns
+  /// the serialized `SurfaceField`, or null when the mesh has no XY
+  /// footprint. Optional because older wasm builds may predate the export.
+  fromStl?: (bytes: Uint8Array, maxDim: number) => SurfaceField | null;
 };
 
 let modPromise: Promise<WasmModule> | null = null;
-
-/// Lazily load (once) the ivac-wasm module on the current thread. Exported
-/// so client-side helpers that call a core binding directly — e.g. STL
-/// relief rasterization — can reuse the same instance the WASM transport
-/// uses, instead of routing through the WiacClient transport seam.
-export function loadWasmModule(): Promise<WasmModule> {
-  return loadModule();
-}
 
 async function loadModule(): Promise<WasmModule> {
   if (!modPromise) {
@@ -140,5 +135,11 @@ export class WasmWiacClient implements WiacClient {
   async computeHelixRadius(request: HelixRadiusRequest): Promise<HelixRadiusResponse> {
     const m = await loadModule();
     return m.computeHelixRadius(request);
+  }
+
+  async rasterizeStl(bytes: Uint8Array, maxDim: number): Promise<SurfaceField | null> {
+    const m = await loadModule();
+    if (!m.fromStl) throw new Error('STL rasterization is unavailable in this build');
+    return (m.fromStl(bytes, maxDim) as SurfaceField | null) ?? null;
   }
 }

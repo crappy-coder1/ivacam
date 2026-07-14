@@ -21,6 +21,7 @@ import type {
   RenderTextRequest,
   RenderTextResponse,
   RenderTextLayerResponse,
+  SurfaceField,
   WireTextLayer,
   VersionResponse,
 } from './types';
@@ -226,6 +227,14 @@ export class WasmWorkerClient implements WiacClient {
 
   computeHelixRadius(request: HelixRadiusRequest): Promise<HelixRadiusResponse> {
     return this.call('computeHelixRadius', [request]);
+  }
+
+  rasterizeStl(bytes: Uint8Array, maxDim: number): Promise<SurfaceField | null> {
+    // Transfer (not copy) the STL bytes into the worker; the caller reads
+    // the file into its own buffer once, so detaching it here is safe.
+    return this.call('rasterizeStl', [bytes, maxDim], {
+      transfer: [bytes.buffer as ArrayBuffer],
+    });
   }
 
   /// Explicit teardown (not part of `WiacClient`) — terminate the worker

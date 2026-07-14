@@ -109,6 +109,19 @@ ctx.onmessage = async (e: MessageEvent<WorkerRequest>) => {
       case 'computeHelixRadius':
         post({ id, type: 'result', value: m.computeHelixRadius(args[0] as HelixRadiusRequest) });
         break;
+      case 'rasterizeStl':
+        // Rasterize on the worker's existing wasm instance — no second
+        // main-thread instance (the whole point of ivac-fm06).
+        if (!m.fromStl) {
+          post({ id, type: 'error', error: 'STL rasterization is unavailable in this build' });
+        } else {
+          post({
+            id,
+            type: 'result',
+            value: m.fromStl(args[0] as Uint8Array, args[1] as number) ?? null,
+          });
+        }
+        break;
       default:
         post({ id, type: 'error', error: `unknown method: ${String(method)}` });
     }

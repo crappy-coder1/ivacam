@@ -211,6 +211,7 @@ fn run_app() -> tauri::Result<()> {
             commands::render_text,
             commands::render_text_layer,
             commands::compute_helix_radius_cmd,
+            commands::rasterize_stl_cmd,
             commands::read_workspace_file,
             commands::write_workspace_file,
             commands::watch_source_paths,

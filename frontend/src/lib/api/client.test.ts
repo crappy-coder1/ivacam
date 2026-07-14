@@ -6,7 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HttpWiacClient, resolveApiChoice } from './http';
 import { tryParseStructuredError } from './client';
-import type { HelixRadiusRequest, HelixRadiusResponse, WiacError } from './types';
+import type { HelixRadiusRequest, HelixRadiusResponse, SurfaceField, WiacError } from './types';
 
 describe('HttpWiacClient.computeHelixRadius', () => {
   const realFetch = globalThis.fetch;
@@ -136,6 +136,72 @@ describe('HttpWiacClient.computeHelixRadius', () => {
     expect(msg).not.toMatch(/already been consumed/);
     expect(msg).toContain('502');
     expect(msg).toContain('Bad Gateway');
+  });
+});
+
+describe('HttpWiacClient.rasterizeStl', () => {
+  const realFetch = globalThis.fetch;
+
+  beforeEach(() => {
+    globalThis.fetch = vi.fn();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  it('POSTs a multipart body to /relief/stl and returns the parsed SurfaceField', async () => {
+    const field: SurfaceField = {
+      origin: { x: -5, y: -5 },
+      cell: 0.5,
+      cols: 2,
+      rows: 2,
+      z: [0, -1, -2, -3],
+    };
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+      new Response(JSON.stringify(field), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const client = new HttpWiacClient('http://example.test');
+    const got = await client.rasterizeStl(new Uint8Array([1, 2, 3]), 128);
+
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    const [url, init] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      RequestInit,
+    ];
+    expect(url).toBe('http://example.test/relief/stl');
+    expect(init.method).toBe('POST');
+    // Body is FormData carrying the STL bytes + the max_dim cap.
+    const form = init.body as FormData;
+    expect(form).toBeInstanceOf(FormData);
+    expect(form.get('max_dim')).toBe('128');
+    expect(form.get('file')).toBeInstanceOf(Blob);
+    expect(got).toEqual(field);
+  });
+
+  it('maps a 204 (no XY footprint) to null', async () => {
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+      new Response(null, { status: 204 }),
+    );
+    const client = new HttpWiacClient('http://example.test');
+    const got = await client.rasterizeStl(new Uint8Array([1]), 256);
+    expect(got).toBeNull();
+  });
+
+  it('throws when the server rejects the STL', async () => {
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: 'not an STL' }), {
+        status: 400,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const client = new HttpWiacClient('http://example.test');
+    await expect(client.rasterizeStl(new Uint8Array([0]), 256)).rejects.toThrow(
+      /relief\/stl returned 400/,
+    );
   });
 });
 

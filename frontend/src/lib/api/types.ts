@@ -29,6 +29,10 @@ export type RenderTextLayerResponse = components['schemas']['RenderTextLayerResp
 export type WireTextLayer = components['schemas']['TextLayer'];
 export type HelixRadiusRequest = components['schemas']['HelixRadiusRequest'];
 export type HelixRadiusResponse = components['schemas']['HelixRadiusResponse'];
+/// A rasterized target-Z surface (`{origin, cell, cols, rows, z}`). The
+/// `rasterizeStl` transport method returns this from an STL upload; the
+/// frontend stores its grid as a `heightgrid` ReliefSource. See ivac-fm06.
+export type SurfaceField = components['schemas']['SurfaceField'];
 export type ImportedObject = components['schemas']['ImportedObject'];
 export type ImportedTextEntity = components['schemas']['ImportedTextEntity'];
 export type ImportedTextKind = components['schemas']['ImportedTextKind'];

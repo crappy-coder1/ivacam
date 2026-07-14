@@ -17,7 +17,8 @@ export type WorkerMethod =
   | 'generateStreaming'
   | 'renderText'
   | 'renderTextLayer'
-  | 'computeHelixRadius';
+  | 'computeHelixRadius'
+  | 'rasterizeStl';
 
 /// Main thread → worker. `id` correlates the eventual response(s);
 /// `args` is the positional argument list for `method`.

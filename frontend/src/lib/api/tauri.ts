@@ -16,6 +16,7 @@ import type {
   RenderTextRequest,
   RenderTextResponse,
   RenderTextLayerResponse,
+  SurfaceField,
   WireTextLayer,
   VersionResponse,
 } from './types';
@@ -179,6 +180,17 @@ export class TauriWiacClient implements WiacClient {
 
   async computeHelixRadius(request: HelixRadiusRequest): Promise<HelixRadiusResponse> {
     return invoke<HelixRadiusResponse>('compute_helix_radius_cmd', { req: request });
+  }
+
+  async rasterizeStl(bytes: Uint8Array, maxDim: number): Promise<SurfaceField | null> {
+    // Tauri's JSON IPC can't carry a typed array, so send a plain number
+    // array (deserializes to `Vec<u8>`). A load-time one-shot, so the
+    // copy cost is acceptable. `null` ⇒ mesh had no XY footprint.
+    const field = await invoke<SurfaceField | null>('rasterize_stl_cmd', {
+      bytes: Array.from(bytes),
+      maxDim,
+    });
+    return field ?? null;
   }
 }
 

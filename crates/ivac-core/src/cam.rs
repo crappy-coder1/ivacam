@@ -334,6 +334,10 @@ pub fn segments_to_points(segments: &[Segment], interpolate: usize) -> Vec<Point
 pub(crate) fn register_schemas(map: &mut crate::schema::SchemaMap) {
     crate::schema::insert::<VcObject>(map, "VcObject");
     crate::schema::insert::<offsets::PolylineOffset>(map, "PolylineOffset");
+    // The STL-relief rasterizer's wire shape: `rasterizeStl` (transport
+    // route → SurfaceField::from_stl_capped) returns this JSON so the
+    // frontend can build a `heightgrid` ReliefSource. See ivac-fm06.
+    crate::schema::insert::<surface::SurfaceField>(map, "SurfaceField");
 }
 
 #[cfg(test)]

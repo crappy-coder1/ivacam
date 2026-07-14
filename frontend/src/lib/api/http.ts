@@ -11,6 +11,7 @@ import type {
   RenderTextRequest,
   RenderTextResponse,
   RenderTextLayerResponse,
+  SurfaceField,
   WireTextLayer,
   VersionResponse,
 } from './types';
@@ -113,6 +114,19 @@ export class HttpWiacClient implements WiacClient {
     });
     if (!res.ok) await throwHttpError('/helix-radius', res);
     return (await res.json()) as HelixRadiusResponse;
+  }
+
+  async rasterizeStl(bytes: Uint8Array, maxDim: number): Promise<SurfaceField | null> {
+    const form = new FormData();
+    // Wrap in a Blob so the field is sent as a file part (server reads
+    // `field.bytes()`), matching the /import multipart shape.
+    form.append('file', new Blob([bytes as BlobPart]), 'model.stl');
+    form.append('max_dim', String(maxDim));
+    const res = await fetch(`${this.base}/relief/stl`, { method: 'POST', body: form });
+    // 204 = the mesh has no XY footprint (nothing to surface) — see server.
+    if (res.status === 204) return null;
+    if (!res.ok) await throwHttpError('/relief/stl', res);
+    return (await res.json()) as SurfaceField;
   }
 
   /**
@@ -415,6 +429,7 @@ class WasmClientLazy {
       renderText: (req) => ensure().then((c) => c.renderText(req)),
       renderTextLayer: (layer) => ensure().then((c) => c.renderTextLayer(layer)),
       computeHelixRadius: (req) => ensure().then((c) => c.computeHelixRadius(req)),
+      rasterizeStl: (bytes, maxDim) => ensure().then((c) => c.rasterizeStl(bytes, maxDim)),
     };
   }
 }
@@ -450,6 +465,7 @@ class TauriClientLazy {
       renderText: (req) => ensure().then((c) => c.renderText(req)),
       renderTextLayer: (layer) => ensure().then((c) => c.renderTextLayer(layer)),
       computeHelixRadius: (req) => ensure().then((c) => c.computeHelixRadius(req)),
+      rasterizeStl: (bytes, maxDim) => ensure().then((c) => c.rasterizeStl(bytes, maxDim)),
     };
   }
 }

@@ -152,6 +152,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/relief/stl": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rasterize an STL into a relief height grid
+         * @description Rasterizes an uploaded STL (multipart `file` field, plus an optional
+         *     `max_dim` cell-count cap on the longer XY side) through the native
+         *     core into a SurfaceField — a real target-Z grid with the model top
+         *     shifted to the stock top 0. The frontend stores the result as a
+         *     `heightgrid` ReliefSource that the ReliefMill op surfaces, so the
+         *     raw STL bytes never enter the project JSON. Routing this through the
+         *     transport (instead of a client-side wasm call) keeps the wasm bundle
+         *     out of the tauri/http builds. A `204` means the mesh has no XY
+         *     footprint to sample (a fully vertical model — nothing to surface).
+         */
+        post: operations["rasterizeStl"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1827,6 +1855,22 @@ export interface components {
              */
             width_mm: number;
         };
+        /** @description A target Z(x,y) surface over a rectangular footprint. Row-major `cols * rows` cells; cell `(ix, iy)`'s center sits at `origin + ((ix + 0.5) * cell, (iy + 0.5) * cell)`, matching the simulator heightmap's cell-center convention so the two grids align. */
+        SurfaceField: {
+            /**
+             * Format: double
+             * @description Cell size in mm (square cells).
+             */
+            cell: number;
+            /** Format: uint32 */
+            cols: number;
+            /** @description World XY of the field's min corner (the (0,0) cell's lower-left). */
+            origin: components["schemas"]["Point2"];
+            /** Format: uint32 */
+            rows: number;
+            /** @description Row-major target Z per cell (mm). Length must be `cols * rows`. Convention: stock top at 0, relief carved downward (Z <= 0). */
+            z: number[];
+        };
         /** @description A user-placed tab anchored geometry-relative. The `object_id` is 1-based to match `OpSource::Objects::ids`; `t ∈ [0, 1)` is the arc-length parameter along the chained object's segments. `cam/tabs.rs::polyline_at_t` resolves the parameter to a world point at gcode-emission time, so the tab follows the geometry through transforms. */
         TabPlacement: {
             /**
@@ -2650,6 +2694,46 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["HelixRadiusResponse"];
                 };
+            };
+            400: components["responses"]["BadRequest"];
+        };
+    };
+    rasterizeStl: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": {
+                    /** Format: binary */
+                    file: string;
+                    /**
+                     * Format: uint32
+                     * @description Cap on the longer XY side's cell count. Defaults to 256.
+                     */
+                    max_dim?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Rasterized relief height grid */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SurfaceField"];
+                };
+            };
+            /** @description Mesh has no XY footprint — nothing to surface */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             400: components["responses"]["BadRequest"];
         };

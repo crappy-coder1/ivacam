@@ -63,6 +63,7 @@ async fn main() -> Result<()> {
         .route("/text", post(render_text_handler))
         .route("/text/layer", post(render_text_layer_handler))
         .route("/helix-radius", post(helix_radius_handler))
+        .route("/relief/stl", post(relief_stl_handler))
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
@@ -300,6 +301,42 @@ async fn helix_radius_handler(
         .await
         .map_err(|e| AppError::internal(e.to_string()))?;
     Ok(Json(resp))
+}
+
+/// STL → relief height grid. Rasterizes an uploaded STL (multipart `file`
+/// field + optional `max_dim` cell-count cap) through the native core so
+/// the HTTP/Tauri frontends don't pull the wasm bundle in just for this.
+/// Mirrors the `rasterizeStl` WiacClient method (see ivac-fm06). Returns
+/// the serialized `SurfaceField`, or `204 No Content` when the mesh has no
+/// XY footprint to sample (a fully vertical model — nothing to surface).
+async fn relief_stl_handler(mut multipart: Multipart) -> Result<Response, AppError> {
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut max_dim: u32 = 256;
+    while let Some(field) = multipart.next_field().await? {
+        match field.name().unwrap_or("") {
+            "file" => bytes = field.bytes().await?.to_vec(),
+            "max_dim" => {
+                max_dim =
+                    field.text().await?.trim().parse().map_err(|_| {
+                        AppError::bad_request("max_dim must be a non-negative integer")
+                    })?;
+            }
+            _ => {}
+        }
+    }
+    if bytes.is_empty() {
+        return Err(AppError::bad_request("file field missing or empty"));
+    }
+    let field = tokio::task::spawn_blocking(move || {
+        ivac_core::cam::surface::SurfaceField::from_stl_capped(&bytes, max_dim)
+    })
+    .await
+    .map_err(|e| AppError::internal(e.to_string()))?
+    .map_err(|e| AppError::bad_request(e.to_string()))?;
+    match field {
+        Some(f) => Ok(Json(f).into_response()),
+        None => Ok(StatusCode::NO_CONTENT.into_response()),
+    }
 }
 
 /// SSE variant: emits a `token` event with the cancellation handle the
@@ -603,5 +640,86 @@ mod tests {
         // Still a structured body; clients can distinguish via the 408
         // status without parsing the message text.
         assert_eq!(app_err.inner.kind, ErrorKind::Internal);
+    }
+
+    // ─── /relief/stl route (ivac-fm06) ──────────────────────────────────
+    //
+    // Drive the handler through the router in-process (no TCP bind — the
+    // sandbox holds localhost ports). Covers the three outcomes the client
+    // depends on: 200 + SurfaceField, 204 for a footprint-less mesh, and
+    // 400 for un-parseable bytes.
+
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt; // for `oneshot`
+
+    /// Build a minimal `multipart/form-data` body: the STL bytes as the
+    /// `file` part plus a `max_dim` text field.
+    fn stl_multipart(stl: &str, max_dim: &str) -> (String, Vec<u8>) {
+        let boundary = "TESTBOUNDARY1234";
+        let body = format!(
+            "--{b}\r\n\
+             Content-Disposition: form-data; name=\"file\"; filename=\"m.stl\"\r\n\
+             Content-Type: application/octet-stream\r\n\r\n\
+             {stl}\r\n\
+             --{b}\r\n\
+             Content-Disposition: form-data; name=\"max_dim\"\r\n\r\n\
+             {max_dim}\r\n\
+             --{b}--\r\n",
+            b = boundary,
+        );
+        (
+            format!("multipart/form-data; boundary={boundary}"),
+            body.into_bytes(),
+        )
+    }
+
+    async fn post_relief_stl(stl: &str, max_dim: &str) -> Response {
+        let app = Router::new().route("/relief/stl", post(relief_stl_handler));
+        let (content_type, body) = stl_multipart(stl, max_dim);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/relief/stl")
+            .header("content-type", content_type)
+            .body(Body::from(body))
+            .unwrap();
+        app.oneshot(req).await.unwrap()
+    }
+
+    // A flat 12×4 quad at z = 3. `max_dim = 6` ⇒ cell = 2 mm ⇒ 6×2 grid
+    // (mirrors the core `from_stl_capped` test).
+    const FLAT_QUAD: &str = "solid s\n\
+        facet normal 0 0 1 outer loop vertex 0 0 3 vertex 12 0 3 vertex 0 4 3 endloop endfacet\n\
+        facet normal 0 0 1 outer loop vertex 12 0 3 vertex 12 4 3 vertex 0 4 3 endloop endfacet\n\
+        endsolid s";
+
+    #[tokio::test]
+    async fn relief_stl_rasterizes_a_flat_quad_to_a_surface_field() {
+        let resp = post_relief_stl(FLAT_QUAD, "6").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp).await;
+        let field: ivac_core::cam::surface::SurfaceField =
+            serde_json::from_value(body).expect("body is a SurfaceField");
+        assert_eq!((field.cols, field.rows), (6, 2));
+        assert!((field.cell - 2.0).abs() < 1e-9);
+        assert_eq!(field.z.len(), 12);
+    }
+
+    #[tokio::test]
+    async fn relief_stl_returns_204_for_a_footprintless_mesh() {
+        // A single vertical facet has zero XY footprint — nothing to surface.
+        let vertical = "solid v facet normal 1 0 0 outer loop \
+            vertex 5 0 0 vertex 5 0 8 vertex 5 4 0 endloop endfacet endsolid v";
+        let resp = post_relief_stl(vertical, "8").await;
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn relief_stl_rejects_malformed_stl_with_400() {
+        // A `vertex` with a non-numeric coordinate is a hard parse error
+        // (StlError::BadAscii), which the handler surfaces as 400 — distinct
+        // from a well-formed-but-footprintless mesh (204).
+        let resp = post_relief_stl("solid x vertex 1 2 notanumber endsolid x", "6").await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 }

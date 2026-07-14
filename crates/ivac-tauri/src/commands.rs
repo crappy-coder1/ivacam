@@ -341,6 +341,23 @@ pub async fn compute_helix_radius_cmd(
         .map_err(|e| internal(format!("join error: {e}")))
 }
 
+/// STL → relief height grid, rasterized by the native core (no wasm bundle
+/// in the desktop build). Mirrors the `rasterizeStl` WiacClient method and
+/// the server's `/relief/stl` route (see ivac-fm06). Returns the serialized
+/// `SurfaceField`, or `None` when the mesh has no XY footprint to sample.
+#[tauri::command]
+pub async fn rasterize_stl_cmd(
+    bytes: Vec<u8>,
+    max_dim: u32,
+) -> Result<Option<ivac_core::cam::surface::SurfaceField>, String> {
+    tokio::task::spawn_blocking(move || {
+        ivac_core::cam::surface::SurfaceField::from_stl_capped(&bytes, max_dim)
+    })
+    .await
+    .map_err(|e| internal(format!("join error: {e}")))?
+    .map_err(|e| serialize_error(WiacError::bad_input(e.to_string())))
+}
+
 /// Serialize a structured `ivac_core::Error` to JSON the frontend can
 /// detect and parse via `tryParseStructuredError`. The string remains
 /// the Tauri error type (per existing API), but its content is now JSON
