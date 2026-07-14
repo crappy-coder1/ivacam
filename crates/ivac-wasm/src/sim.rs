@@ -34,6 +34,7 @@
 use serde::Deserialize;
 use wasm_bindgen::prelude::*;
 
+use ivac_core::cam::surface::SurfaceField;
 use ivac_core::gcode::preview::ToolpathSegment;
 use ivac_core::project::{Fixture, ToolEntry};
 use ivac_core::sim::dexel::{DexelField, DexelSnapshot};
@@ -101,6 +102,21 @@ pub struct Simulator {
     undercut_col_index: Vec<u32>,
     undercut_span_offsets: Vec<u32>,
     undercut_spans: Vec<f32>,
+    /// Cached target surface for the red/green deviation overlay, set once
+    /// per relief job via `set_deviation_target(...)` so `deviation()` can
+    /// reclassify the carved field per frame without re-serializing the
+    /// (potentially large) target grid each call — mirrors how `toolpath`
+    /// is cached. `None` = overlay off.
+    deviation_target: Option<DeviationTarget>,
+}
+
+/// The cached deviation-overlay target: the surface plus the world-Z datum
+/// its `z = 0` maps to and the on-target tolerance band (mm).
+#[derive(Debug)]
+struct DeviationTarget {
+    surface: SurfaceField,
+    surface_z0: f32,
+    tol: f32,
 }
 
 /// One backward-scrub dexel snapshot. `snapshot` captures the full carve
@@ -160,6 +176,7 @@ impl Simulator {
             undercut_col_index: Vec::new(),
             undercut_span_offsets: vec![0],
             undercut_spans: Vec::new(),
+            deviation_target: None,
         }
     }
 
@@ -499,29 +516,53 @@ impl Simulator {
         self.field.top_ptr()
     }
 
-    /// Classify the carved stock against a target relief surface for the
-    /// red/green deviation overlay — the correctness view GrblGru can't offer
-    /// (it never carves). `surface` is a serde-serialized
-    /// [`ivac_core::cam::surface::SurfaceField`] (`snake_case` fields, same
-    /// shape the STL rasterizer returns); `surface_z0` is the world Z its
-    /// `z = 0` datum maps to (pass `top_z()` for a relief job); `tol` is the
-    /// on-target band half-width in mm.
-    ///
-    /// Returns a row-major `cols * rows` `Uint8Array` of
-    /// [`ivac_core::cam::surface::Deviation`] codes (0 = on-target, 1 = gouge,
-    /// 2 = rest stock), aligned index-for-index with `data_ptr()` so the JS
-    /// driver can drive per-cell vertex colors off the same dirty AABB the
-    /// carve reports. The target grid need not match the sim grid — each sim
-    /// cell samples the target at its own world center.
-    pub fn deviation_vs(
-        &self,
+    /// Cache a target relief surface for the red/green deviation overlay — the
+    /// correctness view GrblGru can't offer (it never carves). `surface` is a
+    /// serde-serialized [`SurfaceField`] (`snake_case` fields, same shape the
+    /// STL rasterizer returns); `surface_z0` is the world Z its `z = 0` datum
+    /// maps to (pass `top_z()` for a relief job); `tol` is the on-target band
+    /// half-width in mm. Caching it once (instead of passing it every frame)
+    /// keeps per-frame [`Simulator::deviation`] cheap for large targets.
+    /// Replaces any previous target.
+    pub fn set_deviation_target(
+        &mut self,
         surface: JsValue,
         surface_z0: f32,
         tol: f32,
-    ) -> Result<Vec<u8>, JsValue> {
-        let field: ivac_core::cam::surface::SurfaceField =
+    ) -> Result<(), JsValue> {
+        let surface: SurfaceField =
             serde_wasm_bindgen::from_value(surface).map_err(into_js_error)?;
-        Ok(field.deviation_of(&self.field, surface_z0, tol))
+        self.deviation_target = Some(DeviationTarget {
+            surface,
+            surface_z0,
+            tol,
+        });
+        Ok(())
+    }
+
+    /// Drop the cached deviation target (overlay turned off).
+    pub fn clear_deviation_target(&mut self) {
+        self.deviation_target = None;
+    }
+
+    /// Whether a deviation target is cached.
+    #[must_use]
+    pub fn has_deviation_target(&self) -> bool {
+        self.deviation_target.is_some()
+    }
+
+    /// Classify the carved field against the cached deviation target (see
+    /// [`SurfaceField::deviation_of`]). Returns a row-major `cols * rows`
+    /// `Uint8Array` of [`ivac_core::cam::surface::Deviation`] codes (0 =
+    /// on-target, 1 = gouge, 2 = rest stock), aligned index-for-index with
+    /// `data_ptr()`, so the JS driver can repaint per-cell vertex colors off
+    /// the same dirty AABB the carve reports. Empty when no target is cached.
+    #[must_use]
+    pub fn deviation(&self) -> Vec<u8> {
+        match &self.deviation_target {
+            Some(t) => t.surface.deviation_of(&self.field, t.surface_z0, t.tol),
+            None => Vec::new(),
+        }
     }
 
     /// Number of columns currently carrying an undercut sidecar entry (`0`
@@ -664,6 +705,22 @@ impl Simulator {
     #[cfg(test)]
     pub(crate) fn field(&self) -> &DexelField {
         &self.field
+    }
+
+    /// Test-only: cache a deviation target without the `JsValue` round-trip
+    /// (`set_deviation_target` takes a `JsValue` the unit tests can't build).
+    #[cfg(test)]
+    pub(crate) fn set_deviation_target_inner(
+        &mut self,
+        surface: SurfaceField,
+        surface_z0: f32,
+        tol: f32,
+    ) {
+        self.deviation_target = Some(DeviationTarget {
+            surface,
+            surface_z0,
+            tol,
+        });
     }
 
     /// Test-only: number of segments with cached diagnostics.
@@ -1185,20 +1242,18 @@ mod tests {
         );
     }
 
-    /// Deviation overlay: after carving, comparing the sim's field against a
-    /// target surface classifies over-cut cells as gouges and uncut cells as
-    /// rest stock. Exercises the same `SurfaceField::deviation_of` the
-    /// `deviation_vs` JS binding wraps (the `JsValue` path can't run in a
-    /// plain unit test), against a real carved `Simulator` field.
+    /// Deviation overlay: with a target cached, `deviation()` reclassifies the
+    /// carved field — over-cut cells become gouges, uncut cells rest stock.
+    /// Exercises the cached-target path the `set_deviation_target` /
+    /// `deviation` JS bindings wrap (the `JsValue` setter can't run in a plain
+    /// unit test), against a real carved `Simulator` field.
     #[test]
-    fn deviation_vs_flags_gouge_under_plunge_and_reststock_around_it() {
+    fn deviation_flags_gouge_under_plunge_and_reststock_around_it() {
         use ivac_core::cam::surface::{Deviation, SurfaceField};
         use ivac_core::geometry::Point2;
 
         let mut sim = new_sim(0.0, 0.0, 4.0, 4.0, 1.0, 0.0);
-        // 4mm endmill plunged 2mm deep at the grid center.
-        let segs = vec![plunge(2.0, 2.0, 0.0, -2.0)];
-        let _ = sim.advance_inner(&segs, &endmill(4.0), 0, 1);
+        assert!(sim.deviation().is_empty(), "no target cached yet → empty");
 
         let (cols, rows) = (sim.cols(), sim.rows());
         // Target wants a uniform 1mm cut everywhere over the same footprint.
@@ -1209,13 +1264,18 @@ mod tests {
             rows,
             vec![-1.0; (cols * rows) as usize],
         );
-        let dev = target.deviation_of(sim.field(), sim.top_z(), 0.25);
-        assert_eq!(dev.len(), (cols * rows) as usize);
+        sim.set_deviation_target_inner(target, sim.top_z(), 0.25);
+        assert!(sim.has_deviation_target());
 
+        // 4mm endmill plunged 2mm deep at the grid center.
+        let segs = vec![plunge(2.0, 2.0, 0.0, -2.0)];
+        let _ = sim.advance_inner(&segs, &endmill(4.0), 0, 1);
+
+        let dev = sim.deviation();
+        assert_eq!(dev.len(), (cols * rows) as usize);
         // Cell under the plunge is carved to -2 (1mm past the -1 target) → gouge.
-        let center = dev[(2 * cols + 2) as usize];
         assert_eq!(
-            center,
+            dev[(2 * cols + 2) as usize],
             Deviation::Gouge as u8,
             "over-cut center must be a gouge"
         );
@@ -1225,6 +1285,11 @@ mod tests {
             Deviation::RestStock as u8,
             "uncut corner must read as rest stock"
         );
+
+        // Clearing the target returns to the empty (overlay-off) result.
+        sim.clear_deviation_target();
+        assert!(!sim.has_deviation_target());
+        assert!(sim.deviation().is_empty());
     }
 
     /// The headline flip deliverable: plunging a T-slot (form) tool through an
