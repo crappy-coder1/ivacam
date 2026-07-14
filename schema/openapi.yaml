@@ -2642,15 +2642,42 @@ components:
       - op_id
       - outer
       type: object
+    ReliefGrid:
+      description: The per-cell payload of a [`ReliefSource`], tagged by `kind`. Decoupled from the shared placement so both producers reuse the same footprint plumbing. A [`OpKind::ReliefMill`] op accepts either kind; a [`OpKind::RasterEngrave`] op only accepts [`ReliefGrid::Grayscale`].
+      oneOf:
+      - description: Row-major normalized brightness in `[0, 1]`. The op remaps it to Z through `z_min_mm` / `z_max_mm` at planning time (`SurfaceField::from_grayscale`), so depth is a cheap op-level knob that retunes without re-decoding the image.
+        properties:
+          brightness:
+            items:
+              format: float
+              type: number
+            type: array
+          kind:
+            enum:
+            - grayscale
+            type: string
+        required:
+        - brightness
+        - kind
+        type: object
+      - description: Row-major real target Z per cell (mm), stock top at 0 and relief carved downward — the geometry an STL rasterizes to (`SurfaceField::from_stl` / `from_mesh`, which already shift the model top to 0). The op cuts this Z directly (clamped to tool reach), NOT through a brightness → Z remap.
+        properties:
+          kind:
+            enum:
+            - heightgrid
+            type: string
+          z:
+            items:
+              format: float
+              type: number
+            type: array
+        required:
+        - kind
+        - z
+        type: object
     ReliefSource:
-      description: A target surface source for relief / ball-nose surfacing. Holds a row-major normalized-brightness grid (each value in `[0, 1]`) plus its world placement; the depth mapping (brightness → Z) lives on the [`OpKind::ReliefMill`] op so the user can retune depth without re-uploading the image. The first producer decodes a grayscale image frontend-side; a future STL rasterizer would populate the same grid. The driver turns it into a [`crate::cam::surface::SurfaceField`] via `SurfaceField::from_grayscale`.
+      description: 'A target surface source for relief / ball-nose surfacing. Holds a row-major grid (see [`ReliefGrid`]) plus its world placement. Two producers feed the same type: a grayscale image decoded frontend-side ([`ReliefGrid::Grayscale`]) and an STL rasterized to real geometry Z ([`ReliefGrid::Heightgrid`], via `SurfaceField::from_stl`). The [`OpKind::ReliefMill`] driver turns either kind into a [`crate::cam::surface::SurfaceField`]; the placement (`origin` / `cell` / `cols` / `rows`) is shared, only the per-cell payload differs.'
       properties:
-        brightness:
-          description: Row-major normalized brightness in `[0, 1]`. Length must be `cols * rows`.
-          items:
-            format: float
-            type: number
-          type: array
         cell:
           description: Cell size in mm (square cells / pixel pitch in world units).
           format: double
@@ -2659,6 +2686,10 @@ components:
           format: uint32
           minimum: 0.0
           type: integer
+        grid:
+          allOf:
+          - $ref: '#/components/schemas/ReliefGrid'
+          description: The per-cell surface data — a normalized-brightness grid (image relief) or a real target-Z height grid (STL). Length must be `cols * rows`. See [`ReliefGrid`].
         id:
           description: Stable id referenced by [`OpKind::ReliefMill::source_id`].
           format: uint32
@@ -2677,9 +2708,9 @@ components:
           minimum: 0.0
           type: integer
       required:
-      - brightness
       - cell
       - cols
+      - grid
       - id
       - origin
       - rows

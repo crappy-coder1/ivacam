@@ -1600,10 +1600,18 @@ export interface components {
             op_id: number;
             outer: components["schemas"]["Point2"][];
         };
-        /** @description A target surface source for relief / ball-nose surfacing. Holds a row-major normalized-brightness grid (each value in `[0, 1]`) plus its world placement; the depth mapping (brightness → Z) lives on the [`OpKind::ReliefMill`] op so the user can retune depth without re-uploading the image. The first producer decodes a grayscale image frontend-side; a future STL rasterizer would populate the same grid. The driver turns it into a [`crate::cam::surface::SurfaceField`] via `SurfaceField::from_grayscale`. */
-        ReliefSource: {
-            /** @description Row-major normalized brightness in `[0, 1]`. Length must be `cols * rows`. */
+        /** @description The per-cell payload of a [`ReliefSource`], tagged by `kind`. Decoupled from the shared placement so both producers reuse the same footprint plumbing. A [`OpKind::ReliefMill`] op accepts either kind; a [`OpKind::RasterEngrave`] op only accepts [`ReliefGrid::Grayscale`]. */
+        ReliefGrid: {
             brightness: number[];
+            /** @enum {string} */
+            kind: "grayscale";
+        } | {
+            /** @enum {string} */
+            kind: "heightgrid";
+            z: number[];
+        };
+        /** @description A target surface source for relief / ball-nose surfacing. Holds a row-major grid (see [`ReliefGrid`]) plus its world placement. Two producers feed the same type: a grayscale image decoded frontend-side ([`ReliefGrid::Grayscale`]) and an STL rasterized to real geometry Z ([`ReliefGrid::Heightgrid`], via `SurfaceField::from_stl`). The [`OpKind::ReliefMill`] driver turns either kind into a [`crate::cam::surface::SurfaceField`]; the placement (`origin` / `cell` / `cols` / `rows`) is shared, only the per-cell payload differs. */
+        ReliefSource: {
             /**
              * Format: double
              * @description Cell size in mm (square cells / pixel pitch in world units).
@@ -1611,6 +1619,8 @@ export interface components {
             cell: number;
             /** Format: uint32 */
             cols: number;
+            /** @description The per-cell surface data — a normalized-brightness grid (image relief) or a real target-Z height grid (STL). Length must be `cols * rows`. See [`ReliefGrid`]. */
+            grid: components["schemas"]["ReliefGrid"];
             /**
              * Format: uint32
              * @description Stable id referenced by [`OpKind::ReliefMill::source_id`].
