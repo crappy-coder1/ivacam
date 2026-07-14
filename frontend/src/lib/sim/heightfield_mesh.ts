@@ -1,5 +1,25 @@
 import * as THREE from 'three';
 
+/// Deviation classes emitted by the WASM `Simulator.deviation_vs(...)`
+/// (Rust `Deviation as u8`): 0 on-target, 1 gouge, 2 rest stock. Kept in
+/// sync with `crates/ivac-core/src/cam/surface.rs`.
+export const DEVIATION_ON_TARGET = 0;
+export const DEVIATION_GOUGE = 1;
+export const DEVIATION_REST_STOCK = 2;
+
+/// Per-class top-face RGB for the verify overlay. On-target keeps a
+/// neutral gray so gouges (red) and rest stock (green) pop against it.
+/// Walls/fringe/floor share the on-target gray while the overlay is on.
+const DEV_NEUTRAL: readonly [number, number, number] = [0.75, 0.75, 0.75];
+const DEV_GOUGE: readonly [number, number, number] = [0.8, 0.12, 0.12];
+const DEV_REST: readonly [number, number, number] = [0.16, 0.62, 0.24];
+
+function deviationRgb(cls: number): readonly [number, number, number] {
+  if (cls === DEVIATION_GOUGE) return DEV_GOUGE;
+  if (cls === DEVIATION_REST_STOCK) return DEV_REST;
+  return DEV_NEUTRAL;
+}
+
 /// Options for constructing a HeightfieldMesh. `cols`/`rows` are the
 /// heightmap grid dimensions; `cellSize` is the spacing in mm between
 /// adjacent samples. `originX`/`originY` place the heightmap's
@@ -92,6 +112,21 @@ export class HeightfieldMesh {
 
   private readonly positions: Float32Array;
   private readonly positionAttr: THREE.BufferAttribute;
+  /// Per-vertex RGB, itemSize 3, aligned with `positions`. White
+  /// (1,1,1) by default so it's a no-op multiplier against the material
+  /// color — normal rendering is unchanged until `setDeviation` paints
+  /// the red/green verify overlay. Only the TOP-face vertices of each
+  /// cell carry a per-class hue; walls/fringe/floor sit at a neutral
+  /// gray while the overlay is active so they don't glare.
+  private readonly colors: Float32Array;
+  private readonly colorAttr: THREE.BufferAttribute;
+  /// Stock color to restore on `material.color` when the overlay turns
+  /// off (in overlay mode the base color goes white so vertex reds/greens
+  /// show at full saturation).
+  private solidColor: string;
+  /// True while a deviation colormap is displayed (drives `material.color`
+  /// white-vs-stock and whether carve updates repaint class colors).
+  private deviationActive = false;
   private readonly geometry: THREE.BufferGeometry;
   private readonly material: THREE.MeshStandardMaterial;
   private readonly mesh: THREE.Mesh;
@@ -143,6 +178,10 @@ export class HeightfieldMesh {
     this.TOTAL_VERTS = this.FLOOR_BASE + 4 * n;
 
     this.positions = new Float32Array(this.TOTAL_VERTS * 3);
+    // Per-vertex color, initialised white so it's an identity multiplier
+    // until the deviation overlay writes class hues.
+    this.colors = new Float32Array(this.TOTAL_VERTS * 3).fill(1);
+    this.solidColor = opts.solidColor;
     const normals = new Float32Array(this.TOTAL_VERTS * 3);
     // Per cell: top(2) + right(2) + up(2) + floor(2) = 8 triangles ×
     // 3 indices = 24 indices. Per fringe wall: 2 triangles = 6
@@ -157,6 +196,9 @@ export class HeightfieldMesh {
     this.positionAttr = new THREE.BufferAttribute(this.positions, 3);
     this.positionAttr.setUsage(THREE.DynamicDrawUsage);
     this.geometry.setAttribute('position', this.positionAttr);
+    this.colorAttr = new THREE.BufferAttribute(this.colors, 3);
+    this.colorAttr.setUsage(THREE.DynamicDrawUsage);
+    this.geometry.setAttribute('color', this.colorAttr);
     this.geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
     this.geometry.setIndex(new THREE.BufferAttribute(indices, 1));
     // Split into two material groups: cells (top + walls + fringes)
@@ -195,6 +237,11 @@ export class HeightfieldMesh {
       side: THREE.DoubleSide,
       roughness: 0.8,
       metalness: 0.0,
+      // Per-vertex color multiplies the base color. Default white verts
+      // leave normal rendering untouched; the deviation overlay paints
+      // top-face verts red/green and flips the base color to white so
+      // those hues show at full strength.
+      vertexColors: true,
     });
     // Floor material: same shape as the main one but with lightness
     // reduced ~65 % so a hole carved through the stock reads as a
@@ -208,6 +255,7 @@ export class HeightfieldMesh {
       side: THREE.DoubleSide,
       roughness: 0.9,
       metalness: 0.0,
+      vertexColors: true,
     });
 
     this.mesh = new THREE.Mesh(this.geometry, [this.material, this.floorMaterial]);
@@ -638,6 +686,87 @@ export class HeightfieldMesh {
     this.positionAttr.needsUpdate = true;
   }
 
+  /// Paint (or clear) the target-surface deviation overlay. `classes` is a
+  /// row-major `cols * rows` `Uint8Array` of deviation codes
+  /// (`DEVIATION_ON_TARGET` / `_GOUGE` / `_REST_STOCK`) aligned with the
+  /// heightfield grid — pass `null` to turn the overlay off and restore the
+  /// stock color. Only the TOP faces are tinted per class; walls/fringe/floor
+  /// sit at a neutral gray while active so the red/green cells stand out.
+  ///
+  /// `aabb` (half-open, sim convention) restricts the repaint + GPU upload to
+  /// the dirty sub-rectangle, matching `updateHeights` — so a carve frame only
+  /// re-uploads the cells it touched. The first activation always repaints and
+  /// uploads the full grid (it flips the base color and grays the walls).
+  setDeviation(
+    classes: Uint8Array | null,
+    aabb?: { ix0: number; iy0: number; ix1: number; iy1: number },
+  ): void {
+    if (classes === null) {
+      if (!this.deviationActive) return;
+      this.deviationActive = false;
+      // Restore the stock base color and reset every vertex to the white
+      // identity multiplier, then force a full re-upload.
+      this.material.color.set(this.solidColor);
+      this.colors.fill(1);
+      this.colorAttr.clearUpdateRanges();
+      this.colorAttr.needsUpdate = true;
+      return;
+    }
+
+    const entering = !this.deviationActive;
+    if (entering) {
+      this.deviationActive = true;
+      // Base color → white so vertex reds/greens render at full strength.
+      this.material.color.set('#ffffff');
+      // Neutral-gray the whole buffer; TOP faces get class hues below.
+      for (let i = 0; i < this.TOTAL_VERTS; i++) {
+        this.colors[i * 3 + 0] = DEV_NEUTRAL[0];
+        this.colors[i * 3 + 1] = DEV_NEUTRAL[1];
+        this.colors[i * 3 + 2] = DEV_NEUTRAL[2];
+      }
+    }
+
+    // On first activation (or an aabb-less full refresh) repaint the whole
+    // grid; otherwise just the dirty rectangle.
+    const full = entering || !aabb;
+    const ix0 = full ? 0 : Math.max(0, aabb.ix0);
+    const iy0 = full ? 0 : Math.max(0, aabb.iy0);
+    const ix1 = full ? this.cols : Math.min(this.cols, aabb.ix1);
+    const iy1 = full ? this.rows : Math.min(this.rows, aabb.iy1);
+    for (let iy = iy0; iy < iy1; iy++) {
+      const row = iy * this.cols;
+      for (let ix = ix0; ix < ix1; ix++) {
+        const rgb = deviationRgb(classes[row + ix]);
+        const p = (this.TOP_BASE + (row + ix) * 4) * 3;
+        for (let k = 0; k < 4; k++) {
+          this.colors[p + k * 3 + 0] = rgb[0];
+          this.colors[p + k * 3 + 1] = rgb[1];
+          this.colors[p + k * 3 + 2] = rgb[2];
+        }
+      }
+    }
+
+    this.colorAttr.clearUpdateRanges();
+    if (full) {
+      // Whole buffer (walls were re-grayed) → let Three upload it all.
+      this.colorAttr.needsUpdate = true;
+      return;
+    }
+    // TOP faces are contiguous per cell (TOP_BASE + cellIdx*4), so the dirty
+    // span is one range — same trick updateHeights uses for positions.
+    const lowCellIdx = iy0 * this.cols + ix0;
+    const highCellIdx = (iy1 - 1) * this.cols + (ix1 - 1);
+    const minVert = this.TOP_BASE + lowCellIdx * 4;
+    const maxVert = this.TOP_BASE + highCellIdx * 4 + 4;
+    this.colorAttr.addUpdateRange(minVert * 3, (maxVert - minVert) * 3);
+    this.colorAttr.needsUpdate = true;
+  }
+
+  /// Whether the deviation overlay is currently displayed.
+  isDeviationActive(): boolean {
+    return this.deviationActive;
+  }
+
   /// Rebuild the edge overlay from the current heightfield positions.
   /// `THREE.EdgesGeometry` is O(triangles) and doesn't support partial
   /// updates, so this is on the driver's 120ms debounce — fast carve
@@ -652,7 +781,13 @@ export class HeightfieldMesh {
 
   setStyle(opts: Partial<HeightfieldOptions>): void {
     if (opts.solidColor !== undefined) {
-      this.material.color.set(opts.solidColor);
+      // Remember the stock color so exiting the deviation overlay restores
+      // it; only apply it to the base material when the overlay is OFF (the
+      // overlay holds the base color at white so class hues show true).
+      this.solidColor = opts.solidColor;
+      if (!this.deviationActive) {
+        this.material.color.set(opts.solidColor);
+      }
       // Keep the floor material's color in sync with the (darkened)
       // stock color so cut-through holes always read as a void of
       // the current stock material, not a stale palette mismatch.
@@ -755,6 +890,14 @@ export class HeightfieldMeshPyramid {
   /// floats per coarse level. `pools[k]` for `k < minLevel` is an
   /// empty placeholder (no mesh attached, no buffer needed).
   private readonly pools: Float32Array[];
+  /// Deviation-class pools, parallel to `pools`. `classPools[0]` holds the
+  /// L0 class view stored by `setDeviation` (so a level-swap can re-pool);
+  /// `classPools[k>0]` is a pyramid-owned `Uint8Array` of `cols_k * rows_k`.
+  /// Empty placeholder for `k < minLevel`.
+  private readonly classPools: Uint8Array[];
+  /// Whether a deviation overlay is currently active (drives level-swap
+  /// repaint + `updateHeights`-time re-pooling of coarse class buffers).
+  private deviationOn: boolean;
   private readonly levelCols: number[];
   private readonly levelRows: number[];
   /// Source-grid dimensions (L0 cols/rows). Mirrored on each level via
@@ -787,6 +930,8 @@ export class HeightfieldMeshPyramid {
     this.minLevel = Math.max(0, Math.min(this.maxLevel, minLevel));
     this.levels = [];
     this.pools = [];
+    this.classPools = [];
+    this.deviationOn = false;
     this.levelCols = [];
     this.levelRows = [];
     // Build each level k in [minLevel, maxLevel]. Cell dimensions halve
@@ -803,6 +948,7 @@ export class HeightfieldMeshPyramid {
       if (k < this.minLevel) {
         this.levels.push(null);
         this.pools.push(new Float32Array(0));
+        this.classPools.push(new Uint8Array(0));
         continue;
       }
       const cellSize_k = opts.cellSize * factor;
@@ -814,12 +960,15 @@ export class HeightfieldMeshPyramid {
       });
       this.levels.push(mesh);
       if (k === 0) {
-        // L0's pool view is plugged in by updateHeights.
+        // L0's pool/class views are plugged in by updateHeights/setDeviation.
         this.pools.push(new Float32Array(0));
+        this.classPools.push(new Uint8Array(0));
       } else {
         const pool = new Float32Array(cols_k * rows_k);
         pool.fill(this.topZ);
         this.pools.push(pool);
+        // Class pool defaults to on-target (0) via zero-init.
+        this.classPools.push(new Uint8Array(cols_k * rows_k));
       }
     }
     // Active level starts at the floor.
@@ -852,6 +1001,17 @@ export class HeightfieldMeshPyramid {
     } else {
       this.poolRange(clamped, 0, 0, this.cols, this.rows);
       newMesh.updateHeights(this.pools[clamped]);
+    }
+    // If the deviation overlay is on, repaint the newly-active level from
+    // the stored L0 classes (a full paint — the swapped-in mesh starts with
+    // no overlay of its own).
+    if (this.deviationOn && this.classPools[0].length > 0) {
+      if (clamped === 0) {
+        newMesh.setDeviation(this.classPools[0]);
+      } else {
+        this.poolClassRange(clamped, 0, 0, this.cols, this.rows);
+        newMesh.setDeviation(this.classPools[clamped]);
+      }
     }
     // The new level's EdgesGeometry is stale (positions were just
     // updated), but the rebuild is O(triangles) — call out to the
@@ -964,6 +1124,95 @@ export class HeightfieldMeshPyramid {
           }
         }
         pool[py * cols_k + px] = m;
+      }
+    }
+  }
+
+  /// Drop-in for `HeightfieldMesh.setDeviation`. Stores the L0 class view so
+  /// a later level-swap can re-pool from it, then forwards the dirty span to
+  /// the active level (worst-wins class pooling for Lk > 0). Pass `null` to
+  /// clear the overlay on every level.
+  setDeviation(
+    classes: Uint8Array | null,
+    aabb?: { ix0: number; iy0: number; ix1: number; iy1: number },
+  ): void {
+    if (classes === null) {
+      this.deviationOn = false;
+      this.classPools[0] = new Uint8Array(0);
+      for (const m of this.levels) m?.setDeviation(null);
+      return;
+    }
+    this.deviationOn = true;
+    this.classPools[0] = classes;
+    const k = this.activeLevel;
+    const mesh = this.levels[k];
+    if (!mesh) return;
+    if (k === 0) {
+      mesh.setDeviation(classes, aabb);
+      return;
+    }
+    const f = 1 << k;
+    if (!aabb) {
+      this.poolClassRange(k, 0, 0, this.cols, this.rows);
+      mesh.setDeviation(this.classPools[k]);
+      return;
+    }
+    this.poolClassRange(k, aabb.ix0, aabb.iy0, aabb.ix1, aabb.iy1);
+    const lod_ix0 = Math.max(0, Math.floor(aabb.ix0 / f));
+    const lod_iy0 = Math.max(0, Math.floor(aabb.iy0 / f));
+    const lod_ix1 = Math.min(this.levelCols[k], Math.ceil(aabb.ix1 / f));
+    const lod_iy1 = Math.min(this.levelRows[k], Math.ceil(aabb.iy1 / f));
+    if (lod_ix1 > lod_ix0 && lod_iy1 > lod_iy0) {
+      mesh.setDeviation(this.classPools[k], {
+        ix0: lod_ix0,
+        iy0: lod_iy0,
+        ix1: lod_ix1,
+        iy1: lod_iy1,
+      });
+    }
+  }
+
+  /// WORST-WINS pool of L0 deviation classes in `[ix0, ix1) × [iy0, iy1)`
+  /// into `classPools[k]`. A coarse cell shows a gouge if ANY of its L0
+  /// children gouged, else rest-stock if any child had rest stock, else
+  /// on-target — so a coarse LOD never hides a defect (the dual of the
+  /// height MIN-pool, which never hides a cut).
+  private poolClassRange(k: number, ix0: number, iy0: number, ix1: number, iy1: number): void {
+    const f = 1 << k;
+    const cols_k = this.levelCols[k];
+    const rows_k = this.levelRows[k];
+    const lod_ix0 = Math.max(0, Math.floor(ix0 / f));
+    const lod_iy0 = Math.max(0, Math.floor(iy0 / f));
+    const lod_ix1 = Math.min(cols_k, Math.ceil(ix1 / f));
+    const lod_iy1 = Math.min(rows_k, Math.ceil(iy1 / f));
+    const L0 = this.classPools[0];
+    const pool = this.classPools[k];
+    const cols = this.cols;
+    const rows = this.rows;
+    for (let py = lod_iy0; py < lod_iy1; py++) {
+      const blockY0 = py * f;
+      const blockY1 = Math.min(rows, blockY0 + f);
+      for (let px = lod_ix0; px < lod_ix1; px++) {
+        const blockX0 = px * f;
+        const blockX1 = Math.min(cols, blockX0 + f);
+        let hasGouge = false;
+        let hasRest = false;
+        for (let iy = blockY0; iy < blockY1 && !hasGouge; iy++) {
+          const row = iy * cols;
+          for (let ix = blockX0; ix < blockX1; ix++) {
+            const c = L0[row + ix];
+            if (c === DEVIATION_GOUGE) {
+              hasGouge = true;
+              break;
+            }
+            if (c === DEVIATION_REST_STOCK) hasRest = true;
+          }
+        }
+        pool[py * cols_k + px] = hasGouge
+          ? DEVIATION_GOUGE
+          : hasRest
+            ? DEVIATION_REST_STOCK
+            : DEVIATION_ON_TARGET;
       }
     }
   }
