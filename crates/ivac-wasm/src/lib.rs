@@ -81,6 +81,27 @@ pub fn import_bytes(filename: &str, bytes: &[u8]) -> Result<JsValue, JsValue> {
     })
 }
 
+/// Rasterize an STL byte stream (binary or ASCII) into a relief height
+/// grid. Returns the serialized [`ivac_core::cam::surface::SurfaceField`]
+/// (`{origin, cell, cols, rows, z}` — real target Z per cell, the model top
+/// shifted to the stock top 0), or JS `null` when the mesh has no XY
+/// footprint to sample. `maxDim` bounds the grid so the longer XY side spans
+/// at most that many cells. The frontend stores the result as a
+/// `heightgrid` [`ivac_core::project::ReliefSource`] the `relief_mill` op
+/// then surfaces. Called at load-time, mirroring the client-side image
+/// decode — the STL bytes never enter the project JSON.
+#[wasm_bindgen(js_name = fromStl)]
+pub fn from_stl(bytes: &[u8], max_dim: u32) -> Result<JsValue, JsValue> {
+    guard(|| {
+        match ivac_core::cam::surface::SurfaceField::from_stl_capped(bytes, max_dim)
+            .map_err(|e| structured_error_to_js(ivac_core::Error::bad_input(e.to_string())))?
+        {
+            Some(field) => serde_wasm_bindgen::to_value(&field).map_err(into_js_error),
+            None => Ok(JsValue::NULL),
+        }
+    })
+}
+
 #[wasm_bindgen]
 pub fn generate(request: JsValue) -> Result<JsValue, JsValue> {
     let req: PipelineRequest = serde_wasm_bindgen::from_value(request).map_err(into_js_error)?;

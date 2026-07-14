@@ -275,6 +275,46 @@ impl SurfaceField {
         Ok(Self::from_mesh(&tris, cell))
     }
 
+    /// Like [`SurfaceField::from_stl`], but sizes the grid from a cell-count
+    /// budget instead of an explicit `cell`: the longer XY side of the mesh
+    /// spans at most `max_dim` cells (`cell = longer_extent / max_dim`).
+    /// This mirrors the image relief's `maxDim` downsample budget so a
+    /// physically large STL doesn't rasterize to an enormous grid, and it
+    /// frees the caller from having to know the model's size up front.
+    /// `max_dim` is clamped to at least 1. Returns `Ok(None)` when the mesh
+    /// has no XY footprint (see [`SurfaceField::from_mesh`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::sim::stl::StlError`] if the bytes are not a valid STL.
+    pub fn from_stl_capped(
+        bytes: &[u8],
+        max_dim: u32,
+    ) -> Result<Option<Self>, crate::sim::stl::StlError> {
+        let tris = crate::sim::stl::parse_stl(bytes)?;
+        let max_dim = f64::from(max_dim.max(1));
+        // Lightweight XY-extent pre-pass to pick the cell size; `from_mesh`
+        // recomputes the full bbox (same triangles → consistent origin/dims).
+        let mut min_x = f64::INFINITY;
+        let mut min_y = f64::INFINITY;
+        let mut max_x = f64::NEG_INFINITY;
+        let mut max_y = f64::NEG_INFINITY;
+        for tri in &tris {
+            for v in tri {
+                min_x = min_x.min(v[0] as f64);
+                min_y = min_y.min(v[1] as f64);
+                max_x = max_x.max(v[0] as f64);
+                max_y = max_y.max(v[1] as f64);
+            }
+        }
+        // No positive XY footprint → no surface (matches `from_mesh`).
+        if !min_x.is_finite() || max_x <= min_x || max_y <= min_y {
+            return Ok(None);
+        }
+        let cell = (max_x - min_x).max(max_y - min_y) / max_dim;
+        Ok(Self::from_mesh(&tris, cell))
+    }
+
     /// Target Z at cell `(ix, iy)`. Returns [`SURFACE_TOP_Z`] for indices
     /// outside the grid (no relief there).
     #[must_use]
@@ -589,6 +629,39 @@ mod tests {
         for &v in &f.z {
             approx(v, SURFACE_TOP_Z);
         }
+    }
+
+    /// `from_stl_capped` derives the cell from a max-dimension budget: a
+    /// 12×4 mm mesh at `max_dim = 6` picks `cell = 12 / 6 = 2 mm`, giving a
+    /// 6×2 grid. Degenerate meshes still yield `None`.
+    #[test]
+    fn from_stl_capped_sizes_grid_from_max_dim() {
+        // A flat 12 (x) by 4 (y) quad at z = 3.
+        let ascii = "solid s\n\
+             facet normal 0 0 1 outer loop \
+               vertex 0 0 3 vertex 12 0 3 vertex 0 4 3 endloop endfacet\n\
+             facet normal 0 0 1 outer loop \
+               vertex 12 0 3 vertex 12 4 3 vertex 0 4 3 endloop endfacet\n\
+             endsolid s";
+        let f = SurfaceField::from_stl_capped(ascii.as_bytes(), 6)
+            .expect("valid STL")
+            .expect("has footprint");
+        // Longer side (12) / 6 = 2 mm cell ⇒ 6 cols, 2 rows.
+        assert!((f.cell - 2.0).abs() < 1e-9, "cell {} != 2", f.cell);
+        assert_eq!((f.cols, f.rows), (6, 2));
+        // max_dim is floored at 1 (no divide-by-zero panic). The resulting
+        // cell equals the longer extent, so a thin mesh's lone cell center
+        // may miss it and yield None — we only assert it returns cleanly and,
+        // when a grid comes back, that its dims are valid.
+        if let Some(g) = SurfaceField::from_stl_capped(ascii.as_bytes(), 0).expect("valid STL") {
+            assert!(g.cols >= 1 && g.rows >= 1);
+        }
+        // A vertical (zero-XY-footprint) mesh has no surface.
+        let vertical = "solid v facet normal 1 0 0 outer loop \
+               vertex 5 0 0 vertex 5 0 8 vertex 5 4 0 endloop endfacet endsolid v";
+        assert!(SurfaceField::from_stl_capped(vertical.as_bytes(), 8)
+            .expect("valid STL")
+            .is_none());
     }
 
     /// The acceptance case: a real binary STL emitted by the heightmap
