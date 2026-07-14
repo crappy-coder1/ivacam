@@ -5,6 +5,7 @@
   import { project, playheadToSegment } from '../state/project.svelte';
   import { workspace } from '../state/workspace.svelte';
   import { HeightfieldDriver } from '../sim/driver';
+  import { activeDeviationTarget } from '../sim/deviation_target';
   import { pixelsPerCell } from '../scene3d/lod';
   import type { BuilderContext, CssColor } from '../scene3d/builder';
   import { StockBoxBuilder } from '../scene3d/stock_box';
@@ -878,6 +879,25 @@
       edgeColor: project.data.settings.edgeColor,
       edgeOpacity: project.data.settings.edgeOpacity,
     });
+  });
+
+  /// Drive the target-surface deviation overlay. When enabled, resolve the
+  /// active relief target (first enabled relief_mill op + its source) and
+  /// hand it to the driver, which caches it on the sim and repaints the
+  /// terrain red/green off each carve. Disabled — or no relief op — clears
+  /// the overlay. Re-runs when the toggle, tolerance, ops, or relief sources
+  /// change; the driver re-arms itself across rebuilds on its own.
+  $effect(() => {
+    const on = project.data.settings.deviationOverlay;
+    const tol = project.data.settings.deviationToleranceMm;
+    // Track the inputs so edits to ops / sources refresh the target.
+    void project.data.operations;
+    void project.data.reliefSources;
+    if (!driver) return;
+    const target = on
+      ? activeDeviationTarget(project.data.operations, project.data.reliefSources)
+      : null;
+    driver.setDeviationTarget(target, tol);
   });
 
   async function ensureDriver(): Promise<void> {

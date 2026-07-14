@@ -1171,6 +1171,9 @@ export type MsgKey =
   | "settings.preview.cell_resolution.manual"
   | "settings.preview.cell_size"
   | "settings.preview.cell_size.title"
+  | "settings.preview.deviation_overlay"
+  | "settings.preview.deviation_overlay_help"
+  | "settings.preview.deviation_tolerance"
   | "settings.preview.edge_color"
   | "settings.preview.edge_opacity"
   | "settings.preview.intro"
@@ -2666,6 +2669,9 @@ export const MSG_KEYS: readonly MsgKey[] = [
   "settings.preview.cell_resolution.manual",
   "settings.preview.cell_size",
   "settings.preview.cell_size.title",
+  "settings.preview.deviation_overlay",
+  "settings.preview.deviation_overlay_help",
+  "settings.preview.deviation_tolerance",
   "settings.preview.edge_color",
   "settings.preview.edge_opacity",
   "settings.preview.intro",

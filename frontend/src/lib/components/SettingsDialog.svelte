@@ -283,6 +283,38 @@
           </div>
         </label>
 
+        <label class="check">
+          <input
+            type="checkbox"
+            checked={project.data.settings.deviationOverlay}
+            onchange={(e) =>
+              update('deviationOverlay', (e.currentTarget as HTMLInputElement).checked)}
+          />
+          <span>{t('settings.preview.deviation_overlay')}</span>
+        </label>
+        <p class="hint">{t('settings.preview.deviation_overlay_help')}</p>
+
+        {#if project.data.settings.deviationOverlay}
+          <label
+            >{t('settings.preview.deviation_tolerance')}
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={project.data.settings.deviationToleranceMm}
+              onchange={(e) =>
+                update(
+                  'deviationToleranceMm',
+                  toNumber(
+                    (e.currentTarget as HTMLInputElement).value,
+                    project.data.settings.deviationToleranceMm,
+                    0,
+                  ),
+                )}
+            />
+          </label>
+        {/if}
+
         <label
           >{t('settings.preview.line_width')}
           <div class="slider-row">

@@ -104,6 +104,15 @@ export interface AppSettings {
   /// thousands of segments can flip it off to keep scrubbing responsive
   /// at the price of time-accurate rewind.
   exactSimRewind: boolean;
+  /// When true, the 3D terrain paints a target-surface deviation colormap:
+  /// each carved cell is tinted RED where it gouges below the relief target
+  /// and GREEN where stock remains above it (neutral within tolerance) — a
+  /// correctness view for relief jobs. No effect on projects without a
+  /// relief_mill op (nothing to compare against).
+  deviationOverlay: boolean;
+  /// On-target tolerance band half-width (mm) for the deviation overlay:
+  /// cells within ±this of the target read as neutral.
+  deviationToleranceMm: number;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -151,6 +160,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // Users on long programs who'd rather have responsive scrubbing than
   // time-accurate terrain flip this off in Settings → Performance.
   exactSimRewind: true,
+  // Deviation overlay off by default — it's a targeted verification view
+  // the user turns on for relief jobs, not the everyday preview.
+  deviationOverlay: false,
+  deviationToleranceMm: 0.05,
 };
 
 /// Load persisted settings, deep-merging stored values over defaults so
