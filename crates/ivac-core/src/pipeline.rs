@@ -73,6 +73,7 @@ use regions::build_region_previews;
 pub use setup_resolver::fit_helix_radius_for_selection;
 use setup_resolver::{header_setup_for, resolve_auto_helix_radius, synthesize_op_setup};
 
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
@@ -152,16 +153,68 @@ pub struct PipelineResponse {
 }
 
 /// One non-fatal warning attached to (optionally) a specific op.
+///
+/// ## Localization seam (i18n epic ivac-os2k.12)
+///
+/// `kind` is already the stable, language-agnostic code (like the op enums),
+/// and `params` carries the structured values the message interpolates. The
+/// frontend renders the user-facing text from a `warn.<kind>` template
+/// against `params`, so the German UI never depends on the English wording
+/// here. `message` stays as the English fallback for the CLI, logs, and any
+/// `kind` that has no template yet. Mirrors the [`crate::errors::Error`]
+/// `code`/`params` seam (ivac-os2k.6).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PipelineWarning {
     /// Op the warning applies to. `None` means project-wide.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub op_id: Option<u32>,
     /// Stable identifier — frontend can branch on this to render an
-    /// icon, link to docs, etc.
+    /// icon, link to docs, or look up the `warn.<kind>` template.
     pub kind: String,
-    /// Human-readable description.
+    /// Values the localized template interpolates (`{op_id}`, `{name}`, …).
+    /// Stringified so the wire shape stays a simple `string → string` map.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub params: BTreeMap<String, String>,
+    /// Human-readable English description — the fallback when the frontend
+    /// has no `warn.<kind>` template (and what the CLI / logs print).
     pub message: String,
+}
+
+impl PipelineWarning {
+    /// A project-wide warning (`op_id = None`) with no params yet. Chain
+    /// [`Self::with_param`] to attach the values its `warn.<kind>` template
+    /// interpolates.
+    #[must_use]
+    pub fn new(kind: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            op_id: None,
+            kind: kind.into(),
+            params: BTreeMap::new(),
+            message: message.into(),
+        }
+    }
+
+    /// A warning attached to a specific op.
+    #[must_use]
+    pub fn for_op(op_id: u32, kind: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            op_id: Some(op_id),
+            kind: kind.into(),
+            params: BTreeMap::new(),
+            message: message.into(),
+        }
+    }
+
+    /// Add one `{key}` value the localized template can interpolate. Values
+    /// are stringified to keep the wire map `string → string`.
+    // by-value `value` is the ergonomic builder shape — callers pass owned
+    // ids / `format!(…)` straight in; it's stringified, not stored as-is.
+    #[allow(clippy::needless_pass_by_value)]
+    #[must_use]
+    pub fn with_param(mut self, key: impl Into<String>, value: impl ToString) -> Self {
+        self.params.insert(key.into(), value.to_string());
+        self
+    }
 }
 
 /// One filled region attached to a specific operation. `outer` is the
@@ -1208,24 +1261,24 @@ fn emit_program_only_op<P: PostProcessor>(
             let (expanded, unknown) =
                 expand_gcode_include_vars(content, state_before_reset, safe_z);
             for name in &unknown {
-                warnings.push(PipelineWarning {
-                    op_id: Some(op.id),
-                    kind: "gcode_include_unknown_variable".into(),
-                    message: format!(
+                warnings.push(PipelineWarning::for_op(
+                    op.id,
+                    "gcode_include_unknown_variable",
+                    format!(
                         "Op '{}': unknown variable `{{{name}}}` in included G-code passed through verbatim — fix or remove to silence.",
                         op.name,
                     ),
-                });
+                ));
             }
             if expanded.trim().is_empty() {
-                warnings.push(PipelineWarning {
-                    op_id: Some(op.id),
-                    kind: "gcode_include_empty".into(),
-                    message: format!(
+                warnings.push(PipelineWarning::for_op(
+                    op.id,
+                    "gcode_include_empty",
+                    format!(
                         "Op '{}': included G-code is empty — no lines emitted at this slot.",
                         op.name,
                     ),
-                });
+                ));
             }
             for line in expanded.lines() {
                 post.raw(line);
@@ -1236,10 +1289,10 @@ fn emit_program_only_op<P: PostProcessor>(
                     + classification.n_noop
                     + classification.skipped.len();
                 let head = &classification.skipped[0];
-                warnings.push(PipelineWarning {
-                    op_id: Some(op.id),
-                    kind: "gcode_include_lines_skipped".into(),
-                    message: format!(
+                warnings.push(PipelineWarning::for_op(
+                    op.id,
+                    "gcode_include_lines_skipped",
+                    format!(
                         "Op '{}': {n_skipped} of {n_total} included G-code line(s) cannot be simulated — the carved stock state across this slot may be incomplete. First skipped: line {head_line} `{head_text}` ({head_reason}). Inspect the included file by hand.",
                         op.name,
                         n_skipped = classification.skipped.len(),
@@ -1247,22 +1300,22 @@ fn emit_program_only_op<P: PostProcessor>(
                         head_text = head.trimmed,
                         head_reason = head.reason,
                     ),
-                });
+                ));
                 // Verbose mode fans out a per-line warning for each
                 // skipped line. Off by default so the panel stays readable.
                 if *verbose_unsim_warnings {
                     for skipped in &classification.skipped {
-                        warnings.push(PipelineWarning {
-                            op_id: Some(op.id),
-                            kind: "gcode_include_unsim_line".into(),
-                            message: format!(
+                        warnings.push(PipelineWarning::for_op(
+                            op.id,
+                            "gcode_include_unsim_line",
+                            format!(
                                 "Op '{}': included G-code line {n}: `{text}` — {reason}.",
                                 op.name,
                                 n = skipped.line_no,
                                 text = skipped.trimmed,
                                 reason = skipped.reason,
                             ),
-                        });
+                        ));
                     }
                 }
             }
@@ -1747,10 +1800,12 @@ pub(crate) fn effective_step(op: &Op, tool: &ToolEntry) -> Result<f64, PipelineW
         .step
         .or(tool.default_step)
         .filter(|v| *v < 0.0)
-        .ok_or_else(|| PipelineWarning {
-            op_id: Some(op.id),
-            kind: "step_unspecified".into(),
-            message: "depth-per-pass not set on the operation or its tool's default_step".into(),
+        .ok_or_else(|| {
+            PipelineWarning::for_op(
+                op.id,
+                "step_unspecified",
+                "depth-per-pass not set on the operation or its tool's default_step",
+            )
         })
 }
 

@@ -35,14 +35,14 @@ fn clamp_spindle_rpm(
     let mut clamped = rpm;
     if let Some(max) = machine.spindle_rpm_max {
         if rpm > max {
-            warnings.push(PipelineWarning {
-                op_id: Some(op.id),
-                kind: "spindle_speed_clamped_above_max".into(),
-                message: format!(
+            warnings.push(PipelineWarning::for_op(
+                op.id,
+                "spindle_speed_clamped_above_max",
+                format!(
                     "op '{}' ({:?} pass): tool RPM {} exceeds machine spindle_rpm_max {}; clamped to {}.",
                     op.name, pass, rpm, max, max
                 ),
-            });
+            ));
             clamped = max;
         }
     }
@@ -51,14 +51,14 @@ fn clamp_spindle_rpm(
         // minimum (and you'd be at risk of stalling anyway). Clamp UP
         // and warn so the user reviews the chipload at the new RPM.
         if clamped < min {
-            warnings.push(PipelineWarning {
-                op_id: Some(op.id),
-                kind: "spindle_speed_clamped_below_min".into(),
-                message: format!(
+            warnings.push(PipelineWarning::for_op(
+                op.id,
+                "spindle_speed_clamped_below_min",
+                format!(
                     "op '{}' ({:?} pass): tool RPM {} is below machine spindle_rpm_min {}; clamped to {}.",
                     op.name, pass, clamped, min, min
                 ),
-            });
+            ));
             clamped = min;
         }
     }
@@ -81,14 +81,14 @@ fn clamp_feed(
 ) -> u32 {
     if let Some(max) = machine.max_feed_mm_min {
         if feed > max {
-            warnings.push(PipelineWarning {
-                op_id: Some(op.id),
-                kind: "feed_clamped_above_max".into(),
-                message: format!(
+            warnings.push(PipelineWarning::for_op(
+                op.id,
+                "feed_clamped_above_max",
+                format!(
                     "op '{}' ({pass:?} pass): {axis} feed {feed} mm/min exceeds machine max_feed_mm_min {max}; clamped to {max}.",
                     op.name
                 ),
-            });
+            ));
             return max;
         }
     }
@@ -505,14 +505,14 @@ pub(in crate::pipeline) fn synthesize_op_setup(
         let plunge = setup.tool.rate_v;
         let speed = setup.tool.speed;
         if feed == 0 || plunge == 0 || speed == 0 {
-            warnings.push(PipelineWarning {
-                op_id: Some(op.id),
-                kind: "zero_rate_emitted".into(),
-                message: format!(
+            warnings.push(PipelineWarning::for_op(
+                op.id,
+                "zero_rate_emitted",
+                format!(
                     "op '{}': resolved tool rates contain a zero value (feed={} mm/min, plunge={} mm/min, spindle={} RPM). Emitting F0 / S0 / plunge=0 will stall the cut or refuse to start. Set the missing rate on the tool library entry or as a per-op override.",
                     op.name, feed, plunge, speed
                 ),
-            });
+            ));
         }
     }
     if let OpKind::Chamfer { width_mm, .. } = op.kind {
@@ -524,14 +524,14 @@ pub(in crate::pipeline) fn synthesize_op_setup(
         // it unless we say so here.
         if !(1.0..=179.0).contains(&tool.tip_angle_deg) {
             let clamped = tool.tip_angle_deg.clamp(1.0, 179.0);
-            warnings.push(PipelineWarning {
-                op_id: Some(op.id),
-                kind: "tool_tip_angle_clamped".into(),
-                message: format!(
+            warnings.push(PipelineWarning::for_op(
+                op.id,
+                "tool_tip_angle_clamped",
+                format!(
                     "Chamfer op '{}' tool '{}': configured tip angle {:.2}° is outside the supported [1°, 179°] range and was clamped to {:.2}° for cone-math. Update the tool's tip_angle_deg to silence this warning.",
                     op.name, tool.name, tool.tip_angle_deg, clamped,
                 ),
-            });
+            ));
         }
         let sol = crate::cam::chamfer::chamfer_depth_capped(
             width_mm,
@@ -540,10 +540,10 @@ pub(in crate::pipeline) fn synthesize_op_setup(
             tip_diameter_mm,
         );
         if sol.clamped_to_reach {
-            warnings.push(PipelineWarning {
-                op_id: Some(op.id),
-                kind: "chamfer_width_clamped_to_reach".into(),
-                message: format!(
+            warnings.push(PipelineWarning::for_op(
+                op.id,
+                "chamfer_width_clamped_to_reach",
+                format!(
                     "Chamfer op '{}': requested width {:.3} mm exceeds V-bit '{}' physical reach ({:.3} mm = (diameter {:.3} - tip {:.3}) / 2). Clamped to {:.3} mm so the cone — not the shank — does the cutting.",
                     op.name,
                     width_mm,
@@ -553,21 +553,21 @@ pub(in crate::pipeline) fn synthesize_op_setup(
                     tip_diameter_mm,
                     sol.effective_width_mm,
                 ),
-            });
+            ));
         }
         setup.mill.depth = sol.z;
         setup.mill.start_depth = 0.0;
         setup.mill.through_depth = 0.0;
         setup.mill.depth_list = Vec::new();
         if !matches!(tool.kind, crate::project::ToolKind::VBit) {
-            warnings.push(PipelineWarning {
-                op_id: Some(op.id),
-                kind: "chamfer_non_vbit".into(),
-                message: format!(
+            warnings.push(PipelineWarning::for_op(
+                op.id,
+                "chamfer_non_vbit",
+                format!(
                     "Chamfer op '{}' uses tool '{}' which is not a V-bit. The cone math assumes a conical cutter; flat / ball tools will not produce a true bevel.",
                     op.name, tool.name
                 ),
-            });
+            ));
         }
     }
     // A T-slot op cuts the undercut in ONE pass at the floor Z. The
@@ -621,14 +621,14 @@ pub(super) fn resolve_auto_helix_radius(
             radius_mm: Some(r),
         };
     } else {
-        warnings.push(PipelineWarning {
-            op_id: Some(op.id),
-            kind: "helix_radius_unfittable".into(),
-            message: format!(
+        warnings.push(PipelineWarning::for_op(
+            op.id,
+            "helix_radius_unfittable",
+            format!(
                 "op '{}': auto helix radius could not be fit (pocket too small for tool); falling back to Ramp.",
                 op.name
             ),
-        });
+        ));
     }
 }
 

@@ -88,14 +88,14 @@ fn emit_spot_pre_pass<P: PostProcessor>(
     warnings: &mut Vec<PipelineWarning>,
 ) -> Result<(), PipelineError> {
     if !spot.spot_depth_mm.is_finite() || spot.spot_depth_mm >= 0.0 {
-        warnings.push(PipelineWarning {
-            op_id: Some(op.id),
-            kind: "drill_spot_depth_non_negative".into(),
-            message: format!(
+        warnings.push(PipelineWarning::for_op(
+            op.id,
+            "drill_spot_depth_non_negative",
+            format!(
                 "Drill op '{}' has spot_first.spot_depth_mm = {:.4} (must be negative to dimple stock); skipping the spot pre-pass.",
                 op.name, spot.spot_depth_mm
             ),
-        });
+        ));
         return Ok(());
     }
     if offsets.is_empty() {
@@ -104,14 +104,14 @@ fn emit_spot_pre_pass<P: PostProcessor>(
     // Resolve the spot tool. If it doesn't exist, warn and skip the
     // pre-pass (don't fail the whole op — the main drill still runs).
     let Some(spot_tool) = project.tools.iter().find(|t| t.id == spot.spot_tool_id) else {
-        warnings.push(PipelineWarning {
-            op_id: Some(op.id),
-            kind: "drill_spot_tool_missing".into(),
-            message: format!(
+        warnings.push(PipelineWarning::for_op(
+            op.id,
+            "drill_spot_tool_missing",
+            format!(
                 "Drill op '{}': spot_first.spot_tool_id={} is not in the project's tool library; skipping the spot pre-pass.",
                 op.name, spot.spot_tool_id
             ),
-        });
+        ));
         return Ok(());
     };
     // Synthesize a tiny synthetic op pointing at the spot tool so the
@@ -243,10 +243,10 @@ fn emit_stufenfase<P: PostProcessor>(
         tip_diameter_mm,
     );
     if sol.clamped_to_reach {
-        warnings.push(PipelineWarning {
-            op_id: Some(op.id),
-            kind: "chamfer_width_clamped_to_reach".into(),
-            message: format!(
+        warnings.push(PipelineWarning::for_op(
+            op.id,
+            "chamfer_width_clamped_to_reach",
+            format!(
                 "drill op '{}': requested rim-chamfer width {:.3} mm exceeds V-bit '{}' physical reach ({:.3} mm = (diameter {:.3} - tip {:.3}) / 2). Clamped to {:.3} mm so the cone — not the shank — does the cutting.",
                 op.name,
                 width_mm,
@@ -256,7 +256,7 @@ fn emit_stufenfase<P: PostProcessor>(
                 tip_diameter_mm,
                 sol.effective_width_mm,
             ),
-        });
+        ));
     }
     let chamfer_z = sol.z;
     if chamfer_z.abs() < 1e-9 {
@@ -342,14 +342,14 @@ fn emit_stufenfase<P: PostProcessor>(
         found += 1;
     }
     if non_circle_skipped > 0 {
-        warnings.push(PipelineWarning {
-            op_id: Some(op.id),
-            kind: "stufenfase_non_circle_skipped".into(),
-            message: format!(
+        warnings.push(PipelineWarning::for_op(
+            op.id,
+            "stufenfase_non_circle_skipped",
+            format!(
                 "drill op '{}': stufenfase rim chamfer only fires on closed Circle objects; {non_circle_skipped} closed contour(s) (arc-chains, polygons, etc.) were skipped without a chamfer.",
                 op.name
             ),
-        });
+        ));
     }
     if found == 0 {
         return Ok(false);
@@ -358,14 +358,14 @@ fn emit_stufenfase<P: PostProcessor>(
     let mut swapped = false;
     if op.finish_tool_id.is_some() && op.finish_tool_id != Some(op.tool_id) {
         if !project.machine.tool_change.emits_m6() {
-            warnings.push(PipelineWarning {
-                op_id: Some(op.id),
-                kind: "stufenfase_no_toolchange".into(),
-                message: format!(
+            warnings.push(PipelineWarning::for_op(
+                op.id,
+                "stufenfase_no_toolchange",
+                format!(
                     "drill op '{}' has chamfer_after_width_mm + a distinct finish_tool_id but the machine doesn't support toolchange; gcode will assume manual change.",
                     op.name
                 ),
-            });
+            ));
         }
         if let Some(finish_setup) = synthesize_finish_setup(op, project, warnings)? {
             post.raw(&format!(

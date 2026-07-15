@@ -74,14 +74,14 @@ pub(in crate::pipeline) fn run_halfpipe_op<P: PostProcessor>(
     match strategy {
         crate::project::HalfpipeProfile::CircularArc { radius_mm } => {
             if !matches!(tool.kind, crate::project::ToolKind::BallNose) {
-                warnings.push(PipelineWarning {
-                    op_id: Some(op.id),
-                    kind: "tool_kind_mismatch".into(),
-                    message: format!(
+                warnings.push(PipelineWarning::for_op(
+                    op.id,
+                    "tool_kind_mismatch",
+                    format!(
                         "Halfpipe (CircularArc) op '{}' uses tool '{}' which is not a ball-nose. The cut floor profile assumes a ball-bottom cutter; flat / V-bit will not produce a true half-pipe.",
                         op.name, tool.name
                     ),
-                });
+                ));
             }
             let tool_r = tool.effective_diameter() * 0.5;
             // A threshold of 50 % of the profile R would let large
@@ -94,26 +94,26 @@ pub(in crate::pipeline) fn run_halfpipe_op<P: PostProcessor>(
             let tolerance_factor = 0.10_f64;
             let allowed = tolerance_factor * radius_mm.max(1e-9);
             if (tool_r - radius_mm).abs() > allowed {
-                warnings.push(PipelineWarning {
-                    op_id: Some(op.id),
-                    kind: "halfpipe_radius_mismatch".into(),
-                    message: format!(
+                warnings.push(PipelineWarning::for_op(
+                    op.id,
+                    "halfpipe_radius_mismatch",
+                    format!(
                         "Halfpipe op '{}': tool radius {:.3} mm doesn't match the configured profile radius {:.3} mm (tolerance ±{:.1} % ≈ ±{:.3} mm). The cut won't trace the desired pipe — pick a ball-nose tool whose diameter equals 2 × the profile radius.",
                         op.name, tool_r, radius_mm, tolerance_factor * 100.0, allowed,
                     ),
-                });
+                ));
             }
         }
         crate::project::HalfpipeProfile::VBottom { .. } => {
             if !matches!(tool.kind, crate::project::ToolKind::VBit) {
-                warnings.push(PipelineWarning {
-                    op_id: Some(op.id),
-                    kind: "tool_kind_mismatch".into(),
-                    message: format!(
+                warnings.push(PipelineWarning::for_op(
+                    op.id,
+                    "tool_kind_mismatch",
+                    format!(
                         "Halfpipe (VBottom) op '{}' uses tool '{}' which is not a V-bit; the depth math assumes a cone.",
                         op.name, tool.name
                     ),
-                });
+                ));
             }
         }
     }
@@ -221,25 +221,25 @@ pub(in crate::pipeline) fn run_halfpipe_op<P: PostProcessor>(
     }
 
     if any_depth_limited {
-        warnings.push(PipelineWarning {
-            op_id: Some(op.id),
-            kind: "halfpipe_depth_limited".into(),
-            message: format!(
+        warnings.push(PipelineWarning::for_op(
+            op.id,
+            "halfpipe_depth_limited",
+            format!(
                 "Halfpipe op '{}' was depth-limited: the slot is wider than the configured profile cap (or the op's `depth` clipped it) at some medial-axis points.",
                 op.name
             ),
-        });
+        ));
     }
     if any_tool_reach_limited {
         let reach = reach_z;
-        warnings.push(PipelineWarning {
-            op_id: Some(op.id),
-            kind: "halfpipe_tool_reach_exceeded".into(),
-            message: format!(
+        warnings.push(PipelineWarning::for_op(
+            op.id,
+            "halfpipe_tool_reach_exceeded",
+            format!(
                 "Halfpipe op '{}': cut depth clipped to tool reach {:.3} mm (ball-nose '{}' flute length) at some medial-axis points. The profile is deeper than the cutter can reach without engaging the shank — pick a longer-flute tool or reduce the profile radius.",
                 op.name, reach, tool.name,
             ),
-        });
+        ));
     }
 
     if polylines.is_empty() {

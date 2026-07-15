@@ -119,14 +119,14 @@ pub(in crate::pipeline) fn run_thread_op<P: PostProcessor>(
     let top_z = op.params.start_depth;
     let bottom_z = op.params.depth;
     if (bottom_z - top_z).abs() < 1e-9 || pitch_mm <= 0.0 {
-        warnings.push(PipelineWarning {
-            op_id: Some(op.id),
-            kind: "thread_no_depth".into(),
-            message: format!(
+        warnings.push(PipelineWarning::for_op(
+            op.id,
+            "thread_no_depth",
+            format!(
                 "Thread op '{}' has zero Z range or non-positive pitch; nothing emitted.",
                 op.name
             ),
-        });
+        ));
         return Ok(());
     }
     // When the requested Z range is smaller than one full pitch
@@ -136,16 +136,16 @@ pub(in crate::pipeline) fn run_thread_op<P: PostProcessor>(
     // bore. Surface a `thread_dz_less_than_pitch` warning so the user
     // knows the Z descent will be steeper than `pitch` over the helix.
     if (bottom_z - top_z).abs() < pitch_mm {
-        warnings.push(PipelineWarning {
-            op_id: Some(op.id),
-            kind: "thread_dz_less_than_pitch".into(),
-            message: format!(
+        warnings.push(PipelineWarning::for_op(
+            op.id,
+            "thread_dz_less_than_pitch",
+            format!(
                 "Thread op '{}' has |Z range| ({:.4} mm) smaller than pitch ({:.4} mm). Emitting one full helical turn at the configured pitch so the cutter doesn't shortcut across the bore; the helix descent will be faster than the configured pitch.",
                 op.name,
                 (bottom_z - top_z).abs(),
                 pitch_mm,
             ),
-        });
+        ));
     }
     // Schedule multiple roughing passes when the user opts in
     // (`radial_passes > 1`). Each pass cuts at a fraction of the
@@ -207,14 +207,14 @@ pub(in crate::pipeline) fn run_thread_op<P: PostProcessor>(
         // of internal/external.
         const MIN_BORE_RADIUS_MM: f64 = 0.1;
         if bore_radius < MIN_BORE_RADIUS_MM {
-            warnings.push(PipelineWarning {
-                op_id: Some(op.id),
-                kind: "thread_zero_bore".into(),
-                message: format!(
+            warnings.push(PipelineWarning::for_op(
+                op.id,
+                "thread_zero_bore",
+                format!(
                     "Thread op '{}': source circle has radius {:.4} mm (< {MIN_BORE_RADIUS_MM:.2} mm) — looks like corrupt CAD import. Skipping; the helix would otherwise emit a scratch at the source XY.",
                     op.name, bore_radius
                 ),
-            });
+            ));
             continue;
         }
         // Helix radius places the cutter so its working edge
@@ -237,14 +237,14 @@ pub(in crate::pipeline) fn run_thread_op<P: PostProcessor>(
             bore_radius + tool_radius - thread_depth
         };
         if helix_radius <= 0.05 {
-            warnings.push(PipelineWarning {
-                op_id: Some(op.id),
-                kind: "thread_tool_too_large".into(),
-                message: format!(
+            warnings.push(PipelineWarning::for_op(
+                op.id,
+                "thread_tool_too_large",
+                format!(
                     "Thread op '{}': bore_radius {:.3} mm with tool_radius {:.3} mm leaves no room for an internal helix (needs bore > tool). Switch to external or pick a smaller cutter.",
                     op.name, bore_radius, tool_radius
                 ),
-            });
+            ));
             continue;
         }
         // Emit `n_passes` helices ramping from
@@ -310,14 +310,14 @@ pub(in crate::pipeline) fn run_thread_op<P: PostProcessor>(
                 let mut orbit = setup.tool.whirl_radius;
                 if orbit > max_orbit {
                     if pass == 0 {
-                        warnings.push(PipelineWarning {
-                            op_id: Some(op.id),
-                            kind: "thread_whirl_radius_clamped".into(),
-                            message: format!(
+                        warnings.push(PipelineWarning::for_op(
+                            op.id,
+                            "thread_whirl_radius_clamped",
+                            format!(
                                 "op '{}': whirling orbit radius {:.3} mm would breach the thread flank at {:.3} mm pitch; clamped to {:.3} mm (a quarter pitch).",
                                 op.name, orbit, pitch_mm, max_orbit
                             ),
-                        });
+                        ));
                     }
                     orbit = max_orbit;
                 }
@@ -369,14 +369,14 @@ pub(in crate::pipeline) fn run_thread_op<P: PostProcessor>(
         }
     }
     if emitted == 0 {
-        warnings.push(PipelineWarning {
-            op_id: Some(op.id),
-            kind: "thread_no_circles".into(),
-            message: format!(
+        warnings.push(PipelineWarning::for_op(
+            op.id,
+            "thread_no_circles",
+            format!(
                 "Thread op '{}' didn't find any closed circles in the selected source.",
                 op.name
             ),
-        });
+        ));
         return Ok(());
     }
     // Feed compensation. When a small cutter walks a helix of

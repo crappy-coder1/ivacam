@@ -133,28 +133,28 @@ pub(in crate::pipeline) fn validate_op_source_objects(
             Some(idx) => objects.get(idx).is_none(),
         };
         if missing {
-            warnings.push(PipelineWarning {
-                op_id: Some(op.id),
-                kind: "op_source_missing_object".into(),
-                message: format!(
+            warnings.push(PipelineWarning::for_op(
+                op.id,
+                "op_source_missing_object",
+                format!(
                     "op '{}': source references object id {} which is not in the current chained-object set (deleted or replaced by pattern/frame expansion). The id is silently dropped from this op's selection.",
                     op.name, id
                 ),
-            });
+            ));
         } else {
             survivors += 1;
         }
     }
     if survivors == 0 && !ids.is_empty() {
-        warnings.push(PipelineWarning {
-            op_id: Some(op.id),
-            kind: "op_source_empty".into(),
-            message: format!(
+        warnings.push(PipelineWarning::for_op(
+            op.id,
+            "op_source_empty",
+            format!(
                 "op '{}': every object id in the source ({} entries) is missing from the current chained-object set — the op will produce no toolpath. Re-pick the source or remove the op.",
                 op.name,
                 ids.len()
             ),
-        });
+        ));
     }
 }
 
@@ -193,26 +193,26 @@ pub(in crate::pipeline) fn validate_op_source_layers(
         if present.contains(layer.as_str()) {
             survivors += 1;
         } else {
-            warnings.push(PipelineWarning {
-                op_id: Some(op.id),
-                kind: "op_source_missing_layer".into(),
-                message: format!(
+            warnings.push(PipelineWarning::for_op(
+                op.id,
+                "op_source_missing_layer",
+                format!(
                     "op '{}': source references layer '{}' which is not present in the project's segment pool (typo, deleted import, or removed text layer). The layer is silently dropped from this op's selection.",
                     op.name, layer
                 ),
-            });
+            ));
         }
     }
     if survivors == 0 && !layers.is_empty() {
-        warnings.push(PipelineWarning {
-            op_id: Some(op.id),
-            kind: "op_source_empty".into(),
-            message: format!(
+        warnings.push(PipelineWarning::for_op(
+            op.id,
+            "op_source_empty",
+            format!(
                 "op '{}': every layer in the source ({} entries) is missing from the project — the op will produce no toolpath. Re-pick the source or remove the op.",
                 op.name,
                 layers.len()
             ),
-        });
+        ));
     }
 }
 

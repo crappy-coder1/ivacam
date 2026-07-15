@@ -76,14 +76,14 @@ pub(in crate::pipeline) fn run_relief_op<P: PostProcessor>(
         || source.cell <= 0.0
         || source.grid.len() as u64 != expected
     {
-        warnings.push(PipelineWarning {
-            op_id: Some(op.id),
-            kind: "relief_source_invalid".into(),
-            message: format!(
+        warnings.push(PipelineWarning::for_op(
+            op.id,
+            "relief_source_invalid",
+            format!(
                 "Relief op '{}': source #{source_id} has a malformed grid (cols × rows must equal the grid length and be non-empty).",
                 op.name
             ),
-        });
+        ));
         return Ok(());
     }
 
@@ -150,14 +150,14 @@ pub(in crate::pipeline) fn run_relief_op<P: PostProcessor>(
     if let Some(flute) = tool.flute_length_mm.filter(|v| *v > 0.0) {
         if z_floor < -flute {
             z_floor = -flute;
-            warnings.push(PipelineWarning {
-                op_id: Some(op.id),
-                kind: "relief_tool_reach_exceeded".into(),
-                message: format!(
+            warnings.push(PipelineWarning::for_op(
+                op.id,
+                "relief_tool_reach_exceeded",
+                format!(
                     "Relief op '{}': the requested depth is deeper than ball-nose '{}' can reach (flute length {flute:.3} mm). Cut clipped to that depth — use a longer-flute tool or a shallower relief.",
                     op.name, tool.name
                 ),
-            });
+            ));
         }
     }
 

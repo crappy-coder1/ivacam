@@ -190,10 +190,10 @@ pub(super) fn build_op_offsets(
                 .unwrap_or(0.0)
                 .max(0.0);
             if user_padding_mm < tool_radius_mm {
-                warnings.push(PipelineWarning {
-                    op_id: Some(cur_op_for_frame.id),
-                    kind: "frame_padding_below_tool_radius".into(),
-                    message: format!(
+                warnings.push(PipelineWarning::for_op(
+                    cur_op_for_frame.id,
+                    "frame_padding_below_tool_radius",
+                    format!(
                         "Frame padding {user:.3} mm is below the cutter radius {radius:.3} mm \
                          and was bumped to {radius:.3} mm so the cutter stays outside the \
                          selection. Set padding above the tool diameter ({diam:.3} mm) to \
@@ -202,7 +202,7 @@ pub(super) fn build_op_offsets(
                         radius = tool_radius_mm,
                         diam = setup.tool.diameter,
                     ),
-                });
+                ));
             }
             if let Some((new_objects, ordered_indices)) =
                 synthesize_pocket_outside_objects(cur_op_for_frame, after_pattern, tool_radius_mm)
@@ -730,14 +730,14 @@ fn finalize_offsets(
 /// know part of the pocket was left uncleared.
 fn drain_trochoidal_incompletes(op: &Op, warnings: &mut Vec<PipelineWarning>) {
     for ev in crate::cam::trochoidal::take_trochoidal_incompletes() {
-        warnings.push(PipelineWarning {
-            op_id: Some(op.id),
-            kind: "trochoidal_incomplete".into(),
-            message: format!(
+        warnings.push(PipelineWarning::for_op(
+            op.id,
+            "trochoidal_incomplete",
+            format!(
                 "op '{}': trochoidal pocket terminated at centerline vertex {}/{} — the loop disc (r={:.2} mm, engagement {:.0}°) couldn't fit the pocket interior at that point, and continuing would have required a full-slot move at trochoidal feed/RPM. Part of the pocket was left uncleared. Pick a smaller loop_radius_factor or engagement angle, or finish the unswept tail with a separate (zigzag/cascade) op.",
                 op.name, ev.bail_index, ev.centerline_total, ev.r_loop, ev.engagement_angle_deg,
             ),
-        });
+        ));
     }
 }
 
@@ -750,15 +750,15 @@ fn drain_offset_diagnostics(op: &Op, warnings: &mut Vec<PipelineWarning>) {
     // Cavalier_contours panics trapped by parallel_offset_object —
     // already caught (the pipeline kept running); this makes them VISIBLE.
     for panic in diag.parallel_offset_panics {
-        warnings.push(PipelineWarning {
-            op_id: Some(op.id),
-            kind: "parallel_offset_panicked".into(),
-            message: format!(
+        warnings.push(PipelineWarning::for_op(
+            op.id,
+            "parallel_offset_panicked",
+            format!(
                 "op '{}': parallel-offset on layer '{}' (bbox ({:.2}, {:.2}) → ({:.2}, {:.2}), digest {:#018x}, delta {:.3}) tripped a cavalier_contours assert and produced no toolpath. Try simplifying or re-tessellating the contour (e.g. remove self-touching vertices in HATCH boundaries / ELLIPSE flattening).",
                 op.name, panic.layer, panic.bbox_min_x, panic.bbox_min_y,
                 panic.bbox_max_x, panic.bbox_max_y, panic.input_digest, panic.delta,
             ),
-        });
+        ));
         // Color is exposed via the structured kind tag for tests, not the message.
         let _ = panic.color;
     }
@@ -766,53 +766,53 @@ fn drain_offset_diagnostics(op: &Op, warnings: &mut Vec<PipelineWarning>) {
     // Ring-cap truncations from pocket_cascade_with_islands — inner
     // rings of a very large pocket weren't carved (hollow doughnut).
     for ev in diag.pocket_cascade_truncations {
-        warnings.push(PipelineWarning {
-            op_id: Some(op.id),
-            kind: "pocket_cascade_truncated".into(),
-            message: format!(
+        warnings.push(PipelineWarning::for_op(
+            op.id,
+            "pocket_cascade_truncated",
+            format!(
                 "op '{}': pocket cascade emitted {} rings at step {:.3} mm, hitting the {} ring cap. Inner rings were truncated — the centre of the pocket may not be fully carved. Consider increasing the per-pass step (less ring count) or running multiple smaller pockets.",
                 op.name, ev.rings_emitted, ev.delta, ev.ring_cap,
             ),
-        });
+        ));
     }
 
     // Far approach-point rotations — usually a stale approach point
     // after the user moved the source contour.
     for ev in diag.approach_point_far {
-        warnings.push(PipelineWarning {
-            op_id: Some(op.id),
-            kind: "rotate_offsets_far_from_approach".into(),
-            message: format!(
+        warnings.push(PipelineWarning::for_op(
+            op.id,
+            "rotate_offsets_far_from_approach",
+            format!(
                 "op '{}': approach point ({:.2}, {:.2}) is {:.2} mm from the nearest closed-offset vertex (threshold {:.0} mm). The cut still starts at the nearest vertex, but check that the source contour didn't move after the approach point was set.",
                 op.name, ev.approach.0, ev.approach.1, ev.distance_mm, crate::cam::offsets::APPROACH_POINT_WARN_MM,
             ),
-        });
+        ));
     }
 
     // nocontour+allowance conflict folded by pocket_for_object (the
     // allowance had no finish pass to remove it).
     for ev in diag.nocontour_allowance_ignored {
-        warnings.push(PipelineWarning {
-            op_id: Some(op.id),
-            kind: "nocontour_ignores_finish_allowance".into(),
-            message: format!(
+        warnings.push(PipelineWarning::for_op(
+            op.id,
+            "nocontour_ignores_finish_allowance",
+            format!(
                 "op '{}': pocket_nocontour=true skips the wall ring, so the configured XY finish allowance ({:.3} mm) has no finish pass to remove it. The allowance was ignored — the rough cascade walks the wall directly at the tool radius. To get a finishing wall pass, turn pocket_nocontour off (or use the dual-tool finish-radius path instead).",
                 op.name, ev.allowance_mm,
             ),
-        });
+        ));
     }
 
     // Degenerate zigzag stride bailed by pocket_zigzag (sub-fp stride
     // would have been silently clamped before this check was added).
     for ev in diag.zigzag_stride_degenerate {
-        warnings.push(PipelineWarning {
-            op_id: Some(op.id),
-            kind: "zigzag_stride_clamped_below_minimum".into(),
-            message: format!(
+        warnings.push(PipelineWarning::for_op(
+            op.id,
+            "zigzag_stride_clamped_below_minimum",
+            format!(
                 "op '{}': zigzag pocket stride of {:.6} mm is below the working precision (1e-6 mm) — no raster strokes were emitted. Set the per-pass step to at least 1e-6 mm (sub-fp strides cannot be represented stably). For mirror-finish work pick a stride that resolves at your DRO precision (typically ≥ 0.01 mm).",
                 op.name, ev.stride_mm,
             ),
-        });
+        ));
     }
 }
 

@@ -148,14 +148,14 @@ pub(in crate::pipeline) fn run_raster_op<P: PostProcessor>(
         .checked_mul(rows)
         .map_or(true, |n| n > MAX_RASTER_PIXELS)
     {
-        warnings.push(PipelineWarning {
-            op_id: Some(op.id),
-            kind: "raster_too_large".into(),
-            message: format!(
+        warnings.push(PipelineWarning::for_op(
+            op.id,
+            "raster_too_large",
+            format!(
                 "raster op '{}' resamples to {cols}×{rows} pixels, over the {MAX_RASTER_PIXELS}-pixel emit cap. Lower the resolution (larger resolution_mm) or crop the image; streaming emit for huge rasters is a follow-up.",
                 op.name
             ),
-        });
+        ));
         return Ok(());
     }
     let (brightness, cols, rows) = resample(src_brightness, in_cols, in_rows, cell, *resolution_mm);

@@ -57,14 +57,14 @@ pub(super) fn run_dual_tool_or_single<P: PostProcessor>(
     // pipeline warning when the machine isn't toolchange-capable so
     // the user spots the manual-intervention requirement.
     if !project.machine.tool_change.emits_m6() {
-        warnings.push(PipelineWarning {
-            op_id: Some(op.id),
-            kind: "dual_tool_no_toolchange".into(),
-            message: format!(
+        warnings.push(PipelineWarning::for_op(
+            op.id,
+            "dual_tool_no_toolchange",
+            format!(
                 "op '{}' uses a dual-tool setup (rough + finish) but the machine's tool-change strategy doesn't emit M6 (manual M0-pause or ignore); the gcode will assume a manual tool change.",
                 op.name
             ),
-        });
+        ));
     }
     post.raw(&format!(
         "; toolchange: finish pass with tool {}",

@@ -104,10 +104,10 @@ pub(super) fn build_op_tabs_by_object(
             // for tabs; refusing to place any defeats the purpose).
             let effective_count = auto_count.min(max_fit.max(1));
             if effective_count < auto_count {
-                warnings.push(PipelineWarning {
-                    op_id: Some(op.id),
-                    kind: "tabs_count_clamped_short_contour".into(),
-                    message: format!(
+                warnings.push(PipelineWarning::for_op(
+                    op.id,
+                    "tabs_count_clamped_short_contour",
+                    format!(
                         "Tabs on op '{}' object #{}: perimeter {:.2} mm too short for {} tabs at width {:.2} mm; reduced to {}. Each tab now has at least {:.2} mm of cut between it and the next.",
                         op.name,
                         idx + 1,
@@ -117,7 +117,7 @@ pub(super) fn build_op_tabs_by_object(
                         effective_count,
                         tab_width * 0.5,
                     ),
-                });
+                ));
             }
             let mut auto_ts = if obj.closed {
                 auto_tab_ts(effective_count, true)

@@ -56,14 +56,14 @@ pub(in crate::pipeline) fn run_vcarve_op<P: PostProcessor>(
         .find(|t| t.id == op.tool_id)
         .ok_or(PipelineError::UnknownTool(op.id, op.tool_id))?;
     if !matches!(tool.kind, crate::project::ToolKind::VBit) {
-        warnings.push(PipelineWarning {
-            op_id: Some(op.id),
-            kind: "tool_kind_mismatch".into(),
-            message: format!(
+        warnings.push(PipelineWarning::for_op(
+            op.id,
+            "tool_kind_mismatch",
+            format!(
                 "V-Carve op '{}' uses tool '{}' which is not a V-bit. The carve depth is computed from the V-bit cone angle; engraver / endmill geometry won't produce a true V-groove.",
                 op.name, tool.name
             ),
-        });
+        ));
     }
     // A tool whose configured tip_angle lies outside the cone-math
     // valid range [1°, 179°] gets silently clamped by `chamfer_depth` and
@@ -72,14 +72,14 @@ pub(in crate::pipeline) fn run_vcarve_op<P: PostProcessor>(
     // than they typed.
     if !(1.0..=179.0).contains(&tool.tip_angle_deg) {
         let clamped = tool.tip_angle_deg.clamp(1.0, 179.0);
-        warnings.push(PipelineWarning {
-            op_id: Some(op.id),
-            kind: "tool_tip_angle_clamped".into(),
-            message: format!(
+        warnings.push(PipelineWarning::for_op(
+            op.id,
+            "tool_tip_angle_clamped",
+            format!(
                 "V-Carve op '{}' tool '{}': configured tip angle {:.2}° is outside the supported [1°, 179°] range and was clamped to {:.2}° for cone-math. Update the tool's tip_angle_deg to silence this warning.",
                 op.name, tool.name, tool.tip_angle_deg, clamped,
             ),
-        });
+        ));
     }
     let tip_angle_deg = tool.tip_angle_deg.clamp(1.0, 179.0);
     let tip_angle_rad = tip_angle_deg.to_radians();
@@ -98,14 +98,14 @@ pub(in crate::pipeline) fn run_vcarve_op<P: PostProcessor>(
     // an SVG <line>. Silently no-op'ing left the user wondering why
     // Generate produced no toolpath. Surface it instead.
     if regions.is_empty() {
-        warnings.push(PipelineWarning {
-            op_id: Some(op.id),
-            kind: "vcarve_no_closed_region".into(),
-            message: format!(
+        warnings.push(PipelineWarning::for_op(
+            op.id,
+            "vcarve_no_closed_region",
+            format!(
                 "V-Carve op '{}' has no closed source regions. V-Carve operates on the medial axis of a closed shape — pick objects whose contours close (DXF LWPOLYLINE/POLYLINE/CIRCLE/etc.). Single-line text or open polylines need an Engrave op.",
                 op.name,
             ),
-        });
+        ));
         return Ok(());
     }
 
@@ -200,14 +200,14 @@ pub(in crate::pipeline) fn run_vcarve_op<P: PostProcessor>(
             // user understands why full-medial-axis mode produced no
             // toolpath — the geometry has no interior locus to walk.
             if axes_raw.is_empty() {
-                warnings.push(PipelineWarning {
-                    op_id: Some(op.id),
-                    kind: "vcarve_no_medial_axis".into(),
-                    message: format!(
+                warnings.push(PipelineWarning::for_op(
+                    op.id,
+                    "vcarve_no_medial_axis",
+                    format!(
                         "V-Carve op '{}' (full medial axis): the source region's medial axis is empty — typical for very thin / straight slots whose Voronoi vertices all collapse onto the boundary. Either disable full_medial_axis (Estlcam-style perimeter pass), or thicken the source region.",
                         op.name,
                     ),
-                });
+                ));
                 continue;
             }
             // Prune spurious branches (boundary-sampling spurs +
@@ -261,23 +261,23 @@ pub(in crate::pipeline) fn run_vcarve_op<P: PostProcessor>(
                 }
             }
             if any_skipped_below_tip && !any_non_zero_emitted {
-                warnings.push(PipelineWarning {
-                    op_id: Some(op.id),
-                    kind: "vcarve_below_tip_radius".into(),
-                    message: format!(
+                warnings.push(PipelineWarning::for_op(
+                    op.id,
+                    "vcarve_below_tip_radius",
+                    format!(
                         "V-Carve op '{}' (full medial axis): every medial-axis chain's largest inscribed circle is at or below the V-bit's flat tip ({:.3} mm). The bit's nose would ride the surface without engaging — no toolpath emitted. Pick a sharper bit or raise carve_max_width_mm.",
                         op.name, tip_radius_mm,
                     ),
-                });
+                ));
             } else if any_skipped_below_tip {
-                warnings.push(PipelineWarning {
-                    op_id: Some(op.id),
-                    kind: "vcarve_below_tip_radius".into(),
-                    message: format!(
+                warnings.push(PipelineWarning::for_op(
+                    op.id,
+                    "vcarve_below_tip_radius",
+                    format!(
                         "V-Carve op '{}' (full medial axis): some medial-axis chains never exceed the V-bit's flat tip ({:.3} mm) and were skipped to avoid emitting a no-cut Z=0 traversal.",
                         op.name, tip_radius_mm,
                     ),
-                });
+                ));
             }
         } else {
             // Default Estlcam-style perimeter pass: inset the boundary
@@ -289,14 +289,14 @@ pub(in crate::pipeline) fn run_vcarve_op<P: PostProcessor>(
                 // The cap is below the bit's flat tip — perimeter offset
                 // would lie at z=0, indistinguishable from an engrave.
                 // Bail with a warning so the user knows nothing got cut.
-                warnings.push(PipelineWarning {
-                    op_id: Some(op.id),
-                    kind: "vcarve_below_tip_radius".into(),
-                    message: format!(
+                warnings.push(PipelineWarning::for_op(
+                    op.id,
+                    "vcarve_below_tip_radius",
+                    format!(
                         "V-Carve op '{}' effective carve width ({:.3} mm) is at or below the V-bit's flat tip ({:.3} mm); the bit's nose rides the surface and no material would be removed. Pick a sharper bit or raise carve_max_width_mm.",
                         op.name, r_offset, tip_radius_mm,
                     ),
-                });
+                ));
                 continue;
             }
             // Compute target z. polyline_to_z's r-cap logic isn't needed
@@ -330,14 +330,14 @@ pub(in crate::pipeline) fn run_vcarve_op<P: PostProcessor>(
     }
 
     if any_depth_limited {
-        warnings.push(PipelineWarning {
-            op_id: Some(op.id),
-            kind: "vcarve_depth_limited".into(),
-            message: format!(
+        warnings.push(PipelineWarning::for_op(
+            op.id,
+            "vcarve_depth_limited",
+            format!(
                 "V-Carve op '{}' was depth-limited: the V-bit can't reach the geometric corner because depth and/or carve_max_width caps clipped the inscribed-circle radius.",
                 op.name
             ),
-        });
+        ));
     }
 
     if polylines.is_empty() {

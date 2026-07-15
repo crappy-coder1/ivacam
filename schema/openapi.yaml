@@ -2069,13 +2069,18 @@ components:
       - offset_count
       type: object
     PipelineWarning:
-      description: One non-fatal warning attached to (optionally) a specific op.
+      description: |-
+        One non-fatal warning attached to (optionally) a specific op.
+
+        ## Localization seam (i18n epic ivac-os2k.12)
+
+        `kind` is already the stable, language-agnostic code (like the op enums), and `params` carries the structured values the message interpolates. The frontend renders the user-facing text from a `warn.<kind>` template against `params`, so the German UI never depends on the English wording here. `message` stays as the English fallback for the CLI, logs, and any `kind` that has no template yet. Mirrors the [`crate::errors::Error`] `code`/`params` seam (ivac-os2k.6).
       properties:
         kind:
-          description: Stable identifier — frontend can branch on this to render an icon, link to docs, etc.
+          description: Stable identifier — frontend can branch on this to render an icon, link to docs, or look up the `warn.<kind>` template.
           type: string
         message:
-          description: Human-readable description.
+          description: Human-readable English description — the fallback when the frontend has no `warn.<kind>` template (and what the CLI / logs print).
           type: string
         op_id:
           description: Op the warning applies to. `None` means project-wide.
@@ -2084,6 +2089,11 @@ components:
           type:
           - integer
           - 'null'
+        params:
+          additionalProperties:
+            type: string
+          description: Values the localized template interpolates (`{op_id}`, `{name}`, …). Stringified so the wire shape stays a simple `string → string` map.
+          type: object
       required:
       - kind
       - message

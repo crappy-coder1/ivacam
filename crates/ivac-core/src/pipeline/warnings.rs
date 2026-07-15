@@ -66,14 +66,13 @@ pub(super) fn push_wcs_origin_warning(project: &Project, warnings: &mut Vec<Pipe
         && bbox.min_y - slack <= gy
         && gy <= bbox.max_y + slack;
     if !contains_wcs {
-        warnings.push(PipelineWarning {
-            op_id: None,
-            kind: "stock_origin_outside_geometry_bbox".into(),
-            message: format!(
+        warnings.push(PipelineWarning::new(
+            "stock_origin_outside_geometry_bbox",
+            format!(
                 "Geometry bbox ({:.2}, {:.2}) → ({:.2}, {:.2}) does NOT contain the WCS origin ({:.2}, {:.2}) in geometry coordinates. The simulator aligns its heightmap to the geometry footprint while the controller cuts at the WCS / G54 origin — if you zeroed the machine somewhere else (e.g. a stock corner) the cuts will land in the wrong place. Translate the geometry, or set Project.work_offset so the WCS origin matches the spot you zeroed against.",
                 bbox.min_x, bbox.min_y, bbox.max_x, bbox.max_y, gx, gy
             ),
-        });
+        ));
     }
 }
 
@@ -109,13 +108,12 @@ pub(super) fn push_manual_toolchange_warning(
         return;
     }
     let plural = if changes == 1 { "" } else { "s" };
-    warnings.push(PipelineWarning {
-        op_id: None,
-        kind: "multi_tool_manual_machine".into(),
-        message: format!(
+    warnings.push(PipelineWarning::new(
+        "multi_tool_manual_machine",
+        format!(
             "This program needs {changes} manual tool change{plural}. The machine has no automatic tool changer, so the program pauses (M0) for each hand swap — re-establish the tool's Z after every change (see the machine's post-change Z setting)."
         ),
-    });
+    ));
 }
 
 /// GRBL + ATC footgun. Stock GRBL 1.1 does NOT support `M6`
@@ -161,13 +159,12 @@ pub(super) fn push_grbl_atc_footgun_warning(
         return;
     }
     let plural = if changes == 1 { "" } else { "s" };
-    warnings.push(PipelineWarning {
-        op_id: None,
-        kind: "grbl_atc_no_toolchange_template".into(),
-        message: format!(
+    warnings.push(PipelineWarning::new(
+        "grbl_atc_no_toolchange_template",
+        format!(
             "GRBL does not support M6 tool changes (it returns error:20). This program needs {changes} tool change{plural} and the machine is set to automatic tool change, but the GRBL post has no tool-change macro template — the swap would emit nothing and the next operation would cut with the WRONG tool. Fix one of: switch the machine to manual (M0-pause) tool change, add a tool-change macro template to the post profile, or use a sender that intercepts M6."
         ),
-    });
+    ));
 }
 
 /// GRBL + FixedSensor footgun. The `FixedSensor` post-change-Z
@@ -221,10 +218,9 @@ pub(super) fn push_fixed_sensor_reference_order_warning(
     if first_tool == reference {
         return;
     }
-    warnings.push(PipelineWarning {
-        op_id: None,
-        kind: "fixed_sensor_reference_not_first".into(),
-        message: format!(
+    warnings.push(PipelineWarning::new(
+        "fixed_sensor_reference_not_first",
+        format!(
             "Fixed-sensor post-change Z: the reference tool (tool {reference}) is not the \
              program's first tool (tool {first_tool}). Tools that run before the reference \
              have no baseline sensor reading to difference against — on LinuxCNC the program \
@@ -232,7 +228,7 @@ pub(super) fn push_fixed_sensor_reference_order_warning(
              reference tool cuts first, or clear the reference override (the first tool is \
              then used)."
         ),
-    });
+    ));
 }
 
 pub(super) fn push_grbl_fixed_sensor_warning(
@@ -269,13 +265,10 @@ pub(super) fn push_grbl_fixed_sensor_warning(
     if changes == 0 {
         return;
     }
-    warnings.push(PipelineWarning {
-        op_id: None,
-        kind: "grbl_fixed_sensor_no_offset".into(),
-        message:
-            "The machine uses a fixed tool-length sensor (post-change Z), but the GRBL post cannot apply the probed offset: it has no numbered-parameter system, so the emitted G38.2 probe measures the tool and then the program cuts with NO length compensation — the first cut after a tool change would be off by the full tool-length difference (a likely crash). Fix one of: add a tool-change macro template to the post profile whose M6 runs grblHAL's $341 tool-measure cycle, switch the post-change-Z strategy to a work-surface touch plate (Probe), or use the LinuxCNC post (which applies G43.1)."
-            .into(),
-    });
+    warnings.push(PipelineWarning::new(
+        "grbl_fixed_sensor_no_offset",
+        "The machine uses a fixed tool-length sensor (post-change Z), but the GRBL post cannot apply the probed offset: it has no numbered-parameter system, so the emitted G38.2 probe measures the tool and then the program cuts with NO length compensation — the first cut after a tool change would be off by the full tool-length difference (a likely crash). Fix one of: add a tool-change macro template to the post profile whose M6 runs grblHAL's $341 tool-measure cycle, switch the post-change-Z strategy to a work-surface touch plate (Probe), or use the LinuxCNC post (which applies G43.1).",
+    ));
 }
 
 /// Count cut moves (Cut / Plunge / Arc — rapids and retracts excluded,
@@ -346,13 +339,12 @@ pub(super) fn push_work_area_warning(
     }
     let plural = if count == 1 { "" } else { "s" };
     let where_line = first_line_suffix(first_line);
-    warnings.push(PipelineWarning {
-        op_id: None,
-        kind: "out_of_work_area".into(),
-        message: format!(
+    warnings.push(PipelineWarning::new(
+        "out_of_work_area",
+        format!(
             "{count} cut move{plural} outside the machine work area{where_line}. The controller may refuse the move (soft-limit fault) or, worse, crash into the gantry. Set Project.work_offset so the cuts land inside the work envelope."
         ),
-    });
+    ));
 }
 
 /// Post-emit STOCK envelope scan. `push_work_area_warning` moved the
@@ -405,13 +397,12 @@ pub(super) fn push_stock_warning(
     }
     let plural = if count == 1 { "" } else { "s" };
     let where_line = first_line_suffix(first_line);
-    warnings.push(PipelineWarning {
-        op_id: None,
-        kind: "out_of_stock".into(),
-        message: format!(
+    warnings.push(PipelineWarning::new(
+        "out_of_stock",
+        format!(
             "{count} cut move{plural} outside the stock{where_line}. The controller will try to cut into air or below the stock — either re-zero the machine, expand the stock, or translate the geometry into the stock bbox."
         ),
-    });
+    ));
 }
 
 /// Scan the enabled-op sequence for obviously wrong orderings —
@@ -475,14 +466,14 @@ pub(super) fn push_op_order_warnings(
             if !matches!(op_b.kind, OpKind::Drill { .. }) {
                 continue;
             }
-            warnings.push(PipelineWarning {
-                op_id: Some(op_b.id),
-                kind: "op_order_suspect".into(),
-                message: format!(
+            warnings.push(PipelineWarning::for_op(
+                op_b.id,
+                "op_order_suspect",
+                format!(
                     "Operation '{}' (drill_after_profile) runs AFTER profile op '{}' which cuts the part free. Drilling acts on a loose / flown piece. Reorder so the drill precedes the part-freeing profile.",
                     op_b.name, op_a.name
                 ),
-            });
+            ));
         }
     }
     // Finish-before-rough: two ops on the same source where the first
@@ -513,14 +504,14 @@ pub(super) fn push_op_order_warnings(
                 continue;
             }
             if tool_a.diameter + 1e-9 < tool_b.diameter {
-                warnings.push(PipelineWarning {
-                    op_id: Some(op_a.id),
-                    kind: "op_order_suspect".into(),
-                    message: format!(
+                warnings.push(PipelineWarning::for_op(
+                    op_a.id,
+                    "op_order_suspect",
+                    format!(
                         "Operation '{}' (tool dia {:.2}) runs BEFORE '{}' (tool dia {:.2}) on the same source — likely a finish-before-rough order. Move the larger tool first so the finish pass has clearance.",
                         op_a.name, tool_a.diameter, op_b.name, tool_b.diameter
                     ),
-                });
+                ));
             }
         }
     }
@@ -544,14 +535,14 @@ pub(super) fn push_relief_roughing_warnings(
         match &op.kind {
             OpKind::Pocket { .. } => seen_pocket = true,
             OpKind::ReliefMill { .. } if !seen_pocket => {
-                warnings.push(PipelineWarning {
-                    op_id: Some(op.id),
-                    kind: "relief_missing_roughing".into(),
-                    message: format!(
+                warnings.push(PipelineWarning::for_op(
+                    op.id,
+                    "relief_missing_roughing",
+                    format!(
                         "Relief op '{}' runs with no prior roughing pass — the ball-nose must remove the full relief depth in scallop-sized bites, which is slow and overloads the cutter. Add a Pocket (flat endmill) roughing op before it to clear the bulk, leaving only the finish for the ball-nose.",
                         op.name
                     ),
-                });
+                ));
             }
             _ => {}
         }
@@ -604,14 +595,14 @@ pub(super) fn push_ramp_with_arcs_warning(
                 .any(|s| matches!(s.kind, SegmentKind::Arc | SegmentKind::Circle))
     });
     if has_arc {
-        warnings.push(PipelineWarning {
-            op_id: Some(op.id),
-            kind: "ramp_arcs_at_boundary".into(),
-            message: format!(
+        warnings.push(PipelineWarning::for_op(
+            op.id,
+            "ramp_arcs_at_boundary",
+            format!(
                 "op '{}': ramp plunge with arc / circle source segments. The cutter ramps along line segments correctly but dives straight down at the start of any arc that crosses the ramp boundary — surface finish near arc entries may show a small step. Use Helix plunge or a finer ramp angle for a smoother entry.",
                 op.name
             ),
-        });
+        ));
     }
 }
 
@@ -626,27 +617,27 @@ pub(super) fn push_trochoidal_warnings(op: &Op, warnings: &mut Vec<PipelineWarni
         return;
     }
     if op.contour_params().is_some_and(|c| c.tabs.active) {
-        warnings.push(PipelineWarning {
-            op_id: Some(op.id),
-            kind: "tabs_with_trochoidal_unsupported".into(),
-            message: format!(
+        warnings.push(PipelineWarning::for_op(
+            op.id,
+            "tabs_with_trochoidal_unsupported",
+            format!(
                 "op '{}': tabs are not supported on a Trochoidal pocket; ignoring tabs.",
                 op.name
             ),
-        });
+        ));
     }
     if !matches!(
         op.params.plunge,
         crate::project::PlungeStrategy::Helix { .. }
     ) {
-        warnings.push(PipelineWarning {
-            op_id: Some(op.id),
-            kind: "plunge_overridden".into(),
-            message: format!(
+        warnings.push(PipelineWarning::for_op(
+            op.id,
+            "plunge_overridden",
+            format!(
                 "op '{}': trochoidal pockets require helical descent; overriding plunge to Helix.",
                 op.name
             ),
-        });
+        ));
     }
 }
 
@@ -669,14 +660,14 @@ pub(super) fn push_tool_fit_kind_warnings(
     // Impossible tool geometry: tip diameter ≥ shank diameter.
     if let Some(tip) = tool.tip_diameter {
         if tip >= tool.diameter {
-            warnings.push(PipelineWarning {
-                op_id: Some(op.id),
-                kind: "tool_geometry_impossible".into(),
-                message: format!(
+            warnings.push(PipelineWarning::for_op(
+                op.id,
+                "tool_geometry_impossible",
+                format!(
                     "tool '{}': tip diameter {tip} ≥ shank diameter {}",
                     tool.name, tool.diameter
                 ),
-            });
+            ));
         }
     }
     // Tool kind mismatched with op kind. We warn rather than error
@@ -725,14 +716,14 @@ pub(super) fn push_tool_fit_kind_warnings(
         _ => None,
     };
     if let Some(msg) = mismatch {
-        warnings.push(PipelineWarning {
-            op_id: Some(op.id),
-            kind: "tool_kind_mismatch".into(),
-            message: format!(
+        warnings.push(PipelineWarning::for_op(
+            op.id,
+            "tool_kind_mismatch",
+            format!(
                 "{msg} — '{}' on op '{}'. Pick a different tool kind.",
                 tool.name, op.name
             ),
-        });
+        ));
     }
     // Op-kind ✗ machine-mode. The op-kind picker hides kinds that
     // don't fit the machine's capabilities at creation time, but a
@@ -775,14 +766,14 @@ pub(super) fn push_tool_fit_kind_warnings(
                 &setup.machine.capabilities
             };
             if !caps.iter().any(|c| allowed.contains(c)) {
-                warnings.push(PipelineWarning {
-                    op_id: Some(op.id),
-                    kind: "op_machine_mode_mismatch".into(),
-                    message: format!(
+                warnings.push(PipelineWarning::for_op(
+                    op.id,
+                    "op_machine_mode_mismatch",
+                    format!(
                         "{kind_name} op '{}' isn't a meaningful operation on a {:?} machine (it runs on {allowed:?}). A toolpath is still emitted, but the result is unlikely to be usable — switch the machine's mode/capabilities or remove the op.",
                         op.name, setup.machine.mode
                     ),
-                });
+                ));
             }
         }
     }
@@ -800,14 +791,14 @@ pub(super) fn push_tool_fit_kind_warnings(
             &setup.machine.capabilities
         };
         if !caps.iter().any(|c| tool.kind.compatible_with_mode(*c)) {
-            warnings.push(PipelineWarning {
-                op_id: Some(op.id),
-                kind: "tool_incompatible_with_machine_mode".into(),
-                message: format!(
+            warnings.push(PipelineWarning::for_op(
+                op.id,
+                "tool_incompatible_with_machine_mode",
+                format!(
                     "tool '{}' is a {:?} and cannot run on a {:?} machine — op '{}' will not cut as previewed. Assign a compatible tool or switch the machine's mode/capabilities.",
                     tool.name, tool.kind, setup.machine.mode, op.name
                 ),
-            });
+            ));
         }
     }
     // Plasma / laser pierce-on-edge. The pierce happens at the
@@ -829,14 +820,14 @@ pub(super) fn push_tool_fit_kind_warnings(
             } else {
                 ("beam", "the pierce dwell leaves a divot on the edge")
             };
-            warnings.push(PipelineWarning {
-                op_id: Some(op.id),
-                kind: "pierce_on_contour_no_lead".into(),
-                message: format!(
+            warnings.push(PipelineWarning::for_op(
+                op.id,
+                "pierce_on_contour_no_lead",
+                format!(
                     "op '{}' has no lead-in, so the {cutter} pierces directly on the cut contour — {harm}. Add a lead-in (straight or arc) so the pierce lands off the finished edge (a starter hole).",
                     op.name
                 ),
-            });
+            ));
         }
     }
     // T-slot cuts ONLY the undercut at the floor Z. A T-slot cutter
@@ -861,14 +852,14 @@ pub(super) fn push_tool_fit_kind_warnings(
         } else {
             "the neck".to_string()
         };
-        warnings.push(PipelineWarning {
-            op_id: Some(op.id),
-            kind: "tslot_requires_stem_slot".into(),
-            message: format!(
+        warnings.push(PipelineWarning::for_op(
+            op.id,
+            "tslot_requires_stem_slot",
+            format!(
                 "T-slot op '{}' cuts only the undercut at the floor depth. Cut a stem slot at least {neck} wide down to that depth with a prior endmill op first, and enter the cut laterally (lead-in from outside the stock or a pre-bored clearance hole) — the wide head can't plunge through the narrow stem.",
                 op.name
             ),
-        });
+        ));
     }
     // A dovetail op cuts ONLY the angled-flank undercut at the
     // floor Z. The undercut flank can't be safely plunged into, so the
@@ -887,14 +878,14 @@ pub(super) fn push_tool_fit_kind_warnings(
         } else {
             "the bit's neck".to_string()
         };
-        warnings.push(PipelineWarning {
-            op_id: Some(op.id),
-            kind: "dovetail_requires_rough_channel".into(),
-            message: format!(
+        warnings.push(PipelineWarning::for_op(
+            op.id,
+            "dovetail_requires_rough_channel",
+            format!(
                 "Dovetail op '{}' cuts only the angled-flank undercut at the floor depth. Rough a straight channel at least {neck} wide down to that depth with a prior endmill op first, then drop the dovetail bit into it — its angled flanks can't be plunged through solid stock.",
                 op.name
             ),
-        });
+        ));
     }
     // A Compression (up/down-cut) bit cleans BOTH sheet faces
     // in a single full-depth pass — the up-cut flutes (the bottom
@@ -915,14 +906,14 @@ pub(super) fn push_tool_fit_kind_warnings(
             let cut_depth = (op.params.start_depth - op.params.depth).max(0.0)
                 + op.params.through_depth.max(0.0);
             if cut_depth > 0.0 && transition >= cut_depth - 1e-9 {
-                warnings.push(PipelineWarning {
-                    op_id: Some(op.id),
-                    kind: "compression_transition_above_cut".into(),
-                    message: format!(
+                warnings.push(PipelineWarning::for_op(
+                    op.id,
+                    "compression_transition_above_cut",
+                    format!(
                         "Compression tool '{}': the up/down-cut transition sits {transition:.2} mm above the tip, but op '{}' cuts only {cut_depth:.2} mm deep — so the entire cut is in the lower (up-cut) flutes. The top face will fray and you get no compression benefit (it behaves like a plain up-cut endmill). Use stock at least as thick as the transition, lower the transition, or pick an up-cut bit.",
                         tool.name, op.name
                     ),
-                });
+                ));
             }
         }
     }
@@ -956,14 +947,14 @@ pub(super) fn push_tool_fit_size_warning(
         return;
     }
     if offsets.is_empty() {
-        warnings.push(PipelineWarning {
-            op_id: Some(op.id),
-            kind: "tool_too_large".into(),
-            message: format!(
+        warnings.push(PipelineWarning::for_op(
+            op.id,
+            "tool_too_large",
+            format!(
                 "tool diameter {:.2} mm doesn't fit op '{}' — offset/cascade produced no toolpath. Try a smaller tool.",
                 setup.tool.diameter, op.name,
             ),
-        });
+        ));
         return;
     }
     // Pocket-specific second pass: the boundary contour fits but the
@@ -977,14 +968,14 @@ pub(super) fn push_tool_fit_size_warning(
         && offsets.iter().any(|o| o.is_pocket == 0)
         && !offsets.iter().any(|o| o.is_pocket >= 1)
     {
-        warnings.push(PipelineWarning {
-            op_id: Some(op.id),
-            kind: "pocket_fill_incomplete".into(),
-            message: format!(
+        warnings.push(PipelineWarning::for_op(
+            op.id,
+            "pocket_fill_incomplete",
+            format!(
                 "tool diameter {:.2} mm fits the pocket boundary in op '{}' but not the interior — only the wall is cut, not the fill. Use a smaller tool to pocket the inside.",
                 setup.tool.diameter, op.name,
             ),
-        });
+        ));
     }
 }
 
