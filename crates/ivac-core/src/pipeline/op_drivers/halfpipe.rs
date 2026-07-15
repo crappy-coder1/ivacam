@@ -228,7 +228,8 @@ pub(in crate::pipeline) fn run_halfpipe_op<P: PostProcessor>(
                 "Halfpipe op '{}' was depth-limited: the slot is wider than the configured profile cap (or the op's `depth` clipped it) at some medial-axis points.",
                 op.name
             ),
-        ));
+        )
+        .with_param("op_name", op.name.as_str()));
     }
     if any_tool_reach_limited {
         let reach = reach_z;

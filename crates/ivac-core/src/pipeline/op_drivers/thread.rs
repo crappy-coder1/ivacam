@@ -119,14 +119,17 @@ pub(in crate::pipeline) fn run_thread_op<P: PostProcessor>(
     let top_z = op.params.start_depth;
     let bottom_z = op.params.depth;
     if (bottom_z - top_z).abs() < 1e-9 || pitch_mm <= 0.0 {
-        warnings.push(PipelineWarning::for_op(
-            op.id,
-            "thread_no_depth",
-            format!(
-                "Thread op '{}' has zero Z range or non-positive pitch; nothing emitted.",
-                op.name
-            ),
-        ));
+        warnings.push(
+            PipelineWarning::for_op(
+                op.id,
+                "thread_no_depth",
+                format!(
+                    "Thread op '{}' has zero Z range or non-positive pitch; nothing emitted.",
+                    op.name
+                ),
+            )
+            .with_param("op_name", op.name.as_str()),
+        );
         return Ok(());
     }
     // When the requested Z range is smaller than one full pitch
@@ -369,14 +372,17 @@ pub(in crate::pipeline) fn run_thread_op<P: PostProcessor>(
         }
     }
     if emitted == 0 {
-        warnings.push(PipelineWarning::for_op(
-            op.id,
-            "thread_no_circles",
-            format!(
-                "Thread op '{}' didn't find any closed circles in the selected source.",
-                op.name
-            ),
-        ));
+        warnings.push(
+            PipelineWarning::for_op(
+                op.id,
+                "thread_no_circles",
+                format!(
+                    "Thread op '{}' didn't find any closed circles in the selected source.",
+                    op.name
+                ),
+            )
+            .with_param("op_name", op.name.as_str()),
+        );
         return Ok(());
     }
     // Feed compensation. When a small cutter walks a helix of

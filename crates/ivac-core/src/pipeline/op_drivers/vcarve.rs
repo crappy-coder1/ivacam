@@ -105,7 +105,8 @@ pub(in crate::pipeline) fn run_vcarve_op<P: PostProcessor>(
                 "V-Carve op '{}' has no closed source regions. V-Carve operates on the medial axis of a closed shape — pick objects whose contours close (DXF LWPOLYLINE/POLYLINE/CIRCLE/etc.). Single-line text or open polylines need an Engrave op.",
                 op.name,
             ),
-        ));
+        )
+        .with_param("op_name", op.name.as_str()));
         return Ok(());
     }
 
@@ -207,7 +208,8 @@ pub(in crate::pipeline) fn run_vcarve_op<P: PostProcessor>(
                         "V-Carve op '{}' (full medial axis): the source region's medial axis is empty — typical for very thin / straight slots whose Voronoi vertices all collapse onto the boundary. Either disable full_medial_axis (Estlcam-style perimeter pass), or thicken the source region.",
                         op.name,
                     ),
-                ));
+                )
+                .with_param("op_name", op.name.as_str()));
                 continue;
             }
             // Prune spurious branches (boundary-sampling spurs +
@@ -337,7 +339,8 @@ pub(in crate::pipeline) fn run_vcarve_op<P: PostProcessor>(
                 "V-Carve op '{}' was depth-limited: the V-bit can't reach the geometric corner because depth and/or carve_max_width caps clipped the inscribed-circle radius.",
                 op.name
             ),
-        ));
+        )
+        .with_param("op_name", op.name.as_str()));
     }
 
     if polylines.is_empty() {

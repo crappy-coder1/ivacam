@@ -1498,7 +1498,21 @@ export type MsgKey =
   | "tools.whirl.z_wobble"
   | "tools.whirl.z_wobble.title"
   | "tools.z_shift"
-  | "tools.z_shift.title";
+  | "tools.z_shift.title"
+  | "warn.chamfer_non_vbit"
+  | "warn.halfpipe_depth_limited"
+  | "warn.helix_radius_unfittable"
+  | "warn.plunge_overridden"
+  | "warn.pocket_fill_incomplete"
+  | "warn.ramp_arcs_at_boundary"
+  | "warn.relief_missing_roughing"
+  | "warn.tabs_with_trochoidal_unsupported"
+  | "warn.thread_no_circles"
+  | "warn.thread_no_depth"
+  | "warn.tool_too_large"
+  | "warn.vcarve_depth_limited"
+  | "warn.vcarve_no_closed_region"
+  | "warn.vcarve_no_medial_axis";
 
 /** All keys as an array (handy for coverage tests / iteration). */
 export const MSG_KEYS: readonly MsgKey[] = [
@@ -2997,4 +3011,18 @@ export const MSG_KEYS: readonly MsgKey[] = [
   "tools.whirl.z_wobble.title",
   "tools.z_shift",
   "tools.z_shift.title",
+  "warn.chamfer_non_vbit",
+  "warn.halfpipe_depth_limited",
+  "warn.helix_radius_unfittable",
+  "warn.plunge_overridden",
+  "warn.pocket_fill_incomplete",
+  "warn.ramp_arcs_at_boundary",
+  "warn.relief_missing_roughing",
+  "warn.tabs_with_trochoidal_unsupported",
+  "warn.thread_no_circles",
+  "warn.thread_no_depth",
+  "warn.tool_too_large",
+  "warn.vcarve_depth_limited",
+  "warn.vcarve_no_closed_region",
+  "warn.vcarve_no_medial_axis",
 ];

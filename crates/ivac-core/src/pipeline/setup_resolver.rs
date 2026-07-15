@@ -567,7 +567,9 @@ pub(in crate::pipeline) fn synthesize_op_setup(
                     "Chamfer op '{}' uses tool '{}' which is not a V-bit. The cone math assumes a conical cutter; flat / ball tools will not produce a true bevel.",
                     op.name, tool.name
                 ),
-            ));
+            )
+            .with_param("op_name", op.name.as_str())
+            .with_param("tool_name", tool.name.as_str()));
         }
     }
     // A T-slot op cuts the undercut in ONE pass at the floor Z. The
@@ -628,7 +630,8 @@ pub(super) fn resolve_auto_helix_radius(
                 "op '{}': auto helix radius could not be fit (pocket too small for tool); falling back to Ramp.",
                 op.name
             ),
-        ));
+        )
+        .with_param("op_name", op.name.as_str()));
     }
 }
 

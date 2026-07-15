@@ -542,7 +542,8 @@ pub(super) fn push_relief_roughing_warnings(
                         "Relief op '{}' runs with no prior roughing pass — the ball-nose must remove the full relief depth in scallop-sized bites, which is slow and overloads the cutter. Add a Pocket (flat endmill) roughing op before it to clear the bulk, leaving only the finish for the ball-nose.",
                         op.name
                     ),
-                ));
+                )
+                .with_param("op_name", op.name.as_str()));
             }
             _ => {}
         }
@@ -602,7 +603,8 @@ pub(super) fn push_ramp_with_arcs_warning(
                 "op '{}': ramp plunge with arc / circle source segments. The cutter ramps along line segments correctly but dives straight down at the start of any arc that crosses the ramp boundary — surface finish near arc entries may show a small step. Use Helix plunge or a finer ramp angle for a smoother entry.",
                 op.name
             ),
-        ));
+        )
+        .with_param("op_name", op.name.as_str()));
     }
 }
 
@@ -617,27 +619,33 @@ pub(super) fn push_trochoidal_warnings(op: &Op, warnings: &mut Vec<PipelineWarni
         return;
     }
     if op.contour_params().is_some_and(|c| c.tabs.active) {
-        warnings.push(PipelineWarning::for_op(
-            op.id,
-            "tabs_with_trochoidal_unsupported",
-            format!(
-                "op '{}': tabs are not supported on a Trochoidal pocket; ignoring tabs.",
-                op.name
-            ),
-        ));
+        warnings.push(
+            PipelineWarning::for_op(
+                op.id,
+                "tabs_with_trochoidal_unsupported",
+                format!(
+                    "op '{}': tabs are not supported on a Trochoidal pocket; ignoring tabs.",
+                    op.name
+                ),
+            )
+            .with_param("op_name", op.name.as_str()),
+        );
     }
     if !matches!(
         op.params.plunge,
         crate::project::PlungeStrategy::Helix { .. }
     ) {
-        warnings.push(PipelineWarning::for_op(
-            op.id,
-            "plunge_overridden",
-            format!(
+        warnings.push(
+            PipelineWarning::for_op(
+                op.id,
+                "plunge_overridden",
+                format!(
                 "op '{}': trochoidal pockets require helical descent; overriding plunge to Helix.",
                 op.name
             ),
-        ));
+            )
+            .with_param("op_name", op.name.as_str()),
+        );
     }
 }
 
@@ -954,7 +962,9 @@ pub(super) fn push_tool_fit_size_warning(
                 "tool diameter {:.2} mm doesn't fit op '{}' — offset/cascade produced no toolpath. Try a smaller tool.",
                 setup.tool.diameter, op.name,
             ),
-        ));
+        )
+        .with_param("op_name", op.name.as_str())
+        .with_param("diameter", format!("{:.2}", setup.tool.diameter)));
         return;
     }
     // Pocket-specific second pass: the boundary contour fits but the
@@ -975,7 +985,9 @@ pub(super) fn push_tool_fit_size_warning(
                 "tool diameter {:.2} mm fits the pocket boundary in op '{}' but not the interior — only the wall is cut, not the fill. Use a smaller tool to pocket the inside.",
                 setup.tool.diameter, op.name,
             ),
-        ));
+        )
+        .with_param("op_name", op.name.as_str())
+        .with_param("diameter", format!("{:.2}", setup.tool.diameter)));
     }
 }
 
@@ -1671,6 +1683,18 @@ mod tests {
         let hit = w1.iter().find(|w| w.kind == "relief_missing_roughing");
         assert!(hit.is_some(), "relief with no roughing should warn: {w1:?}");
         assert_eq!(hit.unwrap().op_id, Some(1));
+        // The localized `warn.relief_missing_roughing` template interpolates
+        // {op_name}, so the construction site must populate that param
+        // (os2k.12). Guards against a dropped `.with_param` leaving the
+        // German UI with a literal `{op_name}`.
+        assert!(
+            hit.unwrap()
+                .params
+                .get("op_name")
+                .is_some_and(|n| !n.is_empty()),
+            "relief_missing_roughing must carry a non-empty op_name param: {:?}",
+            hit.unwrap().params
+        );
 
         // Pocket BEFORE relief → silent.
         let p2 = project_with_segments(
