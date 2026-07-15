@@ -17,6 +17,7 @@
     type PickerKind,
   } from './OpKindPicker.svelte';
   import { t } from '../i18n';
+  import { warningMessage } from './warning-display';
 
   interface Props {
     /// Accordion-controlled by the sidebar parent. `active` =
@@ -176,7 +177,7 @@
       const bad = opWarnings.find(
         (w) => w.kind === 'tool_kind_mismatch' || w.kind === 'tool_geometry_impossible',
       );
-      const reason = opWarnings.map((w) => w.message).join('\n');
+      const reason = opWarnings.map((w) => warningMessage(w, t)).join('\n');
       return bad ? { label: '✘', tone: 'bad', reason } : { label: '⚠', tone: 'warn', reason };
     }
     return { label: '✓', tone: 'ok', reason: t('oplist.status.up_to_date') };

@@ -22,6 +22,7 @@
   import { warningFocus } from '../state/warning-focus.svelte';
   import { tick } from 'svelte';
   import { t } from '../i18n';
+  import { warningMessage } from './warning-display';
 
   // Format a duration in seconds as HH:MM:SS (always two digits per
   // unit). Negative / NaN inputs render as 00:00:00.
@@ -596,7 +597,7 @@
               >{t('genbar.row.pipeline')}</span
             >
             <span class="kind">{pw.kind}</span>
-            <span class="msg">{pw.message}</span>
+            <span class="msg">{warningMessage(pw, t)}</span>
             {#if hasFix}
               <button
                 type="button"
@@ -613,7 +614,7 @@
             {/if}
           </summary>
           <div class="row-body">
-            <p class="full-msg">{pw.message}</p>
+            <p class="full-msg">{warningMessage(pw, t)}</p>
             <pre class="json">{JSON.stringify(pw, null, 2)}</pre>
           </div>
         </details>

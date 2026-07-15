@@ -10,6 +10,7 @@
   /// honours.
   import { project } from '../state/project.svelte';
   import { t } from '../i18n';
+  import { warningMessage } from './warning-display';
   import { generateBus } from '../state/generate-bus.svelte';
   import FloatingPanel from './FloatingPanel.svelte';
   import { simWarningSeverity, simWarningSummary } from '../sim/warnings';
@@ -46,7 +47,7 @@
   function warningsText(): string {
     const lines: string[] = [];
     for (const w of simWarnings) lines.push(`[sim] ${w.kind}: ${simWarningSummary(w)}`);
-    for (const pw of pipeWarnings) lines.push(`[pipeline] ${pw.kind}: ${pw.message}`);
+    for (const pw of pipeWarnings) lines.push(`[pipeline] ${pw.kind}: ${warningMessage(pw, t)}`);
     return lines.join('\n');
   }
   async function copyWarnings() {
@@ -169,7 +170,7 @@
                 <span class="src pipe">pipeline</span>
                 <span class="kind">{pw.kind}</span>
               </div>
-              <span class="msg">{pw.message}</span>
+              <span class="msg">{warningMessage(pw, t)}</span>
             </div>
           {/each}
         {/if}
