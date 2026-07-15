@@ -1500,19 +1500,92 @@ export type MsgKey =
   | "tools.z_shift"
   | "tools.z_shift.title"
   | "warn.chamfer_non_vbit"
+  | "warn.chamfer_width_clamped_to_reach"
+  | "warn.compression_transition_above_cut"
+  | "warn.dovetail_requires_rough_channel.generic"
+  | "warn.dovetail_requires_rough_channel.known"
+  | "warn.drill_spot_depth_non_negative"
+  | "warn.drill_spot_tool_missing"
+  | "warn.dual_tool_no_toolchange"
+  | "warn.feed_clamped_above_max"
+  | "warn.fixed_sensor_reference_not_first"
+  | "warn.frame_padding_below_tool_radius"
+  | "warn.gcode_include_empty"
+  | "warn.gcode_include_lines_skipped"
+  | "warn.gcode_include_unknown_variable"
+  | "warn.gcode_include_unsim_line"
+  | "warn.grbl_atc_no_toolchange_template"
+  | "warn.grbl_fixed_sensor_no_offset"
   | "warn.halfpipe_depth_limited"
+  | "warn.halfpipe_radius_mismatch"
+  | "warn.halfpipe_tool_reach_exceeded"
   | "warn.helix_radius_unfittable"
+  | "warn.multi_tool_manual_machine"
+  | "warn.nocontour_ignores_finish_allowance"
+  | "warn.op_machine_mode_mismatch"
+  | "warn.op_order_suspect.drill_after_profile"
+  | "warn.op_order_suspect.finish_before_rough"
+  | "warn.op_source_empty.layer"
+  | "warn.op_source_empty.object"
+  | "warn.op_source_missing_layer"
+  | "warn.op_source_missing_object"
+  | "warn.out_of_stock"
+  | "warn.out_of_stock.at_line"
+  | "warn.out_of_work_area"
+  | "warn.out_of_work_area.at_line"
+  | "warn.parallel_offset_panicked"
+  | "warn.pierce_on_contour_no_lead.laser"
+  | "warn.pierce_on_contour_no_lead.plasma"
   | "warn.plunge_overridden"
+  | "warn.pocket_cascade_truncated"
   | "warn.pocket_fill_incomplete"
   | "warn.ramp_arcs_at_boundary"
+  | "warn.raster_too_large"
   | "warn.relief_missing_roughing"
+  | "warn.relief_source_invalid"
+  | "warn.relief_tool_reach_exceeded"
+  | "warn.rotate_offsets_far_from_approach"
+  | "warn.spindle_speed_clamped_above_max"
+  | "warn.spindle_speed_clamped_below_min"
+  | "warn.step_unspecified"
+  | "warn.stock_origin_outside_geometry_bbox"
+  | "warn.stufenfase_no_toolchange"
+  | "warn.stufenfase_non_circle_skipped"
+  | "warn.tabs_count_clamped_short_contour"
   | "warn.tabs_with_trochoidal_unsupported"
+  | "warn.thread_dz_less_than_pitch"
   | "warn.thread_no_circles"
   | "warn.thread_no_depth"
+  | "warn.thread_tool_too_large"
+  | "warn.thread_whirl_radius_clamped"
+  | "warn.thread_zero_bore"
+  | "warn.tool_geometry_impossible"
+  | "warn.tool_incompatible_with_machine_mode"
+  | "warn.tool_kind_mismatch.dovetail_non_form"
+  | "warn.tool_kind_mismatch.halfpipe_circular_arc"
+  | "warn.tool_kind_mismatch.halfpipe_vbottom"
+  | "warn.tool_kind_mismatch.pocket_dragknife"
+  | "warn.tool_kind_mismatch.pocket_drill"
+  | "warn.tool_kind_mismatch.profile_drill"
+  | "warn.tool_kind_mismatch.relief_non_round"
+  | "warn.tool_kind_mismatch.thread_dragknife"
+  | "warn.tool_kind_mismatch.thread_drill"
+  | "warn.tool_kind_mismatch.thread_laser"
+  | "warn.tool_kind_mismatch.tslot_non_form"
+  | "warn.tool_kind_mismatch.vcarve_non_vbit"
+  | "warn.tool_tip_angle_clamped"
   | "warn.tool_too_large"
+  | "warn.trochoidal_incomplete"
+  | "warn.tslot_requires_stem_slot.generic"
+  | "warn.tslot_requires_stem_slot.known"
+  | "warn.vcarve_below_tip_radius.full_none"
+  | "warn.vcarve_below_tip_radius.full_some"
+  | "warn.vcarve_below_tip_radius.perimeter"
   | "warn.vcarve_depth_limited"
   | "warn.vcarve_no_closed_region"
-  | "warn.vcarve_no_medial_axis";
+  | "warn.vcarve_no_medial_axis"
+  | "warn.zero_rate_emitted"
+  | "warn.zigzag_stride_clamped_below_minimum";
 
 /** All keys as an array (handy for coverage tests / iteration). */
 export const MSG_KEYS: readonly MsgKey[] = [
@@ -3012,17 +3085,90 @@ export const MSG_KEYS: readonly MsgKey[] = [
   "tools.z_shift",
   "tools.z_shift.title",
   "warn.chamfer_non_vbit",
+  "warn.chamfer_width_clamped_to_reach",
+  "warn.compression_transition_above_cut",
+  "warn.dovetail_requires_rough_channel.generic",
+  "warn.dovetail_requires_rough_channel.known",
+  "warn.drill_spot_depth_non_negative",
+  "warn.drill_spot_tool_missing",
+  "warn.dual_tool_no_toolchange",
+  "warn.feed_clamped_above_max",
+  "warn.fixed_sensor_reference_not_first",
+  "warn.frame_padding_below_tool_radius",
+  "warn.gcode_include_empty",
+  "warn.gcode_include_lines_skipped",
+  "warn.gcode_include_unknown_variable",
+  "warn.gcode_include_unsim_line",
+  "warn.grbl_atc_no_toolchange_template",
+  "warn.grbl_fixed_sensor_no_offset",
   "warn.halfpipe_depth_limited",
+  "warn.halfpipe_radius_mismatch",
+  "warn.halfpipe_tool_reach_exceeded",
   "warn.helix_radius_unfittable",
+  "warn.multi_tool_manual_machine",
+  "warn.nocontour_ignores_finish_allowance",
+  "warn.op_machine_mode_mismatch",
+  "warn.op_order_suspect.drill_after_profile",
+  "warn.op_order_suspect.finish_before_rough",
+  "warn.op_source_empty.layer",
+  "warn.op_source_empty.object",
+  "warn.op_source_missing_layer",
+  "warn.op_source_missing_object",
+  "warn.out_of_stock",
+  "warn.out_of_stock.at_line",
+  "warn.out_of_work_area",
+  "warn.out_of_work_area.at_line",
+  "warn.parallel_offset_panicked",
+  "warn.pierce_on_contour_no_lead.laser",
+  "warn.pierce_on_contour_no_lead.plasma",
   "warn.plunge_overridden",
+  "warn.pocket_cascade_truncated",
   "warn.pocket_fill_incomplete",
   "warn.ramp_arcs_at_boundary",
+  "warn.raster_too_large",
   "warn.relief_missing_roughing",
+  "warn.relief_source_invalid",
+  "warn.relief_tool_reach_exceeded",
+  "warn.rotate_offsets_far_from_approach",
+  "warn.spindle_speed_clamped_above_max",
+  "warn.spindle_speed_clamped_below_min",
+  "warn.step_unspecified",
+  "warn.stock_origin_outside_geometry_bbox",
+  "warn.stufenfase_no_toolchange",
+  "warn.stufenfase_non_circle_skipped",
+  "warn.tabs_count_clamped_short_contour",
   "warn.tabs_with_trochoidal_unsupported",
+  "warn.thread_dz_less_than_pitch",
   "warn.thread_no_circles",
   "warn.thread_no_depth",
+  "warn.thread_tool_too_large",
+  "warn.thread_whirl_radius_clamped",
+  "warn.thread_zero_bore",
+  "warn.tool_geometry_impossible",
+  "warn.tool_incompatible_with_machine_mode",
+  "warn.tool_kind_mismatch.dovetail_non_form",
+  "warn.tool_kind_mismatch.halfpipe_circular_arc",
+  "warn.tool_kind_mismatch.halfpipe_vbottom",
+  "warn.tool_kind_mismatch.pocket_dragknife",
+  "warn.tool_kind_mismatch.pocket_drill",
+  "warn.tool_kind_mismatch.profile_drill",
+  "warn.tool_kind_mismatch.relief_non_round",
+  "warn.tool_kind_mismatch.thread_dragknife",
+  "warn.tool_kind_mismatch.thread_drill",
+  "warn.tool_kind_mismatch.thread_laser",
+  "warn.tool_kind_mismatch.tslot_non_form",
+  "warn.tool_kind_mismatch.vcarve_non_vbit",
+  "warn.tool_tip_angle_clamped",
   "warn.tool_too_large",
+  "warn.trochoidal_incomplete",
+  "warn.tslot_requires_stem_slot.generic",
+  "warn.tslot_requires_stem_slot.known",
+  "warn.vcarve_below_tip_radius.full_none",
+  "warn.vcarve_below_tip_radius.full_some",
+  "warn.vcarve_below_tip_radius.perimeter",
   "warn.vcarve_depth_limited",
   "warn.vcarve_no_closed_region",
   "warn.vcarve_no_medial_axis",
+  "warn.zero_rate_emitted",
+  "warn.zigzag_stride_clamped_below_minimum",
 ];

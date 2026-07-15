@@ -34,6 +34,18 @@ export function hasWarningTemplate(kind: string): boolean {
 // runtime prefix — otherwise every `warn.<kind>` catalog entry reads as dead.
 // Mirrors `error-display.ts`'s inline `t(`error.code.${…}`)`.
 export function warningMessage(w: PipelineWarning, t: Translate): string {
-  if (!KNOWN_KEYS.has(`warn.${w.kind}`)) return w.message;
-  return t(`warn.${w.kind}` as MsgKey, w.params ?? {});
+  const params = w.params ?? {};
+  // A few kinds carry a `variant` discriminator that selects a per-case
+  // template — e.g. tool_kind_mismatch's reason, op_source_empty's object-vs-
+  // layer wording, or out_of_stock with/without a gcode-line reference. Prefer
+  // `warn.<kind>.<variant>` when that specific key exists, else the base
+  // `warn.<kind>`, else the backend's English `message`. Both `t(`warn.${…}`)`
+  // calls are inline so the i18n dead-key scanner registers `warn.` as a live
+  // runtime prefix (see the note above).
+  const variant = params.variant;
+  if (variant && KNOWN_KEYS.has(`warn.${w.kind}.${variant}`)) {
+    return t(`warn.${w.kind}.${variant}` as MsgKey, params);
+  }
+  if (KNOWN_KEYS.has(`warn.${w.kind}`)) return t(`warn.${w.kind}` as MsgKey, params);
+  return w.message;
 }
