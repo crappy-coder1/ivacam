@@ -64,7 +64,8 @@ pub(super) fn run_dual_tool_or_single<P: PostProcessor>(
                 "op '{}' uses a dual-tool setup (rough + finish) but the machine's tool-change strategy doesn't emit M6 (manual M0-pause or ignore); the gcode will assume a manual tool change.",
                 op.name
             ),
-        ));
+        )
+        .with_param("op_name", op.name.as_str()));
     }
     post.raw(&format!(
         "; toolchange: finish pass with tool {}",

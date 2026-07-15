@@ -81,7 +81,10 @@ pub(in crate::pipeline) fn run_halfpipe_op<P: PostProcessor>(
                         "Halfpipe (CircularArc) op '{}' uses tool '{}' which is not a ball-nose. The cut floor profile assumes a ball-bottom cutter; flat / V-bit will not produce a true half-pipe.",
                         op.name, tool.name
                     ),
-                ));
+                )
+                .with_param("op_name", op.name.as_str())
+                .with_param("tool_name", tool.name.as_str())
+                .with_param("variant", "halfpipe_circular_arc"));
             }
             let tool_r = tool.effective_diameter() * 0.5;
             // A threshold of 50 % of the profile R would let large
@@ -101,7 +104,12 @@ pub(in crate::pipeline) fn run_halfpipe_op<P: PostProcessor>(
                         "Halfpipe op '{}': tool radius {:.3} mm doesn't match the configured profile radius {:.3} mm (tolerance ±{:.1} % ≈ ±{:.3} mm). The cut won't trace the desired pipe — pick a ball-nose tool whose diameter equals 2 × the profile radius.",
                         op.name, tool_r, radius_mm, tolerance_factor * 100.0, allowed,
                     ),
-                ));
+                )
+                .with_param("op_name", op.name.as_str())
+                .with_param("tool_radius", format!("{tool_r:.3}"))
+                .with_param("profile_radius", format!("{radius_mm:.3}"))
+                .with_param("tolerance_pct", format!("{:.1}", tolerance_factor * 100.0))
+                .with_param("tolerance_mm", format!("{allowed:.3}")));
             }
         }
         crate::project::HalfpipeProfile::VBottom { .. } => {
@@ -113,7 +121,10 @@ pub(in crate::pipeline) fn run_halfpipe_op<P: PostProcessor>(
                         "Halfpipe (VBottom) op '{}' uses tool '{}' which is not a V-bit; the depth math assumes a cone.",
                         op.name, tool.name
                     ),
-                ));
+                )
+                .with_param("op_name", op.name.as_str())
+                .with_param("tool_name", tool.name.as_str())
+                .with_param("variant", "halfpipe_vbottom"));
             }
         }
     }
@@ -240,7 +251,10 @@ pub(in crate::pipeline) fn run_halfpipe_op<P: PostProcessor>(
                 "Halfpipe op '{}': cut depth clipped to tool reach {:.3} mm (ball-nose '{}' flute length) at some medial-axis points. The profile is deeper than the cutter can reach without engaging the shank — pick a longer-flute tool or reduce the profile radius.",
                 op.name, reach, tool.name,
             ),
-        ));
+        )
+        .with_param("op_name", op.name.as_str())
+        .with_param("reach", format!("{reach:.3}"))
+        .with_param("tool_name", tool.name.as_str()));
     }
 
     if polylines.is_empty() {

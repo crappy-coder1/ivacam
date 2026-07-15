@@ -155,7 +155,11 @@ pub(in crate::pipeline) fn run_raster_op<P: PostProcessor>(
                 "raster op '{}' resamples to {cols}×{rows} pixels, over the {MAX_RASTER_PIXELS}-pixel emit cap. Lower the resolution (larger resolution_mm) or crop the image; streaming emit for huge rasters is a follow-up.",
                 op.name
             ),
-        ));
+        )
+        .with_param("op_name", op.name.as_str())
+        .with_param("cols", cols)
+        .with_param("rows", rows)
+        .with_param("max_pixels", MAX_RASTER_PIXELS));
         return Ok(());
     }
     let (brightness, cols, rows) = resample(src_brightness, in_cols, in_rows, cell, *resolution_mm);

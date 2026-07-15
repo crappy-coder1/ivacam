@@ -117,7 +117,14 @@ pub(super) fn build_op_tabs_by_object(
                         effective_count,
                         tab_width * 0.5,
                     ),
-                ));
+                )
+                .with_param("op_name", op.name.as_str())
+                .with_param("object_index", idx + 1)
+                .with_param("perimeter", format!("{perimeter:.2}"))
+                .with_param("requested_count", auto_count)
+                .with_param("tab_width", format!("{tab_width:.2}"))
+                .with_param("placed_count", effective_count)
+                .with_param("min_gap", format!("{:.2}", tab_width * 0.5)));
             }
             let mut auto_ts = if obj.closed {
                 auto_tab_ts(effective_count, true)

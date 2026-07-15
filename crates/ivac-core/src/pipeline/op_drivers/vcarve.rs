@@ -63,7 +63,10 @@ pub(in crate::pipeline) fn run_vcarve_op<P: PostProcessor>(
                 "V-Carve op '{}' uses tool '{}' which is not a V-bit. The carve depth is computed from the V-bit cone angle; engraver / endmill geometry won't produce a true V-groove.",
                 op.name, tool.name
             ),
-        ));
+        )
+        .with_param("op_name", op.name.as_str())
+        .with_param("tool_name", tool.name.as_str())
+        .with_param("variant", "vcarve_non_vbit"));
     }
     // A tool whose configured tip_angle lies outside the cone-math
     // valid range [1°, 179°] gets silently clamped by `chamfer_depth` and
@@ -79,7 +82,11 @@ pub(in crate::pipeline) fn run_vcarve_op<P: PostProcessor>(
                 "V-Carve op '{}' tool '{}': configured tip angle {:.2}° is outside the supported [1°, 179°] range and was clamped to {:.2}° for cone-math. Update the tool's tip_angle_deg to silence this warning.",
                 op.name, tool.name, tool.tip_angle_deg, clamped,
             ),
-        ));
+        )
+        .with_param("op_name", op.name.as_str())
+        .with_param("tool_name", tool.name.as_str())
+        .with_param("tip_angle", format!("{:.2}", tool.tip_angle_deg))
+        .with_param("clamped", format!("{clamped:.2}")));
     }
     let tip_angle_deg = tool.tip_angle_deg.clamp(1.0, 179.0);
     let tip_angle_rad = tip_angle_deg.to_radians();
@@ -270,7 +277,10 @@ pub(in crate::pipeline) fn run_vcarve_op<P: PostProcessor>(
                         "V-Carve op '{}' (full medial axis): every medial-axis chain's largest inscribed circle is at or below the V-bit's flat tip ({:.3} mm). The bit's nose would ride the surface without engaging — no toolpath emitted. Pick a sharper bit or raise carve_max_width_mm.",
                         op.name, tip_radius_mm,
                     ),
-                ));
+                )
+                .with_param("op_name", op.name.as_str())
+                .with_param("tip_radius", format!("{tip_radius_mm:.3}"))
+                .with_param("variant", "full_none"));
             } else if any_skipped_below_tip {
                 warnings.push(PipelineWarning::for_op(
                     op.id,
@@ -279,7 +289,10 @@ pub(in crate::pipeline) fn run_vcarve_op<P: PostProcessor>(
                         "V-Carve op '{}' (full medial axis): some medial-axis chains never exceed the V-bit's flat tip ({:.3} mm) and were skipped to avoid emitting a no-cut Z=0 traversal.",
                         op.name, tip_radius_mm,
                     ),
-                ));
+                )
+                .with_param("op_name", op.name.as_str())
+                .with_param("tip_radius", format!("{tip_radius_mm:.3}"))
+                .with_param("variant", "full_some"));
             }
         } else {
             // Default Estlcam-style perimeter pass: inset the boundary
@@ -298,7 +311,11 @@ pub(in crate::pipeline) fn run_vcarve_op<P: PostProcessor>(
                         "V-Carve op '{}' effective carve width ({:.3} mm) is at or below the V-bit's flat tip ({:.3} mm); the bit's nose rides the surface and no material would be removed. Pick a sharper bit or raise carve_max_width_mm.",
                         op.name, r_offset, tip_radius_mm,
                     ),
-                ));
+                )
+                .with_param("op_name", op.name.as_str())
+                .with_param("carve_width", format!("{r_offset:.3}"))
+                .with_param("tip_radius", format!("{tip_radius_mm:.3}"))
+                .with_param("variant", "perimeter"));
                 continue;
             }
             // Compute target z. polyline_to_z's r-cap logic isn't needed

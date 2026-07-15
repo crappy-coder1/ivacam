@@ -72,7 +72,13 @@ pub(super) fn push_wcs_origin_warning(project: &Project, warnings: &mut Vec<Pipe
                 "Geometry bbox ({:.2}, {:.2}) → ({:.2}, {:.2}) does NOT contain the WCS origin ({:.2}, {:.2}) in geometry coordinates. The simulator aligns its heightmap to the geometry footprint while the controller cuts at the WCS / G54 origin — if you zeroed the machine somewhere else (e.g. a stock corner) the cuts will land in the wrong place. Translate the geometry, or set Project.work_offset so the WCS origin matches the spot you zeroed against.",
                 bbox.min_x, bbox.min_y, bbox.max_x, bbox.max_y, gx, gy
             ),
-        ));
+        )
+        .with_param("bbox_min_x", format!("{:.2}", bbox.min_x))
+        .with_param("bbox_min_y", format!("{:.2}", bbox.min_y))
+        .with_param("bbox_max_x", format!("{:.2}", bbox.max_x))
+        .with_param("bbox_max_y", format!("{:.2}", bbox.max_y))
+        .with_param("wcs_x", format!("{gx:.2}"))
+        .with_param("wcs_y", format!("{gy:.2}")));
     }
 }
 
@@ -113,7 +119,8 @@ pub(super) fn push_manual_toolchange_warning(
         format!(
             "This program needs {changes} manual tool change{plural}. The machine has no automatic tool changer, so the program pauses (M0) for each hand swap — re-establish the tool's Z after every change (see the machine's post-change Z setting)."
         ),
-    ));
+    )
+    .with_param("changes", changes));
 }
 
 /// GRBL + ATC footgun. Stock GRBL 1.1 does NOT support `M6`
@@ -164,7 +171,8 @@ pub(super) fn push_grbl_atc_footgun_warning(
         format!(
             "GRBL does not support M6 tool changes (it returns error:20). This program needs {changes} tool change{plural} and the machine is set to automatic tool change, but the GRBL post has no tool-change macro template — the swap would emit nothing and the next operation would cut with the WRONG tool. Fix one of: switch the machine to manual (M0-pause) tool change, add a tool-change macro template to the post profile, or use a sender that intercepts M6."
         ),
-    ));
+    )
+    .with_param("changes", changes));
 }
 
 /// GRBL + FixedSensor footgun. The `FixedSensor` post-change-Z
@@ -228,7 +236,9 @@ pub(super) fn push_fixed_sensor_reference_order_warning(
              reference tool cuts first, or clear the reference override (the first tool is \
              then used)."
         ),
-    ));
+    )
+    .with_param("reference_tool", reference)
+    .with_param("first_tool", first_tool));
 }
 
 pub(super) fn push_grbl_fixed_sensor_warning(
@@ -344,7 +354,10 @@ pub(super) fn push_work_area_warning(
         format!(
             "{count} cut move{plural} outside the machine work area{where_line}. The controller may refuse the move (soft-limit fault) or, worse, crash into the gantry. Set Project.work_offset so the cuts land inside the work envelope."
         ),
-    ));
+    )
+    .with_param("count", count)
+    .with_param("first_line", first_line)
+    .with_param("variant", if first_line != 0 { "at_line" } else { "" }));
 }
 
 /// Post-emit STOCK envelope scan. `push_work_area_warning` moved the
@@ -402,7 +415,10 @@ pub(super) fn push_stock_warning(
         format!(
             "{count} cut move{plural} outside the stock{where_line}. The controller will try to cut into air or below the stock — either re-zero the machine, expand the stock, or translate the geometry into the stock bbox."
         ),
-    ));
+    )
+    .with_param("count", count)
+    .with_param("first_line", first_line)
+    .with_param("variant", if first_line != 0 { "at_line" } else { "" }));
 }
 
 /// Scan the enabled-op sequence for obviously wrong orderings —
@@ -473,7 +489,10 @@ pub(super) fn push_op_order_warnings(
                     "Operation '{}' (drill_after_profile) runs AFTER profile op '{}' which cuts the part free. Drilling acts on a loose / flown piece. Reorder so the drill precedes the part-freeing profile.",
                     op_b.name, op_a.name
                 ),
-            ));
+            )
+            .with_param("op_name", op_b.name.as_str())
+            .with_param("other_name", op_a.name.as_str())
+            .with_param("variant", "drill_after_profile"));
         }
     }
     // Finish-before-rough: two ops on the same source where the first
@@ -511,7 +530,12 @@ pub(super) fn push_op_order_warnings(
                         "Operation '{}' (tool dia {:.2}) runs BEFORE '{}' (tool dia {:.2}) on the same source — likely a finish-before-rough order. Move the larger tool first so the finish pass has clearance.",
                         op_a.name, tool_a.diameter, op_b.name, tool_b.diameter
                     ),
-                ));
+                )
+                .with_param("op_name", op_a.name.as_str())
+                .with_param("diameter", format!("{:.2}", tool_a.diameter))
+                .with_param("other_name", op_b.name.as_str())
+                .with_param("other_diameter", format!("{:.2}", tool_b.diameter))
+                .with_param("variant", "finish_before_rough"));
             }
         }
     }
@@ -675,63 +699,85 @@ pub(super) fn push_tool_fit_kind_warnings(
                     "tool '{}': tip diameter {tip} ≥ shank diameter {}",
                     tool.name, tool.diameter
                 ),
-            ));
+            )
+            .with_param("tool_name", tool.name.as_str())
+            .with_param("tip", tip)
+            .with_param("diameter", tool.diameter));
         }
     }
     // Tool kind mismatched with op kind. We warn rather than error
     // because the gcode emitter still produces something usable in many
     // cases (a drag knife on a Profile is fine, for instance), but a
     // drill on a Pocket really doesn't make sense.
-    let mismatch = match (&op.kind, tool.kind) {
-        (OpKind::Pocket { .. }, ToolKind::Drill) => Some("pocket op assigned a drill bit"),
-        (OpKind::Pocket { .. }, ToolKind::DragKnife) => {
-            Some("pocket op assigned a drag knife (cut path won't carve area)")
+    // Each arm carries a stable `variant` code (for the localized
+    // `warn.tool_kind_mismatch.<variant>` template) alongside the English
+    // reason phrase (baked into `message` as the fallback).
+    let mismatch: Option<(&str, &str)> = match (&op.kind, tool.kind) {
+        (OpKind::Pocket { .. }, ToolKind::Drill) => {
+            Some(("pocket_drill", "pocket op assigned a drill bit"))
         }
-        (OpKind::Profile { .. }, ToolKind::Drill) => Some("profile op assigned a drill bit"),
+        (OpKind::Pocket { .. }, ToolKind::DragKnife) => Some((
+            "pocket_dragknife",
+            "pocket op assigned a drag knife (cut path won't carve area)",
+        )),
+        (OpKind::Profile { .. }, ToolKind::Drill) => {
+            Some(("profile_drill", "profile op assigned a drill bit"))
+        }
         // Thread ops require a rotating side-cutting tool — drag
         // knives don't cut, laser beams can't form a helix, drills only
         // plunge axially.
-        (OpKind::Thread { .. }, ToolKind::DragKnife) => {
-            Some("thread op assigned a drag knife (can't cut a helix)")
-        }
-        (OpKind::Thread { .. }, ToolKind::LaserBeam) => {
-            Some("thread op assigned a laser beam (no XY-helix cutting)")
-        }
-        (OpKind::Thread { .. }, ToolKind::Drill) => {
-            Some("thread op assigned a drill bit (drill cuts axially, not helically)")
-        }
+        (OpKind::Thread { .. }, ToolKind::DragKnife) => Some((
+            "thread_dragknife",
+            "thread op assigned a drag knife (can't cut a helix)",
+        )),
+        (OpKind::Thread { .. }, ToolKind::LaserBeam) => Some((
+            "thread_laser",
+            "thread op assigned a laser beam (no XY-helix cutting)",
+        )),
+        (OpKind::Thread { .. }, ToolKind::Drill) => Some((
+            "thread_drill",
+            "thread op assigned a drill bit (drill cuts axially, not helically)",
+        )),
         // A T-slot op needs a T-slot / undercut cutter — any other
         // kind has no wide head to carve the undercut, so it would just
         // cut a plain centerline groove of its nominal diameter.
-        (OpKind::TSlot { .. }, k) if k != ToolKind::FormProfile => {
-            Some("t-slot op assigned a non-form-profile cutter (no undercut head — author a T-slot profile)")
-        }
+        (OpKind::TSlot { .. }, k) if k != ToolKind::FormProfile => Some((
+            "tslot_non_form",
+            "t-slot op assigned a non-form-profile cutter (no undercut head — author a T-slot profile)",
+        )),
         // A dovetail op needs a form / profile cutter — any other
         // kind has straight walls, so it would just cut a plain
         // centerline groove of its nominal diameter (no undercut flanks).
-        (OpKind::Dovetail { .. }, k) if k != ToolKind::FormProfile => {
-            Some("dovetail op assigned a non-form-profile cutter (no angled undercut flanks)")
-        }
+        (OpKind::Dovetail { .. }, k) if k != ToolKind::FormProfile => Some((
+            "dovetail_non_form",
+            "dovetail op assigned a non-form-profile cutter (no angled undercut flanks)",
+        )),
         // Relief surfacing needs a round-tipped cutter — a
         // ball-nose (full hemisphere) or a bull-nose (flat centre + corner
         // fillet); the drop-cutter follows that tip profile. A flat / V /
         // other tool leaves the wrong floor shape.
-        (OpKind::ReliefMill { .. }, k)
-            if k != ToolKind::BallNose && k != ToolKind::BullNose =>
-        {
-            Some("relief (3D surfacing) op assigned a non-round cutter (use a ball-nose or bull-nose)")
+        (OpKind::ReliefMill { .. }, k) if k != ToolKind::BallNose && k != ToolKind::BullNose => {
+            Some((
+                "relief_non_round",
+                "relief (3D surfacing) op assigned a non-round cutter (use a ball-nose or bull-nose)",
+            ))
         }
         _ => None,
     };
-    if let Some(msg) = mismatch {
-        warnings.push(PipelineWarning::for_op(
-            op.id,
-            "tool_kind_mismatch",
-            format!(
-                "{msg} — '{}' on op '{}'. Pick a different tool kind.",
-                tool.name, op.name
-            ),
-        ));
+    if let Some((variant, msg)) = mismatch {
+        warnings.push(
+            PipelineWarning::for_op(
+                op.id,
+                "tool_kind_mismatch",
+                format!(
+                    "{msg} — '{}' on op '{}'. Pick a different tool kind.",
+                    tool.name, op.name
+                ),
+            )
+            .with_param("op_name", op.name.as_str())
+            .with_param("tool_name", tool.name.as_str())
+            .with_param("variant", variant),
+        );
     }
     // Op-kind ✗ machine-mode. The op-kind picker hides kinds that
     // don't fit the machine's capabilities at creation time, but a
@@ -781,7 +827,11 @@ pub(super) fn push_tool_fit_kind_warnings(
                         "{kind_name} op '{}' isn't a meaningful operation on a {:?} machine (it runs on {allowed:?}). A toolpath is still emitted, but the result is unlikely to be usable — switch the machine's mode/capabilities or remove the op.",
                         op.name, setup.machine.mode
                     ),
-                ));
+                )
+                .with_param("op_name", op.name.as_str())
+                .with_param("kind_name", kind_name)
+                .with_param("mode", format!("{:?}", setup.machine.mode))
+                .with_param("allowed", format!("{allowed:?}")));
             }
         }
     }
@@ -806,7 +856,11 @@ pub(super) fn push_tool_fit_kind_warnings(
                     "tool '{}' is a {:?} and cannot run on a {:?} machine — op '{}' will not cut as previewed. Assign a compatible tool or switch the machine's mode/capabilities.",
                     tool.name, tool.kind, setup.machine.mode, op.name
                 ),
-            ));
+            )
+            .with_param("op_name", op.name.as_str())
+            .with_param("tool_name", tool.name.as_str())
+            .with_param("tool_kind", format!("{:?}", tool.kind))
+            .with_param("mode", format!("{:?}", setup.machine.mode)));
         }
     }
     // Plasma / laser pierce-on-edge. The pierce happens at the
@@ -835,6 +889,15 @@ pub(super) fn push_tool_fit_kind_warnings(
                     "op '{}' has no lead-in, so the {cutter} pierces directly on the cut contour — {harm}. Add a lead-in (straight or arc) so the pierce lands off the finished edge (a starter hole).",
                     op.name
                 ),
+            )
+            .with_param("op_name", op.name.as_str())
+            .with_param(
+                "variant",
+                if setup.machine.mode == MachineMode::Plasma {
+                    "plasma"
+                } else {
+                    "laser"
+                },
             ));
         }
     }
@@ -850,24 +913,34 @@ pub(super) fn push_tool_fit_kind_warnings(
         // T-slot's (z, r) profile (the disk is the widest, the neck the
         // narrowest). Falls back to a generic phrasing when the tool
         // carries no profile samples.
-        let neck = tool
+        let neck_radius = tool
             .form_profile_mm
             .iter()
             .map(|s| s.r_mm)
             .fold(f64::INFINITY, f64::min);
-        let neck = if neck.is_finite() {
-            format!("{:.2} mm (the neck width)", neck * 2.0)
+        let (neck_variant, neck_mm) = if neck_radius.is_finite() {
+            ("known", format!("{:.2}", neck_radius * 2.0))
+        } else {
+            ("generic", String::new())
+        };
+        let neck = if neck_radius.is_finite() {
+            format!("{:.2} mm (the neck width)", neck_radius * 2.0)
         } else {
             "the neck".to_string()
         };
-        warnings.push(PipelineWarning::for_op(
-            op.id,
-            "tslot_requires_stem_slot",
-            format!(
-                "T-slot op '{}' cuts only the undercut at the floor depth. Cut a stem slot at least {neck} wide down to that depth with a prior endmill op first, and enter the cut laterally (lead-in from outside the stock or a pre-bored clearance hole) — the wide head can't plunge through the narrow stem.",
-                op.name
-            ),
-        ));
+        warnings.push(
+            PipelineWarning::for_op(
+                op.id,
+                "tslot_requires_stem_slot",
+                format!(
+                    "T-slot op '{}' cuts only the undercut at the floor depth. Cut a stem slot at least {neck} wide down to that depth with a prior endmill op first, and enter the cut laterally (lead-in from outside the stock or a pre-bored clearance hole) — the wide head can't plunge through the narrow stem.",
+                    op.name
+                ),
+            )
+            .with_param("op_name", op.name.as_str())
+            .with_param("neck_mm", neck_mm)
+            .with_param("variant", neck_variant),
+        );
     }
     // A dovetail op cuts ONLY the angled-flank undercut at the
     // floor Z. The undercut flank can't be safely plunged into, so the
@@ -876,24 +949,34 @@ pub(super) fn push_tool_fit_kind_warnings(
     // with a prior endmill op for the bit to drop into. Surface this as
     // a non-blocking prerequisite note.
     if matches!(op.kind, OpKind::Dovetail { .. }) {
-        let neck = tool
+        let neck_radius = tool
             .form_profile_mm
             .iter()
             .map(|s| s.r_mm.max(0.0))
             .fold(f64::INFINITY, f64::min);
-        let neck = if neck.is_finite() && neck > 0.0 {
-            format!("{:.2} mm (the profile's narrowest width)", neck * 2.0)
+        let (neck_variant, neck_mm) = if neck_radius.is_finite() && neck_radius > 0.0 {
+            ("known", format!("{:.2}", neck_radius * 2.0))
+        } else {
+            ("generic", String::new())
+        };
+        let neck = if neck_radius.is_finite() && neck_radius > 0.0 {
+            format!("{:.2} mm (the profile's narrowest width)", neck_radius * 2.0)
         } else {
             "the bit's neck".to_string()
         };
-        warnings.push(PipelineWarning::for_op(
-            op.id,
-            "dovetail_requires_rough_channel",
-            format!(
-                "Dovetail op '{}' cuts only the angled-flank undercut at the floor depth. Rough a straight channel at least {neck} wide down to that depth with a prior endmill op first, then drop the dovetail bit into it — its angled flanks can't be plunged through solid stock.",
-                op.name
-            ),
-        ));
+        warnings.push(
+            PipelineWarning::for_op(
+                op.id,
+                "dovetail_requires_rough_channel",
+                format!(
+                    "Dovetail op '{}' cuts only the angled-flank undercut at the floor depth. Rough a straight channel at least {neck} wide down to that depth with a prior endmill op first, then drop the dovetail bit into it — its angled flanks can't be plunged through solid stock.",
+                    op.name
+                ),
+            )
+            .with_param("op_name", op.name.as_str())
+            .with_param("neck_mm", neck_mm)
+            .with_param("variant", neck_variant),
+        );
     }
     // A Compression (up/down-cut) bit cleans BOTH sheet faces
     // in a single full-depth pass — the up-cut flutes (the bottom
@@ -921,7 +1004,11 @@ pub(super) fn push_tool_fit_kind_warnings(
                         "Compression tool '{}': the up/down-cut transition sits {transition:.2} mm above the tip, but op '{}' cuts only {cut_depth:.2} mm deep — so the entire cut is in the lower (up-cut) flutes. The top face will fray and you get no compression benefit (it behaves like a plain up-cut endmill). Use stock at least as thick as the transition, lower the transition, or pick an up-cut bit.",
                         tool.name, op.name
                     ),
-                ));
+                )
+                .with_param("op_name", op.name.as_str())
+                .with_param("tool_name", tool.name.as_str())
+                .with_param("transition", format!("{transition:.2}"))
+                .with_param("cut_depth", format!("{cut_depth:.2}")));
             }
         }
     }

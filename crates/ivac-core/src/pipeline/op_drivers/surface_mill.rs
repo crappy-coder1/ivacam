@@ -83,7 +83,9 @@ pub(in crate::pipeline) fn run_relief_op<P: PostProcessor>(
                 "Relief op '{}': source #{source_id} has a malformed grid (cols × rows must equal the grid length and be non-empty).",
                 op.name
             ),
-        ));
+        )
+        .with_param("op_name", op.name.as_str())
+        .with_param("source_id", source_id));
         return Ok(());
     }
 
@@ -157,7 +159,10 @@ pub(in crate::pipeline) fn run_relief_op<P: PostProcessor>(
                     "Relief op '{}': the requested depth is deeper than ball-nose '{}' can reach (flute length {flute:.3} mm). Cut clipped to that depth — use a longer-flute tool or a shallower relief.",
                     op.name, tool.name
                 ),
-            ));
+            )
+            .with_param("op_name", op.name.as_str())
+            .with_param("tool_name", tool.name.as_str())
+            .with_param("flute_length", format!("{flute:.3}")));
         }
     }
 

@@ -140,7 +140,9 @@ pub(in crate::pipeline) fn validate_op_source_objects(
                     "op '{}': source references object id {} which is not in the current chained-object set (deleted or replaced by pattern/frame expansion). The id is silently dropped from this op's selection.",
                     op.name, id
                 ),
-            ));
+            )
+            .with_param("op_name", op.name.as_str())
+            .with_param("object_id", id));
         } else {
             survivors += 1;
         }
@@ -154,7 +156,10 @@ pub(in crate::pipeline) fn validate_op_source_objects(
                 op.name,
                 ids.len()
             ),
-        ));
+        )
+        .with_param("op_name", op.name.as_str())
+        .with_param("count", ids.len())
+        .with_param("variant", "object"));
     }
 }
 
@@ -200,7 +205,9 @@ pub(in crate::pipeline) fn validate_op_source_layers(
                     "op '{}': source references layer '{}' which is not present in the project's segment pool (typo, deleted import, or removed text layer). The layer is silently dropped from this op's selection.",
                     op.name, layer
                 ),
-            ));
+            )
+            .with_param("op_name", op.name.as_str())
+            .with_param("layer", layer.to_string()));
         }
     }
     if survivors == 0 && !layers.is_empty() {
@@ -212,7 +219,10 @@ pub(in crate::pipeline) fn validate_op_source_layers(
                 op.name,
                 layers.len()
             ),
-        ));
+        )
+        .with_param("op_name", op.name.as_str())
+        .with_param("count", layers.len())
+        .with_param("variant", "layer"));
     }
 }
 

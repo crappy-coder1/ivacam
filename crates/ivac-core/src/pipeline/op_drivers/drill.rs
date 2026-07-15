@@ -95,7 +95,9 @@ fn emit_spot_pre_pass<P: PostProcessor>(
                 "Drill op '{}' has spot_first.spot_depth_mm = {:.4} (must be negative to dimple stock); skipping the spot pre-pass.",
                 op.name, spot.spot_depth_mm
             ),
-        ));
+        )
+        .with_param("op_name", op.name.as_str())
+        .with_param("spot_depth", format!("{:.4}", spot.spot_depth_mm)));
         return Ok(());
     }
     if offsets.is_empty() {
@@ -111,7 +113,9 @@ fn emit_spot_pre_pass<P: PostProcessor>(
                 "Drill op '{}': spot_first.spot_tool_id={} is not in the project's tool library; skipping the spot pre-pass.",
                 op.name, spot.spot_tool_id
             ),
-        ));
+        )
+        .with_param("op_name", op.name.as_str())
+        .with_param("spot_tool_id", spot.spot_tool_id));
         return Ok(());
     };
     // Synthesize a tiny synthetic op pointing at the spot tool so the
@@ -256,7 +260,14 @@ fn emit_stufenfase<P: PostProcessor>(
                 tip_diameter_mm,
                 sol.effective_width_mm,
             ),
-        ));
+        )
+        .with_param("op_name", op.name.as_str())
+        .with_param("width", format!("{width_mm:.3}"))
+        .with_param("tool_name", cutter.name.as_str())
+        .with_param("width_cap", format!("{:.3}", sol.width_cap_mm))
+        .with_param("diameter", format!("{:.3}", cutter.diameter))
+        .with_param("tip", format!("{tip_diameter_mm:.3}"))
+        .with_param("effective_width", format!("{:.3}", sol.effective_width_mm)));
     }
     let chamfer_z = sol.z;
     if chamfer_z.abs() < 1e-9 {
@@ -349,7 +360,9 @@ fn emit_stufenfase<P: PostProcessor>(
                 "drill op '{}': stufenfase rim chamfer only fires on closed Circle objects; {non_circle_skipped} closed contour(s) (arc-chains, polygons, etc.) were skipped without a chamfer.",
                 op.name
             ),
-        ));
+        )
+        .with_param("op_name", op.name.as_str())
+        .with_param("count", non_circle_skipped));
     }
     if found == 0 {
         return Ok(false);
@@ -365,7 +378,8 @@ fn emit_stufenfase<P: PostProcessor>(
                     "drill op '{}' has chamfer_after_width_mm + a distinct finish_tool_id but the machine doesn't support toolchange; gcode will assume manual change.",
                     op.name
                 ),
-            ));
+            )
+            .with_param("op_name", op.name.as_str()));
         }
         if let Some(finish_setup) = synthesize_finish_setup(op, project, warnings)? {
             post.raw(&format!(

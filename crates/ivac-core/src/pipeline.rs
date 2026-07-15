@@ -1268,7 +1268,9 @@ fn emit_program_only_op<P: PostProcessor>(
                         "Op '{}': unknown variable `{{{name}}}` in included G-code passed through verbatim — fix or remove to silence.",
                         op.name,
                     ),
-                ));
+                )
+                .with_param("op_name", op.name.as_str())
+                .with_param("variable", format!("{{{name}}}")));
             }
             if expanded.trim().is_empty() {
                 warnings.push(PipelineWarning::for_op(
@@ -1278,7 +1280,8 @@ fn emit_program_only_op<P: PostProcessor>(
                         "Op '{}': included G-code is empty — no lines emitted at this slot.",
                         op.name,
                     ),
-                ));
+                )
+                .with_param("op_name", op.name.as_str()));
             }
             for line in expanded.lines() {
                 post.raw(line);
@@ -1300,7 +1303,13 @@ fn emit_program_only_op<P: PostProcessor>(
                         head_text = head.trimmed,
                         head_reason = head.reason,
                     ),
-                ));
+                )
+                .with_param("op_name", op.name.as_str())
+                .with_param("n_skipped", classification.skipped.len())
+                .with_param("n_total", n_total)
+                .with_param("first_line", head.line_no)
+                .with_param("first_text", head.trimmed.as_str())
+                .with_param("first_reason", head.reason.as_str()));
                 // Verbose mode fans out a per-line warning for each
                 // skipped line. Off by default so the panel stays readable.
                 if *verbose_unsim_warnings {
@@ -1315,7 +1324,11 @@ fn emit_program_only_op<P: PostProcessor>(
                                 text = skipped.trimmed,
                                 reason = skipped.reason,
                             ),
-                        ));
+                        )
+                        .with_param("op_name", op.name.as_str())
+                        .with_param("line", skipped.line_no)
+                        .with_param("text", skipped.trimmed.as_str())
+                        .with_param("reason", skipped.reason.as_str()));
                     }
                 }
             }

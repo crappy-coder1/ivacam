@@ -202,7 +202,10 @@ pub(super) fn build_op_offsets(
                         radius = tool_radius_mm,
                         diam = setup.tool.diameter,
                     ),
-                ));
+                )
+                .with_param("padding", format!("{user_padding_mm:.3}"))
+                .with_param("radius", format!("{tool_radius_mm:.3}"))
+                .with_param("diameter", format!("{:.3}", setup.tool.diameter)));
             }
             if let Some((new_objects, ordered_indices)) =
                 synthesize_pocket_outside_objects(cur_op_for_frame, after_pattern, tool_radius_mm)
@@ -737,7 +740,12 @@ fn drain_trochoidal_incompletes(op: &Op, warnings: &mut Vec<PipelineWarning>) {
                 "op '{}': trochoidal pocket terminated at centerline vertex {}/{} — the loop disc (r={:.2} mm, engagement {:.0}°) couldn't fit the pocket interior at that point, and continuing would have required a full-slot move at trochoidal feed/RPM. Part of the pocket was left uncleared. Pick a smaller loop_radius_factor or engagement angle, or finish the unswept tail with a separate (zigzag/cascade) op.",
                 op.name, ev.bail_index, ev.centerline_total, ev.r_loop, ev.engagement_angle_deg,
             ),
-        ));
+        )
+        .with_param("op_name", op.name.as_str())
+        .with_param("vertex_index", ev.bail_index)
+        .with_param("vertex_total", ev.centerline_total)
+        .with_param("loop_radius", format!("{:.2}", ev.r_loop))
+        .with_param("engagement", format!("{:.0}", ev.engagement_angle_deg)));
     }
 }
 
@@ -758,7 +766,15 @@ fn drain_offset_diagnostics(op: &Op, warnings: &mut Vec<PipelineWarning>) {
                 op.name, panic.layer, panic.bbox_min_x, panic.bbox_min_y,
                 panic.bbox_max_x, panic.bbox_max_y, panic.input_digest, panic.delta,
             ),
-        ));
+        )
+        .with_param("op_name", op.name.as_str())
+        .with_param("layer", format!("{}", panic.layer))
+        .with_param("bbox_min_x", format!("{:.2}", panic.bbox_min_x))
+        .with_param("bbox_min_y", format!("{:.2}", panic.bbox_min_y))
+        .with_param("bbox_max_x", format!("{:.2}", panic.bbox_max_x))
+        .with_param("bbox_max_y", format!("{:.2}", panic.bbox_max_y))
+        .with_param("digest", format!("{:#018x}", panic.input_digest))
+        .with_param("delta", format!("{:.3}", panic.delta)));
         // Color is exposed via the structured kind tag for tests, not the message.
         let _ = panic.color;
     }
@@ -773,7 +789,11 @@ fn drain_offset_diagnostics(op: &Op, warnings: &mut Vec<PipelineWarning>) {
                 "op '{}': pocket cascade emitted {} rings at step {:.3} mm, hitting the {} ring cap. Inner rings were truncated — the centre of the pocket may not be fully carved. Consider increasing the per-pass step (less ring count) or running multiple smaller pockets.",
                 op.name, ev.rings_emitted, ev.delta, ev.ring_cap,
             ),
-        ));
+        )
+        .with_param("op_name", op.name.as_str())
+        .with_param("rings", ev.rings_emitted)
+        .with_param("step", format!("{:.3}", ev.delta))
+        .with_param("ring_cap", ev.ring_cap));
     }
 
     // Far approach-point rotations — usually a stale approach point
@@ -786,7 +806,12 @@ fn drain_offset_diagnostics(op: &Op, warnings: &mut Vec<PipelineWarning>) {
                 "op '{}': approach point ({:.2}, {:.2}) is {:.2} mm from the nearest closed-offset vertex (threshold {:.0} mm). The cut still starts at the nearest vertex, but check that the source contour didn't move after the approach point was set.",
                 op.name, ev.approach.0, ev.approach.1, ev.distance_mm, crate::cam::offsets::APPROACH_POINT_WARN_MM,
             ),
-        ));
+        )
+        .with_param("op_name", op.name.as_str())
+        .with_param("approach_x", format!("{:.2}", ev.approach.0))
+        .with_param("approach_y", format!("{:.2}", ev.approach.1))
+        .with_param("distance", format!("{:.2}", ev.distance_mm))
+        .with_param("threshold", format!("{:.0}", crate::cam::offsets::APPROACH_POINT_WARN_MM)));
     }
 
     // nocontour+allowance conflict folded by pocket_for_object (the
@@ -799,7 +824,9 @@ fn drain_offset_diagnostics(op: &Op, warnings: &mut Vec<PipelineWarning>) {
                 "op '{}': pocket_nocontour=true skips the wall ring, so the configured XY finish allowance ({:.3} mm) has no finish pass to remove it. The allowance was ignored — the rough cascade walks the wall directly at the tool radius. To get a finishing wall pass, turn pocket_nocontour off (or use the dual-tool finish-radius path instead).",
                 op.name, ev.allowance_mm,
             ),
-        ));
+        )
+        .with_param("op_name", op.name.as_str())
+        .with_param("allowance", format!("{:.3}", ev.allowance_mm)));
     }
 
     // Degenerate zigzag stride bailed by pocket_zigzag (sub-fp stride
@@ -812,7 +839,9 @@ fn drain_offset_diagnostics(op: &Op, warnings: &mut Vec<PipelineWarning>) {
                 "op '{}': zigzag pocket stride of {:.6} mm is below the working precision (1e-6 mm) — no raster strokes were emitted. Set the per-pass step to at least 1e-6 mm (sub-fp strides cannot be represented stably). For mirror-finish work pick a stride that resolves at your DRO precision (typically ≥ 0.01 mm).",
                 op.name, ev.stride_mm,
             ),
-        ));
+        )
+        .with_param("op_name", op.name.as_str())
+        .with_param("stride", format!("{:.6}", ev.stride_mm)));
     }
 }
 

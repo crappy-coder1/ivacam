@@ -42,7 +42,11 @@ fn clamp_spindle_rpm(
                     "op '{}' ({:?} pass): tool RPM {} exceeds machine spindle_rpm_max {}; clamped to {}.",
                     op.name, pass, rpm, max, max
                 ),
-            ));
+            )
+            .with_param("op_name", op.name.as_str())
+            .with_param("pass", format!("{pass:?}"))
+            .with_param("rpm", rpm)
+            .with_param("limit", max));
             clamped = max;
         }
     }
@@ -58,7 +62,11 @@ fn clamp_spindle_rpm(
                     "op '{}' ({:?} pass): tool RPM {} is below machine spindle_rpm_min {}; clamped to {}.",
                     op.name, pass, clamped, min, min
                 ),
-            ));
+            )
+            .with_param("op_name", op.name.as_str())
+            .with_param("pass", format!("{pass:?}"))
+            .with_param("rpm", clamped)
+            .with_param("limit", min));
             clamped = min;
         }
     }
@@ -88,7 +96,12 @@ fn clamp_feed(
                     "op '{}' ({pass:?} pass): {axis} feed {feed} mm/min exceeds machine max_feed_mm_min {max}; clamped to {max}.",
                     op.name
                 ),
-            ));
+            )
+            .with_param("op_name", op.name.as_str())
+            .with_param("pass", format!("{pass:?}"))
+            .with_param("axis", axis)
+            .with_param("feed", feed)
+            .with_param("limit", max));
             return max;
         }
     }
@@ -512,7 +525,11 @@ pub(in crate::pipeline) fn synthesize_op_setup(
                     "op '{}': resolved tool rates contain a zero value (feed={} mm/min, plunge={} mm/min, spindle={} RPM). Emitting F0 / S0 / plunge=0 will stall the cut or refuse to start. Set the missing rate on the tool library entry or as a per-op override.",
                     op.name, feed, plunge, speed
                 ),
-            ));
+            )
+            .with_param("op_name", op.name.as_str())
+            .with_param("feed", feed)
+            .with_param("plunge", plunge)
+            .with_param("speed", speed));
         }
     }
     if let OpKind::Chamfer { width_mm, .. } = op.kind {
@@ -531,7 +548,11 @@ pub(in crate::pipeline) fn synthesize_op_setup(
                     "Chamfer op '{}' tool '{}': configured tip angle {:.2}° is outside the supported [1°, 179°] range and was clamped to {:.2}° for cone-math. Update the tool's tip_angle_deg to silence this warning.",
                     op.name, tool.name, tool.tip_angle_deg, clamped,
                 ),
-            ));
+            )
+            .with_param("op_name", op.name.as_str())
+            .with_param("tool_name", tool.name.as_str())
+            .with_param("tip_angle", format!("{:.2}", tool.tip_angle_deg))
+            .with_param("clamped", format!("{clamped:.2}")));
         }
         let sol = crate::cam::chamfer::chamfer_depth_capped(
             width_mm,
@@ -553,7 +574,14 @@ pub(in crate::pipeline) fn synthesize_op_setup(
                     tip_diameter_mm,
                     sol.effective_width_mm,
                 ),
-            ));
+            )
+            .with_param("op_name", op.name.as_str())
+            .with_param("width", format!("{width_mm:.3}"))
+            .with_param("tool_name", tool.name.as_str())
+            .with_param("width_cap", format!("{:.3}", sol.width_cap_mm))
+            .with_param("diameter", format!("{:.3}", tool.diameter))
+            .with_param("tip", format!("{tip_diameter_mm:.3}"))
+            .with_param("effective_width", format!("{:.3}", sol.effective_width_mm)));
         }
         setup.mill.depth = sol.z;
         setup.mill.start_depth = 0.0;
