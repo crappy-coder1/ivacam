@@ -766,6 +766,16 @@ pub(super) fn push_tool_fit_kind_warnings(
                 "relief (3D surfacing) op assigned a non-round cutter (use a ball-nose or bull-nose)",
             ))
         }
+        // Waterline roughing area-clears each level like a pocket — it
+        // needs a rotating milling cutter. A drill only plunges, a drag
+        // knife / laser can't hog material.
+        (
+            OpKind::WaterlineRough { .. },
+            ToolKind::Drill | ToolKind::DragKnife | ToolKind::LaserBeam,
+        ) => Some((
+            "waterline_non_mill",
+            "waterline roughing op assigned a non-milling tool (use a flat or bull-nose endmill)",
+        )),
         _ => None,
     };
     if let Some((variant, msg)) = mismatch {
@@ -807,6 +817,7 @@ pub(super) fn push_tool_fit_kind_warnings(
             OpKind::Dovetail { .. } => ("Dovetail", &[Mill]),
             OpKind::VCarve { .. } => ("V-carve", &[Mill]),
             OpKind::ReliefMill { .. } => ("Relief", &[Mill]),
+            OpKind::WaterlineRough { .. } => ("Waterline roughing", &[Mill]),
             OpKind::RasterEngrave { .. } => ("Raster engrave", &[Laser]),
             OpKind::Helix => ("Helix", &[Mill]),
             // Program-flow / mode-agnostic ops (is_program_only): valid

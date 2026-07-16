@@ -26,6 +26,7 @@ import type {
   ReliefMillOp,
   ThreadOp,
   VCarveOp,
+  WaterlineRoughOp,
 } from '../state/op_types';
 import type { GenerateRequest, ImportResponse } from './types';
 import type { components } from './generated';
@@ -109,6 +110,9 @@ interface FlatOp extends OpBase, ContourFields {
   stepoverMm?: ReliefMillOp['stepoverMm'];
   scanDirection?: ReliefMillOp['scanDirection'];
   alongStepMm?: ReliefMillOp['alongStepMm'];
+  // WaterlineRoughOp — sourceId / stepoverMm shared above.
+  zStepMm?: WaterlineRoughOp['zStepMm'];
+  floorZMm?: WaterlineRoughOp['floorZMm'];
   // RasterEngraveOp — sourceId / scanDirection shared above.
   resolutionMm?: RasterEngraveOp['resolutionMm'];
   powerCurve?: RasterEngraveOp['powerCurve'];
@@ -630,6 +634,14 @@ function buildOpKind(opIn: OpEntry): WireOpKind {
         ...(op.stepoverMm != null && op.stepoverMm > 0 ? { stepover_mm: op.stepoverMm } : {}),
         scan_direction: op.scanDirection ?? 'along_x',
         along_step_mm: op.alongStepMm ?? 0.5,
+      } as WireOpKind;
+    case 'waterline_rough':
+      return {
+        type: 'waterline_rough',
+        source_id: op.sourceId ?? 0,
+        z_step_mm: op.zStepMm ?? 1,
+        stepover_mm: op.stepoverMm ?? 2,
+        floor_z_mm: op.floorZMm ?? 0,
       } as WireOpKind;
     case 'raster_engrave':
       return {

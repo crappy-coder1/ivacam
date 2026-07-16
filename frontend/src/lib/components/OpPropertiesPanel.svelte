@@ -31,6 +31,7 @@
   import ProfileSection from './op_properties/ProfileSection.svelte';
   import PocketSection from './op_properties/PocketSection.svelte';
   import ReliefMillSection from './op_properties/ReliefMillSection.svelte';
+  import WaterlineRoughSection from './op_properties/WaterlineRoughSection.svelte';
   import RasterEngraveSection from './op_properties/RasterEngraveSection.svelte';
   import PauseSection from './op_properties/PauseSection.svelte';
   import HomingSection from './op_properties/HomingSection.svelte';
@@ -273,6 +274,52 @@
       </div>
     </label>
     <ReliefMillSection {op} {patch} />
+  {:else if op.kind === 'waterline_rough'}
+    <!-- Waterline roughing slices an STL height grid level-by-level, not
+         source geometry — name + tool + the waterline section only. -->
+    <label class="row">
+      <span>{t('opprops.name')}</span>
+      <input
+        type="text"
+        value={op.name}
+        oninput={(e) => patch('name', (e.currentTarget as HTMLInputElement).value)}
+      />
+    </label>
+    {@const waterlineTool = project.data.tools.find((t) => t.id === op.toolId)}
+    {#if waterlineTool != null && !isToolKindAcceptable(op.kind, waterlineTool.kind)}
+      <p
+        class="warn-chip"
+        title={t('opprops.tool.mismatch.title', { kinds: formatExpectedToolKinds(op.kind) })}
+      >
+        {t('opprops.tool.mismatch', {
+          op: prettyOpKind(op.kind),
+          kinds: formatExpectedToolKinds(op.kind),
+        })}
+      </p>
+    {/if}
+    <label class="row" title={t('opprops.tool.title.default')}>
+      <span>{t('opprops.tool')}</span>
+      <div class="tool-cell">
+        <select
+          value={op.toolId}
+          onchange={(e) =>
+            patch('toolId', parseInt((e.currentTarget as HTMLSelectElement).value, 10))}
+        >
+          {@render toolOptions(null)}
+        </select>
+        <button
+          type="button"
+          class="tool-edit"
+          title={t('opprops.tool.edit')}
+          aria-label={t('opprops.tool.edit')}
+          onclick={(e) => {
+            e.stopPropagation();
+            project.sel.toolsDialogFocusId = op.toolId;
+          }}>⚙</button
+        >
+      </div>
+    </label>
+    <WaterlineRoughSection {op} {patch} />
   {:else if op.kind === 'raster_engrave'}
     <!-- Laser raster engraving follows an image-derived power
          field, not source geometry — name + tool + the raster section. -->

@@ -228,7 +228,10 @@ pub fn apply_cut_direction(
             | OpKind::ReliefMill { .. }
             // Raster engrave has its own scanline driver; no
             // vector winding to enforce.
-            | OpKind::RasterEngrave { .. } => CutContext::Skip,
+            | OpKind::RasterEngrave { .. }
+            // Waterline roughing slices a mesh and area-clears each
+            // level in its own driver — no offset-cascade winding.
+            | OpKind::WaterlineRough { .. } => CutContext::Skip,
         }
     };
     for offset in offsets.iter_mut() {

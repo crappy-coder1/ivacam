@@ -52,6 +52,7 @@ export type OpKind =
   | 'cycle_marker'
   | 'gcode_include'
   | 'relief_mill'
+  | 'waterline_rough'
   | 'raster_engrave';
 
 /// The program-only op family — Pause, Homing, Probe,
@@ -432,6 +433,28 @@ export interface ReliefMillOp extends OpBase {
   alongStepMm: number;
 }
 
+/// Waterline / constant-Z 3D roughing from an STL source. Slices the
+/// `ReliefSource` referenced by `sourceId` (which must be an STL height
+/// grid) at descending Z levels and area-clears each level, leaving a
+/// uniform stock envelope for a following `relief_mill` finish pass. The
+/// rough half of the standard rough-then-finish 3D flow. Like ReliefMill
+/// it has no source-geometry / offset semantics — the mesh comes from the
+/// relief source, not the imported chains.
+export interface WaterlineRoughOp extends OpBase {
+  kind: 'waterline_rough';
+  /// Id of the `ReliefSource` (in `project.data.reliefSources`) this op
+  /// roughs. Must be an STL (height-grid) source.
+  sourceId: number;
+  /// Per-level depth of cut (mm, positive) — Z steps down by this between
+  /// consecutive waterline levels.
+  zStepMm: number;
+  /// Lateral stepover between raster passes within a level (mm, positive).
+  /// 0 = derive a default from the tool diameter (40%).
+  stepoverMm: number;
+  /// Deepest Z to rough to (mm, negative). 0 = rough the full model depth.
+  floorZMm: number;
+}
+
 /// Laser raster engraving. Burns a grayscale image (a
 /// `ReliefSource` referenced by `sourceId`) row-by-row, modulating
 /// laser power (`S`) per pixel through `powerCurve`. Like ReliefMill it
@@ -478,6 +501,7 @@ export type OpEntry =
   | CycleMarkerOp
   | GcodeIncludeOp
   | ReliefMillOp
+  | WaterlineRoughOp
   | RasterEngraveOp;
 
 /// Patch type for `project.updateOperation`. A patch covers the full

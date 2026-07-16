@@ -670,6 +670,11 @@ pub(super) fn build_op_offsets(
                 // Raster engrave runs through its own scanline driver,
                 // never the offset cascade. Skip.
             }
+            OpKind::WaterlineRough { .. } => {
+                // Waterline roughing runs through `run_waterline_op` (its
+                // own per-level slice-and-clear driver), never the offset
+                // cascade. Skip.
+            }
             OpKind::Pause { .. }
             | OpKind::Homing { .. }
             | OpKind::Probe { .. }

@@ -1713,6 +1713,36 @@ components:
         - source_id
         - type
         type: object
+      - description: Waterline / constant-Z 3D roughing from an STL source. Slices the op's [`crate::project::ReliefSource`] (a height-grid / STL source — see [`crate::project::ReliefGrid::Heightgrid`]) at descending Z levels and area-clears the solid cross-section at each, leaving a uniform stock envelope for a following finish pass ([`OpKind::ReliefMill`] / `surface_mill`). This is the ROUGH half of the standard rough-then-finish 3D flow — the one 3D strategy ivaCAM lacked. The geometric core lives in `cam::waterline`; the driver rebuilds the height grid into a triangle mesh, walks the levels, and emits XYZ blocks (see `run_waterline_op`). Clears INSIDE each sliced contour — the cavity/relief convention GrblGru's `DoJob3DWaterLine` uses. A grayscale (image-relief) source has no real geometry to slice, so the op no-ops with a warning on one.
+        properties:
+          floor_z_mm:
+            default: 0.0
+            description: Deepest Z to rough to (mm, negative). `0` (default) roughs the full model depth; a negative value clamps the floor shallower (never below the model's deepest point / tool reach).
+            format: double
+            type: number
+          source_id:
+            description: Id of the [`crate::project::ReliefSource`] (in `Project.relief_sources`) this op roughs. Must be a [`crate::project::ReliefGrid::Heightgrid`] (STL) source; a missing or grayscale source ⇒ the op emits nothing.
+            format: uint32
+            minimum: 0.0
+            type: integer
+          stepover_mm:
+            default: 2.0
+            description: Lateral stepover between raster passes within a level (mm, positive). `<= 0` ⇒ the driver derives a default from the tool diameter (40 %).
+            format: double
+            type: number
+          type:
+            enum:
+            - waterline_rough
+            type: string
+          z_step_mm:
+            default: 1.0
+            description: Per-level depth of cut (mm, positive) — Z steps down by this between consecutive waterline levels. Smaller = more levels = finer stock staircase but a longer program.
+            format: double
+            type: number
+        required:
+        - source_id
+        - type
+        type: object
       - description: Photo / greyscale laser raster engrave. Walks a [`crate::project::ReliefSource`]'s normalized-brightness grid one row at a time, modulating laser power (the `S` word) per pixel via [`crate::cam::raster::PowerCurve`] (dark burns hotter). Reuses the relief image-source representation — brightness → power here vs brightness → Z for [`OpKind::ReliefMill`]. Laser-only. (The grid → power mapping lives in `cam::raster`; the gcode emit is a later phase.)
         properties:
           link:

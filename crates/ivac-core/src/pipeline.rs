@@ -66,8 +66,8 @@ mod test_helpers;
 
 use op_drivers::{
     halfpipe_would_emit, raster_would_emit, relief_would_emit, run_halfpipe_op, run_raster_op,
-    run_relief_op, run_standard_op, run_thread_op, run_vcarve_op, thread_would_emit,
-    vcarve_would_emit,
+    run_relief_op, run_standard_op, run_thread_op, run_vcarve_op, run_waterline_op,
+    thread_would_emit, vcarve_would_emit, waterline_would_emit,
 };
 use regions::build_region_previews;
 pub use setup_resolver::fit_helix_radius_for_selection;
@@ -1629,6 +1629,7 @@ enum SpecialtyKind {
     Thread,
     Halfpipe,
     ReliefMill,
+    WaterlineRough,
     RasterEngrave,
 }
 
@@ -1643,6 +1644,7 @@ fn classify_specialty(op: &Op) -> Option<SpecialtyKind> {
             ..
         } => Some(SpecialtyKind::Halfpipe),
         OpKind::ReliefMill { .. } => Some(SpecialtyKind::ReliefMill),
+        OpKind::WaterlineRough { .. } => Some(SpecialtyKind::WaterlineRough),
         OpKind::RasterEngrave { .. } => Some(SpecialtyKind::RasterEngrave),
         _ => None,
     }
@@ -1660,6 +1662,8 @@ impl SpecialtyKind {
             SpecialtyKind::Halfpipe => halfpipe_would_emit(op, objects),
             // Relief emits only when its referenced source exists.
             SpecialtyKind::ReliefMill => relief_would_emit(op, project),
+            // Waterline emits only when its referenced STL source exists.
+            SpecialtyKind::WaterlineRough => waterline_would_emit(op, project),
             // Raster emits only with a real source on a laser.
             SpecialtyKind::RasterEngrave => raster_would_emit(op, project),
         }
@@ -1693,6 +1697,9 @@ impl SpecialtyKind {
             // their source from the project, not the chained geometry).
             SpecialtyKind::ReliefMill => {
                 run_relief_op(op, project, setup, post, last_pos, warnings, cancel)
+            }
+            SpecialtyKind::WaterlineRough => {
+                run_waterline_op(op, project, setup, post, last_pos, warnings, cancel)
             }
             SpecialtyKind::RasterEngrave => {
                 run_raster_op(op, project, setup, post, last_pos, warnings, cancel)

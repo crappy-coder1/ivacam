@@ -714,6 +714,7 @@ export type MsgKey =
   | "ops.help.t_slot"
   | "ops.help.thread"
   | "ops.help.vcarve"
+  | "ops.help.waterline_rough"
   | "ops.homing.name.label"
   | "ops.homing.pipeline.hint_prefix"
   | "ops.homing.pipeline.hint_suffix"
@@ -739,6 +740,7 @@ export type MsgKey =
   | "ops.kind.t_slot"
   | "ops.kind.thread"
   | "ops.kind.vcarve"
+  | "ops.kind.waterline_rough"
   | "ops.pattern.center_x.help"
   | "ops.pattern.center_x.label"
   | "ops.pattern.center_y.help"
@@ -990,6 +992,17 @@ export type MsgKey =
   | "ops.vcarve.refine_pass.not_implemented"
   | "ops.vcarve.source_inset.help"
   | "ops.vcarve.source_inset.label"
+  | "ops.waterline.floor.help"
+  | "ops.waterline.floor.label"
+  | "ops.waterline.floor.placeholder"
+  | "ops.waterline.levels.legend"
+  | "ops.waterline.load_stl"
+  | "ops.waterline.needs_stl.hint"
+  | "ops.waterline.roughing.hint"
+  | "ops.waterline.stepover.help"
+  | "ops.waterline.stepover.label"
+  | "ops.waterline.z_step.help"
+  | "ops.waterline.z_step.label"
   | "panel.drag_to_move"
   | "panel.drag_to_resize"
   | "panel.header.aria"
@@ -2299,6 +2312,7 @@ export const MSG_KEYS: readonly MsgKey[] = [
   "ops.help.t_slot",
   "ops.help.thread",
   "ops.help.vcarve",
+  "ops.help.waterline_rough",
   "ops.homing.name.label",
   "ops.homing.pipeline.hint_prefix",
   "ops.homing.pipeline.hint_suffix",
@@ -2324,6 +2338,7 @@ export const MSG_KEYS: readonly MsgKey[] = [
   "ops.kind.t_slot",
   "ops.kind.thread",
   "ops.kind.vcarve",
+  "ops.kind.waterline_rough",
   "ops.pattern.center_x.help",
   "ops.pattern.center_x.label",
   "ops.pattern.center_y.help",
@@ -2575,6 +2590,17 @@ export const MSG_KEYS: readonly MsgKey[] = [
   "ops.vcarve.refine_pass.not_implemented",
   "ops.vcarve.source_inset.help",
   "ops.vcarve.source_inset.label",
+  "ops.waterline.floor.help",
+  "ops.waterline.floor.label",
+  "ops.waterline.floor.placeholder",
+  "ops.waterline.levels.legend",
+  "ops.waterline.load_stl",
+  "ops.waterline.needs_stl.hint",
+  "ops.waterline.roughing.hint",
+  "ops.waterline.stepover.help",
+  "ops.waterline.stepover.label",
+  "ops.waterline.z_step.help",
+  "ops.waterline.z_step.label",
   "panel.drag_to_move",
   "panel.drag_to_resize",
   "panel.header.aria",

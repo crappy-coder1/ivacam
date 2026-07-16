@@ -69,6 +69,11 @@ export function expectedToolKinds(op: OpKind): readonly ToolKind[] {
       // (full hemisphere) or a bull-nose (flat centre + corner fillet).
       // The corner radius shapes the floor + the scallop stepover.
       return ['ball_nose', 'bull_nose'];
+    case 'waterline_rough':
+      // Level-by-level area clearing hogs material like a pocket — a
+      // flat or bull-nose endmill. (Ball-nose works but leaves more
+      // stock per level; the finish pass is what shapes the surface.)
+      return ['endmill', 'bull_nose'];
     case 'raster_engrave':
       // Laser raster engraving needs a laser head — the power curve
       // modulates the beam's `S` word; no rotating cutter applies.

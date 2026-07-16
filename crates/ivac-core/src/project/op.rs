@@ -592,6 +592,41 @@ pub enum OpKind {
         #[serde(default = "default_relief_along_step")]
         along_step_mm: f64,
     },
+    /// Waterline / constant-Z 3D roughing from an STL source. Slices the
+    /// op's [`crate::project::ReliefSource`] (a height-grid / STL source —
+    /// see [`crate::project::ReliefGrid::Heightgrid`]) at descending Z
+    /// levels and area-clears the solid cross-section at each, leaving a
+    /// uniform stock envelope for a following finish pass
+    /// ([`OpKind::ReliefMill`] / `surface_mill`). This is the ROUGH half of
+    /// the standard rough-then-finish 3D flow — the one 3D strategy ivaCAM
+    /// lacked. The geometric core lives in `cam::waterline`; the driver
+    /// rebuilds the height grid into a triangle mesh, walks the levels, and
+    /// emits XYZ blocks (see `run_waterline_op`). Clears INSIDE each sliced
+    /// contour — the cavity/relief convention GrblGru's `DoJob3DWaterLine`
+    /// uses. A grayscale (image-relief) source has no real geometry to
+    /// slice, so the op no-ops with a warning on one.
+    WaterlineRough {
+        /// Id of the [`crate::project::ReliefSource`] (in
+        /// `Project.relief_sources`) this op roughs. Must be a
+        /// [`crate::project::ReliefGrid::Heightgrid`] (STL) source; a
+        /// missing or grayscale source ⇒ the op emits nothing.
+        source_id: u32,
+        /// Per-level depth of cut (mm, positive) — Z steps down by this
+        /// between consecutive waterline levels. Smaller = more levels =
+        /// finer stock staircase but a longer program.
+        #[serde(default = "default_waterline_z_step")]
+        z_step_mm: f64,
+        /// Lateral stepover between raster passes within a level (mm,
+        /// positive). `<= 0` ⇒ the driver derives a default from the tool
+        /// diameter (40 %).
+        #[serde(default = "default_waterline_stepover")]
+        stepover_mm: f64,
+        /// Deepest Z to rough to (mm, negative). `0` (default) roughs the
+        /// full model depth; a negative value clamps the floor shallower
+        /// (never below the model's deepest point / tool reach).
+        #[serde(default)]
+        floor_z_mm: f64,
+    },
     /// Photo / greyscale laser raster engrave. Walks a
     /// [`crate::project::ReliefSource`]'s normalized-brightness grid one
     /// row at a time, modulating laser power (the `S` word) per pixel via
@@ -629,6 +664,14 @@ pub enum OpKind {
 
 fn default_relief_scallop() -> f64 {
     0.05
+}
+
+fn default_waterline_z_step() -> f64 {
+    1.0
+}
+
+fn default_waterline_stepover() -> f64 {
+    2.0
 }
 
 fn default_relief_along_step() -> f64 {

@@ -6,6 +6,7 @@
 //! * [`run_vcarve_op`] — V-Carve medial-axis sweep.
 //! * [`run_halfpipe_op`] — Halfpipe pocket (circular-arc / V-bottom).
 //! * [`run_thread_op`] — single-point helical thread.
+//! * [`run_waterline_op`] — waterline / constant-Z 3D roughing from STL.
 //! * [`run_standard_op`] — Profile / Pocket / Engrave / Drill /
 //!   `DragKnife` / Chamfer. Calls [`offset_builder::build_op_offsets`]
 //!   to produce the offset cascade, then dispatches to either
@@ -24,12 +25,14 @@ mod raster;
 mod surface_mill;
 mod thread;
 mod vcarve;
+mod waterline;
 
 pub(in crate::pipeline) use halfpipe::{halfpipe_would_emit, run_halfpipe_op};
 pub(in crate::pipeline) use raster::{raster_would_emit, run_raster_op};
 pub(in crate::pipeline) use surface_mill::{relief_would_emit, run_relief_op};
 pub(in crate::pipeline) use thread::{run_thread_op, thread_would_emit};
 pub(in crate::pipeline) use vcarve::{run_vcarve_op, vcarve_would_emit};
+pub(in crate::pipeline) use waterline::{run_waterline_op, waterline_would_emit};
 
 use super::offset_builder::build_op_offsets;
 use crate::cam::setup::Setup;

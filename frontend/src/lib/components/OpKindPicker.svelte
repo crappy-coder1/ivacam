@@ -29,6 +29,7 @@
     cycle_marker: '◈',
     gcode_include: '⎙',
     relief_mill: '⛰',
+    waterline_rough: '≋',
     raster_engrave: '▦',
   };
   // Helix is omitted intentionally: it's an OperationKind in the
@@ -50,6 +51,7 @@
     'dovetail',
     'vcarve',
     'relief_mill',
+    'waterline_rough',
     'raster_engrave',
     'pause',
     'homing',
@@ -115,6 +117,8 @@
     dovetail: ['mill'],
     vcarve: ['mill'],
     relief_mill: ['mill'],
+    // Waterline / Z-level roughing is a milling strategy.
+    waterline_rough: ['mill'],
     // Laser raster engraving is laser-only (matches the backend
     // laser gate + the op×mode warning).
     raster_engrave: ['laser'],

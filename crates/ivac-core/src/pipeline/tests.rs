@@ -253,6 +253,191 @@ fn pipeline_relief_mill_heightgrid_cuts_real_z_without_depth_range() {
     );
 }
 
+/// A `WaterlineRough` op over a `Heightgrid` (STL) source with a pyramid
+/// basin roughs it level-by-level: it emits cut moves whose Z sits on the
+/// descending waterline levels (never below the model floor), and the flat
+/// endmill draws no tool-kind warning.
+#[test]
+fn pipeline_waterline_rough_emits_level_chains_over_stl_basin() {
+    use crate::geometry::Point2;
+    use crate::project::{ReliefGrid, ReliefSource};
+
+    // 9x9 pyramid basin: Z = 0 at the border rising (falling) to -6 at the
+    // center, so a horizontal slice at any intermediate level is a closed
+    // square-ish contour around the middle — exactly what waterline clears.
+    let n = 9u32;
+    let center = 4.0_f32;
+    let depth = 6.0_f32;
+    let mut z = Vec::new();
+    for iy in 0..n {
+        for ix in 0..n {
+            let edge = (ix.min(iy).min(n - 1 - ix).min(n - 1 - iy)) as f32;
+            z.push(-depth * (edge / center));
+        }
+    }
+    let source = ReliefSource {
+        id: 5,
+        name: "basin.stl".into(),
+        origin: Point2::new(0.0, 0.0),
+        cell: 2.0,
+        cols: n,
+        rows: n,
+        grid: ReliefGrid::Heightgrid { z },
+    };
+    let mut tool = endmill(1, 3.0);
+    tool.flute_length_mm = Some(20.0);
+    let op = Op {
+        id: 1,
+        name: "Waterline".into(),
+        enabled: true,
+        kind: OpKind::WaterlineRough {
+            source_id: 5,
+            z_step_mm: 2.0,
+            stepover_mm: 1.5,
+            // Default floor (0) ⇒ rough the full model depth.
+            floor_z_mm: 0.0,
+        },
+        tool_id: 1,
+        finish_tool_id: None,
+        source: OpSource::All,
+        params: OpParams::mill_default(),
+        group: None,
+        pin_order: false,
+    };
+    let project = Project {
+        segments: Vec::new(),
+        machine: MachineConfig::default(),
+        tools: vec![tool],
+        operations: vec![op],
+        fixtures: Vec::default(),
+        text_layers: Vec::new(),
+        work_offset: crate::project::WorkOffset::default(),
+        stock: None,
+        relief_sources: vec![source],
+        group_ops_by_tool: false,
+    };
+    let resp = run_pipeline(
+        PipelineRequest {
+            project,
+            post_processor: Some(PostProcessorKind::Linuxcnc),
+        },
+        |_, _, _| {},
+    )
+    .expect("waterline pipeline should run end-to-end");
+    assert!(
+        resp.gcode.contains("; OP 1"),
+        "no op marker for waterline op"
+    );
+    let cut_zs: Vec<f64> = resp
+        .toolpath
+        .iter()
+        .filter(|s| s.op_id == 1 && matches!(s.kind, crate::gcode::preview::MoveKind::Cut))
+        .map(|s| s.to.z)
+        .collect();
+    assert!(!cut_zs.is_empty(), "waterline op emitted no cut moves");
+    // Every cut Z lands on a waterline level (-2, -4, -6) and never dives
+    // below the -6 model floor.
+    let levels = crate::cam::waterline::z_levels(0.0, -6.0, 2.0);
+    for &cz in &cut_zs {
+        assert!(
+            cz <= 1e-6 && cz >= -6.0 - 1e-6,
+            "waterline cut Z {cz} out of the model range"
+        );
+        assert!(
+            levels.iter().any(|&l| (l - cz).abs() < 1e-6),
+            "waterline cut Z {cz} is not one of the slice levels {levels:?}"
+        );
+    }
+    // More than one level actually produced cuts (it roughed in stages).
+    let distinct = {
+        let mut zs: Vec<f64> = cut_zs.clone();
+        zs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        zs.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+        zs.len()
+    };
+    assert!(
+        distinct >= 2,
+        "waterline should rough at multiple Z levels (got {distinct})"
+    );
+    assert!(
+        !resp.warnings.iter().any(|w| w.kind == "tool_kind_mismatch"),
+        "flat endmill waterline should not warn tool_kind_mismatch: {:?}",
+        resp.warnings
+    );
+}
+
+/// A `WaterlineRough` op pointed at a grayscale (image) source emits nothing
+/// and warns: there is no real mesh to slice.
+#[test]
+fn pipeline_waterline_rough_rejects_grayscale_source() {
+    use crate::geometry::Point2;
+    use crate::project::{ReliefGrid, ReliefSource};
+
+    let source = ReliefSource {
+        id: 9,
+        name: "photo.png".into(),
+        origin: Point2::new(0.0, 0.0),
+        cell: 1.0,
+        cols: 4,
+        rows: 4,
+        grid: ReliefGrid::Grayscale {
+            brightness: vec![0.5; 16],
+        },
+    };
+    let mut tool = endmill(1, 3.0);
+    tool.flute_length_mm = Some(20.0);
+    let op = Op {
+        id: 1,
+        name: "Waterline".into(),
+        enabled: true,
+        kind: OpKind::WaterlineRough {
+            source_id: 9,
+            z_step_mm: 1.0,
+            stepover_mm: 1.0,
+            floor_z_mm: 0.0,
+        },
+        tool_id: 1,
+        finish_tool_id: None,
+        source: OpSource::All,
+        params: OpParams::mill_default(),
+        group: None,
+        pin_order: false,
+    };
+    let project = Project {
+        segments: Vec::new(),
+        machine: MachineConfig::default(),
+        tools: vec![tool],
+        operations: vec![op],
+        fixtures: Vec::default(),
+        text_layers: Vec::new(),
+        work_offset: crate::project::WorkOffset::default(),
+        stock: None,
+        relief_sources: vec![source],
+        group_ops_by_tool: false,
+    };
+    let resp = run_pipeline(
+        PipelineRequest {
+            project,
+            post_processor: Some(PostProcessorKind::Linuxcnc),
+        },
+        |_, _, _| {},
+    )
+    .expect("waterline pipeline should still run");
+    let cut_moves = resp
+        .toolpath
+        .iter()
+        .filter(|s| s.op_id == 1 && matches!(s.kind, crate::gcode::preview::MoveKind::Cut))
+        .count();
+    assert_eq!(cut_moves, 0, "grayscale waterline should emit no cut moves");
+    assert!(
+        resp.warnings
+            .iter()
+            .any(|w| w.kind == "waterline_source_not_stl"),
+        "grayscale waterline should warn it needs an STL source: {:?}",
+        resp.warnings
+    );
+}
+
 #[test]
 fn pipeline_renders_text_layers_and_routes_via_synthetic_layer() {
     // Engrave op pointing at the synthetic `__text_1` layer.

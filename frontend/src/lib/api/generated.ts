@@ -1070,6 +1070,32 @@ export interface components {
             z_min_mm: number;
         } | {
             /**
+             * Format: double
+             * @description Deepest Z to rough to (mm, negative). `0` (default) roughs the full model depth; a negative value clamps the floor shallower (never below the model's deepest point / tool reach).
+             * @default 0
+             */
+            floor_z_mm: number;
+            /**
+             * Format: uint32
+             * @description Id of the [`crate::project::ReliefSource`] (in `Project.relief_sources`) this op roughs. Must be a [`crate::project::ReliefGrid::Heightgrid`] (STL) source; a missing or grayscale source ⇒ the op emits nothing.
+             */
+            source_id: number;
+            /**
+             * Format: double
+             * @description Lateral stepover between raster passes within a level (mm, positive). `<= 0` ⇒ the driver derives a default from the tool diameter (40 %).
+             * @default 2
+             */
+            stepover_mm: number;
+            /** @enum {string} */
+            type: "waterline_rough";
+            /**
+             * Format: double
+             * @description Per-level depth of cut (mm, positive) — Z steps down by this between consecutive waterline levels. Smaller = more levels = finer stock staircase but a longer program.
+             * @default 1
+             */
+            z_step_mm: number;
+        } | {
+            /**
              * @description How consecutive rows connect (lift-between vs boustrophedon).
              * @default lift_between
              */

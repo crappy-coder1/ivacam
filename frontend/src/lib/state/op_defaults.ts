@@ -96,6 +96,24 @@ export function buildOpEntry(kind: OpKind, ctx: OpDefaultsCtx): OpEntry {
         alongStepMm: 0.5,
       } as OpEntry;
     }
+    // Waterline roughing slices an STL source level-by-level. Prefer a
+    // flat / bull-nose endmill (it hogs material like a pocket); bind to
+    // the first loaded relief source.
+    case 'waterline_rough': {
+      const mill = tools.find((t) => t.kind === 'endmill' || t.kind === 'bull_nose') ?? tools[0];
+      return {
+        ...base,
+        kind: 'waterline_rough',
+        toolId: mill?.id ?? tools[0]?.id ?? 1,
+        depth: -2,
+        startDepth: 0,
+        step: -1,
+        sourceId: reliefSources[0]?.id ?? 0,
+        zStepMm: 1,
+        stepoverMm: 2,
+        floorZMm: 0,
+      } as OpEntry;
+    }
     // Laser raster engrave follows an image-derived power field.
     // Prefer a laser tool; linear S0..S1000 ramp is the GRBL-agnostic default.
     case 'raster_engrave': {

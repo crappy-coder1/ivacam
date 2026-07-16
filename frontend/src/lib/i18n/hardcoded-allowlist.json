@@ -14,6 +14,7 @@
   "lib/components/op_properties/TabsSection.svelte": ["mm"],
   "lib/components/op_properties/ThreadSection.svelte": ["mm"],
   "lib/components/op_properties/VCarveSection.svelte": ["mm"],
+  "lib/components/op_properties/WaterlineRoughSection.svelte": ["mm"],
   "lib/components/OpPropertiesPanel.svelte": ["mm", "mm/min"],
   "lib/components/PhoneWarnings.svelte": ["pipeline", "sim"],
   "lib/components/PostProcessorEditor.svelte": [

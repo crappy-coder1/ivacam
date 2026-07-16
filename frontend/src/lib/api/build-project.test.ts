@@ -717,6 +717,51 @@ describe('relief mill (f60x-D)', () => {
   });
 });
 
+describe('waterline rough (58nl.3)', () => {
+  it('maps a waterline_rough op + STL source to the wire shape', () => {
+    const waterlineOp = {
+      id: 1,
+      name: 'Waterline',
+      enabled: true,
+      kind: 'waterline_rough',
+      toolId: 1,
+      sourceLayers: null,
+      depth: -2,
+      startDepth: 0,
+      step: -1,
+      sourceId: 9,
+      zStepMm: 1.5,
+      stepoverMm: 2.5,
+      floorZMm: -8,
+    } as unknown as OpEntry;
+    const project = buildProject({
+      transformedImport: fakeImport(),
+      machine: baseMachine(),
+      tools: [baseTool({ kind: 'endmill' })],
+      operations: [waterlineOp],
+      reliefSources: [
+        {
+          id: 9,
+          name: 'model.stl',
+          origin: { x: 0, y: 0 },
+          cell: 1,
+          cols: 2,
+          rows: 2,
+          grid: { kind: 'heightgrid', z: [0, -1, -2, -3] },
+        },
+      ],
+    });
+    const op = project!.operations[0];
+    expect(op.kind).toEqual({
+      type: 'waterline_rough',
+      source_id: 9,
+      z_step_mm: 1.5,
+      stepover_mm: 2.5,
+      floor_z_mm: -8,
+    });
+  });
+});
+
 describe('raster engrave (rt1.12)', () => {
   it('maps a raster_engrave op + bayer curve to the wire shape', () => {
     const rasterOp = {

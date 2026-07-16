@@ -158,6 +158,7 @@ export type {
   ThreadOp,
   ToolKind,
   VCarveOp,
+  WaterlineRoughOp,
 } from './op_types';
 export { isContourOp, isPathOp } from './op_types';
 
