@@ -863,6 +863,234 @@ pub(super) fn for_each_swept_cell<F>(
     }
 }
 
+/// Planar circular-arc descriptor for an analytic swept-arc footprint.
+/// `(cx, cy)` is the arc center in world XY; the radius is implied by the
+/// segment's `from` point (`R = |from − center|`). `ccw` is the sweep
+/// direction (G3 = true, G2 = false) which — together with the segment
+/// endpoints — fixes the angular span exactly as `gcode::preview`'s arc
+/// tessellation does. Z is interpolated linearly by swept angle across the
+/// arc (a helix when `from.z != to.z`), matching that tessellation.
+///
+/// Feeding this to [`sweep_arc_segment`] carves the true swept-arc tube
+/// rather than a straight chord, so `cell` may drop below the ~2° chord
+/// error without the finishing scallop becoming a sim artifact (bd
+/// ivac-58nl.4).
+#[derive(Debug, Clone, Copy)]
+pub struct ArcXY {
+    /// Arc center X (world mm).
+    pub cx: f64,
+    /// Arc center Y (world mm).
+    pub cy: f64,
+    /// Sweep direction: G3 (counter-clockwise) = `true`, G2 (clockwise) =
+    /// `false`.
+    pub ccw: bool,
+}
+
+/// Analytic swept-arc analogue of [`for_each_swept_cell`]: walk every cell
+/// under a cutter of radius `profile.radius()` swept along the circular arc
+/// (`from → to` about `arc` center), invoking `body` with the per-cell
+/// `(ix, iy, r, cutter_pz, dz)`.
+///
+/// Unlike the chord walker this projects each cell center onto the *arc*:
+///   * a cell whose polar angle falls inside the swept span sees radial
+///     offset `r = |ρ − R|` and parametric depth `t = swept_fraction`;
+///   * a cell in the angular gap falls to the nearer endpoint cap (`r =`
+///     distance to `from`/`to`, depth = that endpoint's z) — matching the
+///     endpoint-clamp semantics of the straight-chord walker.
+///
+/// So the carved scallop follows the true arc, not a tessellation staircase.
+///
+/// The bounding walk is the tight arc AABB (endpoints plus any axis-cardinal
+/// extreme inside the span) inflated by the tool radius; the per-cell
+/// radius/angle test remains the correctness gate, so the AABB only has to be
+/// a superset. Cells outside the tool radius or outside the tool's profile
+/// are skipped before `body` ever sees them.
+pub(super) fn for_each_swept_cell_arc<F>(
+    layout: &HeightmapLayout,
+    from: &Pose3,
+    to: &Pose3,
+    arc: ArcXY,
+    profile: &ToolProfile,
+    mut body: F,
+) where
+    F: FnMut(u32, u32, f32, f64, f32),
+{
+    use std::f64::consts::{FRAC_PI_2, PI, TAU};
+    let r_tool = profile.radius() as f64;
+    if r_tool <= 0.0 {
+        return;
+    }
+    let (cx, cy) = (arc.cx, arc.cy);
+    let rx0 = from.x - cx;
+    let ry0 = from.y - cy;
+    let radius = rx0.hypot(ry0);
+    if radius < 1e-9 {
+        return; // degenerate: start coincident with the center
+    }
+    let theta_start = ry0.atan2(rx0);
+    let theta_end = (to.y - cy).atan2(to.x - cx);
+    // Signed sweep, resolved exactly like `preview::interpret_with_index`:
+    // coincident endpoints ⇒ a full revolution in the requested direction,
+    // otherwise bring the raw angle difference into the correct half-plane.
+    let coincident = (from.x - to.x).abs() < 1e-9 && (from.y - to.y).abs() < 1e-9;
+    let mut sweep = theta_end - theta_start;
+    if arc.ccw {
+        if coincident {
+            sweep = TAU;
+        } else if sweep <= 1e-9 {
+            sweep += TAU;
+        }
+    } else if coincident {
+        sweep = -TAU;
+    } else if sweep >= -1e-9 {
+        sweep -= TAU;
+    }
+    let sweep_mag = sweep.abs();
+    if sweep_mag < 1e-12 {
+        return;
+    }
+    let dir = if sweep >= 0.0 { 1.0 } else { -1.0 };
+    let dz = to.z - from.z;
+
+    // `alpha` (a circle angle) is inside the swept span when its signed
+    // offset from `theta_start`, measured in the sweep direction and wrapped
+    // to [0, TAU), does not exceed the sweep magnitude.
+    let in_span = |alpha: f64| -> bool {
+        let d = ((alpha - theta_start) * dir).rem_euclid(TAU);
+        d <= sweep_mag + 1e-12
+    };
+
+    // Tight arc AABB: the two endpoints plus every axis-cardinal circle
+    // point the sweep actually crosses (those are the only interior extrema).
+    let mut min_x = from.x.min(to.x);
+    let mut max_x = from.x.max(to.x);
+    let mut min_y = from.y.min(to.y);
+    let mut max_y = from.y.max(to.y);
+    for (alpha, ex, ey) in [
+        (0.0, cx + radius, cy),
+        (FRAC_PI_2, cx, cy + radius),
+        (PI, cx - radius, cy),
+        (3.0 * FRAC_PI_2, cx, cy - radius),
+    ] {
+        if in_span(alpha) {
+            min_x = min_x.min(ex);
+            max_x = max_x.max(ex);
+            min_y = min_y.min(ey);
+            max_y = max_y.max(ey);
+        }
+    }
+    min_x -= r_tool;
+    max_x += r_tool;
+    min_y -= r_tool;
+    max_y += r_tool;
+
+    let Some((ix0, iy0, ix1, iy1)) = world_aabb_to_cells(layout, min_x, min_y, max_x, max_y) else {
+        return;
+    };
+    let cell = layout.cell;
+    let flat_bottom = profile.is_flat_bottom();
+    for iy in iy0..=iy1 {
+        let cyy = layout.origin_y + (iy as f64 + 0.5) * cell;
+        for ix in ix0..=ix1 {
+            let cxx = layout.origin_x + (ix as f64 + 0.5) * cell;
+            let dpx = cxx - cx;
+            let dpy = cyy - cy;
+            let rho = dpx.hypot(dpy);
+            let phi = dpy.atan2(dpx);
+            let delta = ((phi - theta_start) * dir).rem_euclid(TAU);
+            let (r, cutter_pz) = if delta <= sweep_mag {
+                // Cell projects onto the arc interior: nearest arc point is
+                // the radial projection onto the circle.
+                let t = delta / sweep_mag;
+                ((rho - radius).abs(), from.z + dz * t)
+            } else {
+                // Angular gap: nearest arc point is whichever endpoint is
+                // closer in the plane (the tool's end-cap disk there).
+                let d_from = (cxx - from.x).hypot(cyy - from.y);
+                let d_to = (cxx - to.x).hypot(cyy - to.y);
+                if d_from <= d_to {
+                    (d_from, from.z)
+                } else {
+                    (d_to, to.z)
+                }
+            };
+            if r > r_tool {
+                continue;
+            }
+            if flat_bottom {
+                body(ix, iy, 0.0, cutter_pz, 0.0);
+            } else {
+                let rf = r as f32;
+                let Some(dzp) = profile.eval(rf) else {
+                    continue;
+                };
+                body(ix, iy, rf, cutter_pz, dzp);
+            }
+        }
+    }
+}
+
+/// Carve-only pass for an analytic circular arc — the arc-native sibling of
+/// [`sweep_chord_carve`]. Shares the same air-skip and engagement-depth clamp
+/// preamble, then drives [`for_each_swept_cell_arc`] instead of the straight
+/// walker so the swept footprint follows the true arc.
+fn sweep_arc_chord_carve<T: CarveTarget>(
+    target: &mut T,
+    from: &Pose3,
+    to: &Pose3,
+    arc: ArcXY,
+    profile: &ToolProfile,
+) -> u32 {
+    let r_tool = profile.radius() as f64;
+    if r_tool <= 0.0 {
+        return 0;
+    }
+    let top_z = f64::from(target.carve_top_z());
+    if from.z >= top_z && to.z >= top_z {
+        return 0; // cutter stays above the stock — in air
+    }
+    let depth_floor_z = profile.max_engagement_depth().map(|d| top_z - f64::from(d));
+    let layout = target.carve_layout();
+    let mut touched = 0u32;
+    for_each_swept_cell_arc(
+        &layout,
+        from,
+        to,
+        arc,
+        profile,
+        |ix, iy, _r, cutter_pz, dz| {
+            let clamped_pz = depth_floor_z.map_or(cutter_pz, |floor| cutter_pz.max(floor));
+            let surface_z = clamped_pz as f32 + dz;
+            target.carve_top_down(ix, iy, surface_z);
+            touched += 1;
+        },
+    );
+    touched
+}
+
+/// Carve a single analytic circular arc (`from → to` about `arc` center) into
+/// `heightmap`, lowering every cell the cutter sweeps over. The arc-native
+/// analogue of the chord carve inside [`sweep_segment`]: it models the true
+/// swept-arc footprint instead of a straight chord, so `heightmap.cell` may
+/// drop below the ~2° chord-tessellation error without the finishing scallop
+/// becoming a sim artifact (bd ivac-58nl.4).
+///
+/// Diagnostics (fixture / holder / rapid) are NOT run here — this is the carve
+/// core. Today the live sim still sees arcs as tessellated chord segments (the
+/// gcode preview tessellates G2/G3), so this entry point has no live caller
+/// yet; it drives the parity test and is the carve stage 2 wires into
+/// `sweep_segment` once the preview emits [`ArcXY`] primitives.
+#[must_use]
+pub fn sweep_arc_segment(
+    heightmap: &mut Heightmap,
+    from: &Pose3,
+    to: &Pose3,
+    arc: ArcXY,
+    profile: &ToolProfile,
+) -> u32 {
+    sweep_arc_chord_carve(heightmap, from, to, arc, profile)
+}
+
 /// Partial-segment analogue of [`for_each_swept_cell`]: walk exactly the
 /// cells the chunk `[t_start, t_end]` of `segment` is responsible for — the
 /// interior cells plus the endpoint caps this partial owns — invoking `body`
@@ -2976,5 +3204,78 @@ mod tests {
             &mut dd,
         );
         assert_eq!(dd.count("fixture_collision"), 1);
+    }
+
+    /// The analytic swept-arc footprint is radially symmetric about the arc
+    /// center: a flat endmill swept along the arc carves every on-arc cell to
+    /// the same tip depth regardless of angle, cells just past an endpoint
+    /// (within tool radius) get that endpoint's depth via the cap, and a cell
+    /// in the angular gap far from both ends is untouched.
+    #[test]
+    fn arc_carve_radial_symmetry_caps_and_gap() {
+        let origin = -7.0;
+        let cell_mm = 0.25;
+        let n = 56u32;
+        let mut map = Heightmap::new(Point2::new(origin, origin), cell_mm, n, n, 0.0);
+        // Quarter circle R = 5 about the origin, CCW from (5,0) to (0,5), tip
+        // Z = −1 with a 1 mm flat endmill (constant carve depth).
+        let from = pose(5.0, 0.0, -1.0);
+        let to = pose(0.0, 5.0, -1.0);
+        let arc = ArcXY {
+            cx: 0.0,
+            cy: 0.0,
+            ccw: true,
+        };
+        let profile = ToolProfile::Endmill { r: 1.0 };
+        let touched = sweep_arc_segment(&mut map, &from, &to, arc, &profile);
+        assert!(touched > 0, "arc carved nothing");
+
+        let sample = |x: f64, y: f64| -> f32 {
+            let ix = ((x - origin) / cell_mm - 0.5).round() as u32;
+            let iy = ((y - origin) / cell_mm - 0.5).round() as u32;
+            cell(&map, ix, iy)
+        };
+        // On-arc cells at 10° and 45° both carve to the tip depth.
+        let a10 = 10f64.to_radians();
+        assert!(
+            (sample(5.0 * a10.cos(), 5.0 * a10.sin()) - (-1.0)).abs() < 1e-4,
+            "on-arc cell @10° not at tip depth"
+        );
+        let a45 = std::f64::consts::FRAC_PI_4;
+        assert!(
+            (sample(5.0 * a45.cos(), 5.0 * a45.sin()) - (-1.0)).abs() < 1e-4,
+            "on-arc cell @45° not at tip depth"
+        );
+        // Endpoint caps: just outside the span but within tool radius of an
+        // endpoint ⇒ carved to that endpoint's depth.
+        assert!(
+            (sample(5.0, -0.4) - (-1.0)).abs() < 1e-4,
+            "start-endpoint cap not carved"
+        );
+        assert!(
+            (sample(-0.4, 5.0) - (-1.0)).abs() < 1e-4,
+            "end-endpoint cap not carved"
+        );
+        // Angular gap (≈225°, outside the 0..90° span, far from both ends): uncut.
+        assert!(
+            (sample(-3.5, -3.5) - 0.0).abs() < 1e-6,
+            "angular-gap cell was carved"
+        );
+    }
+
+    /// A degenerate arc whose start coincides with its center (radius 0)
+    /// carves nothing rather than dividing by zero.
+    #[test]
+    fn arc_zero_radius_is_noop() {
+        let mut map = fresh_map(20, 20);
+        let from = pose(0.0, 0.0, -1.0);
+        let to = pose(0.0, 0.0, -1.0);
+        let arc = ArcXY {
+            cx: 0.0,
+            cy: 0.0,
+            ccw: true,
+        };
+        let profile = ToolProfile::Endmill { r: 2.0 };
+        assert_eq!(sweep_arc_segment(&mut map, &from, &to, arc, &profile), 0);
     }
 }
