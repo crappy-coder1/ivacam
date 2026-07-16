@@ -354,6 +354,70 @@ pub fn clear_level(loops: &[Loop], tool_diameter: f64, stride: f64) -> Vec<Vec<S
     chains
 }
 
+/// One clearing chain of a waterline pass: a connected XY cut path at a fixed
+/// level height `z`. The tool stays plunged along `path`; the caller lifts to
+/// clearance and rapids between successive chains.
+#[derive(Debug, Clone)]
+pub struct RoughChain {
+    /// The absolute Z of this clearing pass (a [`z_levels`] height).
+    pub z: f64,
+    /// Connected XY cut polyline (successive points are cut moves).
+    pub path: Vec<Point2>,
+}
+
+/// Flatten a connected chain of [`pocket_zigzag`] line segments into its vertex
+/// polyline. Successive segments share endpoints (`seg[i].end == seg[i+1].start`),
+/// so the polyline is the first start followed by every segment end.
+fn chain_to_polyline(chain: &[Segment]) -> Vec<Point2> {
+    let mut pts = Vec::with_capacity(chain.len() + 1);
+    if let Some(first) = chain.first() {
+        pts.push(first.start);
+    }
+    for s in chain {
+        pts.push(s.end);
+    }
+    pts
+}
+
+/// Assemble the full waterline roughing toolpath over a mesh: for each Z level
+/// from the top down ([`z_levels`]), slice the mesh, area-clear inside the
+/// resulting contours ([`clear_level`] — "rough each contour as a pocket"), and
+/// tag every clearing chain with its level Z.
+///
+/// The mesh is sliced **in its own coordinates**; `top_z` / `bottom_z` bound the
+/// roughed span and `z_step` is the per-level depth (the caller maps the mesh
+/// onto the stock datum, as the relief path does). `tool_diameter` and `stride`
+/// drive the per-level pocket fill. Chains come back top level first, in cut
+/// order within a level; the caller inserts rapids / plunges / leads between
+/// them and emits the XYZ moves. Levels that slice to nothing contribute no
+/// chains.
+///
+/// This clears **inside** each sliced contour — the cavity/relief convention
+/// GrblGru's `DoJob3DWaterLine` uses (and ivaCAM's existing downward-relief
+/// model). Boss roughing (clearing the stock *around* a raised part) would
+/// invert the regions against the stock boundary; that's a future option.
+#[must_use]
+pub fn waterline_rough(
+    tris: &[[[f32; 3]; 3]],
+    tool_diameter: f64,
+    stride: f64,
+    top_z: f64,
+    bottom_z: f64,
+    z_step: f64,
+) -> Vec<RoughChain> {
+    let mut out = Vec::new();
+    for z in z_levels(top_z, bottom_z, z_step) {
+        let loops = slice_mesh_at_z(tris, z);
+        for chain in clear_level(&loops, tool_diameter, stride) {
+            out.push(RoughChain {
+                z,
+                path: chain_to_polyline(&chain),
+            });
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -647,5 +711,52 @@ mod tests {
         let a = clear_level(&[outer.clone(), hole.clone()], 2.0, 1.3);
         let b = clear_level(&[outer, hole], 2.0, 1.3);
         assert_eq!(a, b);
+    }
+
+    // ── multi-level assembly (waterline_rough) ───────────────────────────
+
+    /// Roughing a box prism emits clearing chains at exactly the z_levels, each
+    /// filling the box footprint and staying inside the tool-radius inset.
+    #[test]
+    fn waterline_rough_emits_chains_per_level() {
+        let sq = [[0.0, 0.0], [20.0, 0.0], [20.0, 20.0], [0.0, 20.0]];
+        let tris = prism_walls(&sq, 0.0, 10.0);
+        let (tool_d, stride) = (2.0, 2.0);
+        let chains = waterline_rough(&tris, tool_d, stride, 10.0, 0.0, 3.0);
+        assert!(!chains.is_empty(), "a box must rough into chains");
+
+        // Every chain sits at one of the expected levels (7, 4, 1, 0).
+        let want_levels = z_levels(10.0, 0.0, 3.0);
+        for c in &chains {
+            assert!(
+                want_levels.iter().any(|&z| (z - c.z).abs() < 1e-9),
+                "chain z {} is not a slice level",
+                c.z
+            );
+            // And its path stays inside the box's tool-radius inset.
+            let r = tool_d * 0.5;
+            for p in &c.path {
+                assert!(p.x >= r - 1e-6 && p.x <= 20.0 - r + 1e-6, "x {} out", p.x);
+                assert!(p.y >= r - 1e-6 && p.y <= 20.0 - r + 1e-6, "y {} out", p.y);
+            }
+        }
+        // Every level that the box spans produced at least one chain.
+        for &z in &want_levels {
+            assert!(
+                chains.iter().any(|c| (c.z - z).abs() < 1e-9),
+                "level {z} produced no clearing chain"
+            );
+        }
+    }
+
+    /// A mesh that no level intersects (roughing span entirely below it) yields
+    /// no chains rather than panicking.
+    #[test]
+    fn waterline_rough_below_mesh_is_empty() {
+        let sq = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
+        let tris = prism_walls(&sq, 50.0, 60.0);
+        // Rough a span well below the prism: no level slices it.
+        let chains = waterline_rough(&tris, 2.0, 2.0, 10.0, 0.0, 3.0);
+        assert!(chains.is_empty());
     }
 }
