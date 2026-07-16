@@ -658,15 +658,14 @@ mod tests {
     fn stl_multipart(stl: &str, max_dim: &str) -> (String, Vec<u8>) {
         let boundary = "TESTBOUNDARY1234";
         let body = format!(
-            "--{b}\r\n\
+            "--{boundary}\r\n\
              Content-Disposition: form-data; name=\"file\"; filename=\"m.stl\"\r\n\
              Content-Type: application/octet-stream\r\n\r\n\
              {stl}\r\n\
-             --{b}\r\n\
+             --{boundary}\r\n\
              Content-Disposition: form-data; name=\"max_dim\"\r\n\r\n\
              {max_dim}\r\n\
-             --{b}--\r\n",
-            b = boundary,
+             --{boundary}--\r\n",
         );
         (
             format!("multipart/form-data; boundary={boundary}"),
