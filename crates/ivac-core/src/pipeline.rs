@@ -1273,15 +1273,17 @@ fn emit_program_only_op<P: PostProcessor>(
                 .with_param("variable", format!("{{{name}}}")));
             }
             if expanded.trim().is_empty() {
-                warnings.push(PipelineWarning::for_op(
-                    op.id,
-                    "gcode_include_empty",
-                    format!(
-                        "Op '{}': included G-code is empty — no lines emitted at this slot.",
-                        op.name,
-                    ),
-                )
-                .with_param("op_name", op.name.as_str()));
+                warnings.push(
+                    PipelineWarning::for_op(
+                        op.id,
+                        "gcode_include_empty",
+                        format!(
+                            "Op '{}': included G-code is empty — no lines emitted at this slot.",
+                            op.name,
+                        ),
+                    )
+                    .with_param("op_name", op.name.as_str()),
+                );
             }
             for line in expanded.lines() {
                 post.raw(line);
@@ -1314,21 +1316,23 @@ fn emit_program_only_op<P: PostProcessor>(
                 // skipped line. Off by default so the panel stays readable.
                 if *verbose_unsim_warnings {
                     for skipped in &classification.skipped {
-                        warnings.push(PipelineWarning::for_op(
-                            op.id,
-                            "gcode_include_unsim_line",
-                            format!(
-                                "Op '{}': included G-code line {n}: `{text}` — {reason}.",
-                                op.name,
-                                n = skipped.line_no,
-                                text = skipped.trimmed,
-                                reason = skipped.reason,
-                            ),
-                        )
-                        .with_param("op_name", op.name.as_str())
-                        .with_param("line", skipped.line_no)
-                        .with_param("text", skipped.trimmed.as_str())
-                        .with_param("reason", skipped.reason.as_str()));
+                        warnings.push(
+                            PipelineWarning::for_op(
+                                op.id,
+                                "gcode_include_unsim_line",
+                                format!(
+                                    "Op '{}': included G-code line {n}: `{text}` — {reason}.",
+                                    op.name,
+                                    n = skipped.line_no,
+                                    text = skipped.trimmed,
+                                    reason = skipped.reason,
+                                ),
+                            )
+                            .with_param("op_name", op.name.as_str())
+                            .with_param("line", skipped.line_no)
+                            .with_param("text", skipped.trimmed.as_str())
+                            .with_param("reason", skipped.reason.as_str()),
+                        );
                     }
                 }
             }

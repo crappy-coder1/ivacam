@@ -226,19 +226,21 @@ pub(super) fn push_fixed_sensor_reference_order_warning(
     if first_tool == reference {
         return;
     }
-    warnings.push(PipelineWarning::new(
-        "fixed_sensor_reference_not_first",
-        format!(
-            "Fixed-sensor post-change Z: the reference tool (tool {reference}) is not the \
+    warnings.push(
+        PipelineWarning::new(
+            "fixed_sensor_reference_not_first",
+            format!(
+                "Fixed-sensor post-change Z: the reference tool (tool {reference}) is not the \
              program's first tool (tool {first_tool}). Tools that run before the reference \
              have no baseline sensor reading to difference against — on LinuxCNC the program \
              aborts at their G43.1 (undefined #<_ivac_tlref>). Reorder the operations so the \
              reference tool cuts first, or clear the reference override (the first tool is \
              then used)."
-        ),
-    )
-    .with_param("reference_tool", reference)
-    .with_param("first_tool", first_tool));
+            ),
+        )
+        .with_param("reference_tool", reference)
+        .with_param("first_tool", first_tool),
+    );
 }
 
 pub(super) fn push_grbl_fixed_sensor_warning(
@@ -692,17 +694,19 @@ pub(super) fn push_tool_fit_kind_warnings(
     // Impossible tool geometry: tip diameter ≥ shank diameter.
     if let Some(tip) = tool.tip_diameter {
         if tip >= tool.diameter {
-            warnings.push(PipelineWarning::for_op(
-                op.id,
-                "tool_geometry_impossible",
-                format!(
-                    "tool '{}': tip diameter {tip} ≥ shank diameter {}",
-                    tool.name, tool.diameter
-                ),
-            )
-            .with_param("tool_name", tool.name.as_str())
-            .with_param("tip", tip)
-            .with_param("diameter", tool.diameter));
+            warnings.push(
+                PipelineWarning::for_op(
+                    op.id,
+                    "tool_geometry_impossible",
+                    format!(
+                        "tool '{}': tip diameter {tip} ≥ shank diameter {}",
+                        tool.name, tool.diameter
+                    ),
+                )
+                .with_param("tool_name", tool.name.as_str())
+                .with_param("tip", tip)
+                .with_param("diameter", tool.diameter),
+            );
         }
     }
     // Tool kind mismatched with op kind. We warn rather than error
@@ -960,7 +964,10 @@ pub(super) fn push_tool_fit_kind_warnings(
             ("generic", String::new())
         };
         let neck = if neck_radius.is_finite() && neck_radius > 0.0 {
-            format!("{:.2} mm (the profile's narrowest width)", neck_radius * 2.0)
+            format!(
+                "{:.2} mm (the profile's narrowest width)",
+                neck_radius * 2.0
+            )
         } else {
             "the bit's neck".to_string()
         };

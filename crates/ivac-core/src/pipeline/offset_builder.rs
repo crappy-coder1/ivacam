@@ -190,22 +190,24 @@ pub(super) fn build_op_offsets(
                 .unwrap_or(0.0)
                 .max(0.0);
             if user_padding_mm < tool_radius_mm {
-                warnings.push(PipelineWarning::for_op(
-                    cur_op_for_frame.id,
-                    "frame_padding_below_tool_radius",
-                    format!(
-                        "Frame padding {user:.3} mm is below the cutter radius {radius:.3} mm \
+                warnings.push(
+                    PipelineWarning::for_op(
+                        cur_op_for_frame.id,
+                        "frame_padding_below_tool_radius",
+                        format!(
+                            "Frame padding {user:.3} mm is below the cutter radius {radius:.3} mm \
                          and was bumped to {radius:.3} mm so the cutter stays outside the \
                          selection. Set padding above the tool diameter ({diam:.3} mm) to \
                          actually carve material outside the shape.",
-                        user = user_padding_mm,
-                        radius = tool_radius_mm,
-                        diam = setup.tool.diameter,
-                    ),
-                )
-                .with_param("padding", format!("{user_padding_mm:.3}"))
-                .with_param("radius", format!("{tool_radius_mm:.3}"))
-                .with_param("diameter", format!("{:.3}", setup.tool.diameter)));
+                            user = user_padding_mm,
+                            radius = tool_radius_mm,
+                            diam = setup.tool.diameter,
+                        ),
+                    )
+                    .with_param("padding", format!("{user_padding_mm:.3}"))
+                    .with_param("radius", format!("{tool_radius_mm:.3}"))
+                    .with_param("diameter", format!("{:.3}", setup.tool.diameter)),
+                );
             }
             if let Some((new_objects, ordered_indices)) =
                 synthesize_pocket_outside_objects(cur_op_for_frame, after_pattern, tool_radius_mm)
