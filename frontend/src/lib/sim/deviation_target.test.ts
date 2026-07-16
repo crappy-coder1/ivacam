@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { buildOpEntry, type OpDefaultsCtx } from '../state/op_defaults';
 import type { OpEntry, ReliefMillOp } from '../state/op_types';
 import type { ReliefSource } from '../state/project-types';
-import { activeDeviationTarget, reliefTargetSurface } from './deviation_target';
+import { deviationTargets, reliefTargetSurface } from './deviation_target';
 
 // A valid relief_mill op via the shared factory, with per-test overrides.
 function reliefOp(overrides: Partial<ReliefMillOp> = {}): ReliefMillOp {
@@ -85,24 +85,32 @@ describe('reliefTargetSurface', () => {
   });
 });
 
-describe('activeDeviationTarget', () => {
-  it('picks the first enabled relief_mill op with a resolvable source', () => {
+describe('deviationTargets', () => {
+  it('collects every enabled relief_mill op with a resolvable source, in order', () => {
     const disabled = reliefOp({ sourceId: 1, enabled: false });
-    const enabled = reliefOp({ sourceId: 2, zMinMm: -3, zMaxMm: 0, enabled: true });
-    const ops: OpEntry[] = [disabled, enabled];
-    const surf = activeDeviationTarget(ops, [heightgridSource(2, [-1, -2])]);
-    expect(surf).not.toBeNull();
-    expect(surf!.z).toEqual([-1, -2]);
+    const first = reliefOp({ sourceId: 2, enabled: true });
+    const second = reliefOp({ sourceId: 3, enabled: true });
+    const ops: OpEntry[] = [disabled, first, second];
+    const targets = deviationTargets(ops, [
+      heightgridSource(1, [-9]),
+      heightgridSource(2, [-1, -2]),
+      heightgridSource(3, [-5]),
+    ]);
+    // Disabled op excluded; the two enabled ones kept in document order.
+    expect(targets.map((t) => t.z)).toEqual([
+      [-1, -2],
+      [-5],
+    ]);
   });
 
-  it('skips a relief op whose source is missing and falls through', () => {
+  it('skips a relief op whose source is missing but keeps the resolvable ones', () => {
     const orphan = reliefOp({ sourceId: 1, enabled: true });
     const good = reliefOp({ sourceId: 2, enabled: true });
-    const surf = activeDeviationTarget([orphan, good], [heightgridSource(2, [-5])]);
-    expect(surf!.z).toEqual([-5]);
+    const targets = deviationTargets([orphan, good], [heightgridSource(2, [-5])]);
+    expect(targets.map((t) => t.z)).toEqual([[-5]]);
   });
 
-  it('returns null when there is no relief op at all', () => {
+  it('returns [] when there is no relief op at all', () => {
     const profile = buildOpEntry('profile', {
       nextId: 1,
       tools: [{ id: 1, kind: 'end_mill' } as unknown as OpDefaultsCtx['tools'][number]],
@@ -110,6 +118,6 @@ describe('activeDeviationTarget', () => {
       selectionIds: [],
       objectMeta: [],
     });
-    expect(activeDeviationTarget([profile], [heightgridSource(1, [-1])])).toBeNull();
+    expect(deviationTargets([profile], [heightgridSource(1, [-1])])).toEqual([]);
   });
 });

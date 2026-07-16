@@ -437,13 +437,7 @@ impl SurfaceField {
     /// are out of scope for a 3-axis relief verify).
     #[must_use]
     pub fn deviation_of(&self, field: &DexelField, surface_z0: f32, tol: f32) -> Vec<u8> {
-        let cols = field.cols as usize;
-        let rows = field.rows as usize;
-        let mut out = vec![Deviation::OnTarget as u8; cols * rows];
-        self.deviation_into(
-            field, surface_z0, tol, &mut out, 0, 0, field.cols, field.rows,
-        );
-        out
+        deviation_union_of(std::slice::from_ref(self), field, surface_z0, tol)
     }
 
     /// Reclassify only the half-open cell rectangle `[ix0, ix1) × [iy0, iy1)`
@@ -477,40 +471,114 @@ impl SurfaceField {
         ix1: u32,
         iy1: u32,
     ) {
-        let cols = field.cols as usize;
-        let rows = field.rows as usize;
-        assert_eq!(
-            out.len(),
-            cols * rows,
-            "deviation buffer must be field.cols * field.rows"
+        deviation_union_into(
+            std::slice::from_ref(self),
+            field,
+            surface_z0,
+            tol,
+            out,
+            ix0,
+            iy0,
+            ix1,
+            iy1,
         );
-        let tol = tol.max(0.0);
-        // Clamp the requested rectangle to the grid; bail on an empty/inverted one.
-        let ix0 = (ix0 as usize).min(cols);
-        let iy0 = (iy0 as usize).min(rows);
-        let ix1 = (ix1 as usize).min(cols);
-        let iy1 = (iy1 as usize).min(rows);
-        if ix0 >= ix1 || iy0 >= iy1 {
-            return;
-        }
-        let top = field.top();
-        for iy in iy0..iy1 {
-            let cy = field.origin.y + (iy as f64 + 0.5) * field.cell;
-            let row = iy * cols;
-            for ix in ix0..ix1 {
-                let cx = field.origin.x + (ix as f64 + 0.5) * field.cell;
-                // target_world lifts the target's stock-top-relative Z into the
-                // simulator's world frame so both sides share a datum.
-                let target_world = surface_z0 + self.sample(cx, cy);
-                let delta = top[row + ix] - target_world;
-                out[row + ix] = if delta > tol {
-                    Deviation::RestStock as u8
-                } else if delta < -tol {
-                    Deviation::Gouge as u8
-                } else {
-                    Deviation::OnTarget as u8
-                };
-            }
+    }
+}
+
+/// The full-grid convenience over [`deviation_union_into`]: classify `field`
+/// against the deepest-cut union of `surfaces` and return a fresh row-major
+/// `cols * rows` class buffer. See [`deviation_union_into`] for how multiple
+/// targets combine.
+#[must_use]
+pub fn deviation_union_of(
+    surfaces: &[SurfaceField],
+    field: &DexelField,
+    surface_z0: f32,
+    tol: f32,
+) -> Vec<u8> {
+    let cols = field.cols as usize;
+    let rows = field.rows as usize;
+    let mut out = vec![Deviation::OnTarget as u8; cols * rows];
+    deviation_union_into(
+        surfaces, field, surface_z0, tol, &mut out, 0, 0, field.cols, field.rows,
+    );
+    out
+}
+
+/// Classify a carved field against the union of several target surfaces —
+/// the multi-relief overlay ([`SurfaceField::deviation_of`] is the single
+/// surface case, implemented as a one-element union).
+///
+/// Relief ops carve CUMULATIVELY: after they all run, the intended surface at
+/// a cell is the DEEPEST (most-negative Z) target of every relief covering it,
+/// because material any op removes stays removed. So the combined target Z at
+/// each cell is the `min` of `surface.sample(cx, cy)` across `surfaces` — a
+/// cell outside a given surface's footprint samples as the stock top (0), so a
+/// relief only deepens the target where it actually reaches. The carved top is
+/// then classified once against that combined Z (gouge / rest-stock / on-target
+/// per [`SurfaceField::deviation_of`]); merging per-surface *classes* instead
+/// would misread a cell as gouged against a shallow target that a deeper one
+/// meant to cut anyway.
+///
+/// Only cells in the clamped half-open rectangle `[ix0, ix1) × [iy0, iy1)` are
+/// rewritten (the dirty-AABB path); the rest of `out` is left untouched. With
+/// no surfaces every sampled cell reads as the bare stock top. `out` must be
+/// `field.cols * field.rows` long and index-aligned with [`DexelField::top`].
+///
+/// # Panics
+///
+/// Panics if `out.len() != field.cols * field.rows`.
+pub fn deviation_union_into(
+    surfaces: &[SurfaceField],
+    field: &DexelField,
+    surface_z0: f32,
+    tol: f32,
+    out: &mut [u8],
+    ix0: u32,
+    iy0: u32,
+    ix1: u32,
+    iy1: u32,
+) {
+    let cols = field.cols as usize;
+    let rows = field.rows as usize;
+    assert_eq!(
+        out.len(),
+        cols * rows,
+        "deviation buffer must be field.cols * field.rows"
+    );
+    let tol = tol.max(0.0);
+    // Clamp the requested rectangle to the grid; bail on an empty/inverted one.
+    let ix0 = (ix0 as usize).min(cols);
+    let iy0 = (iy0 as usize).min(rows);
+    let ix1 = (ix1 as usize).min(cols);
+    let iy1 = (iy1 as usize).min(rows);
+    if ix0 >= ix1 || iy0 >= iy1 {
+        return;
+    }
+    let top = field.top();
+    for iy in iy0..iy1 {
+        let cy = field.origin.y + (iy as f64 + 0.5) * field.cell;
+        let row = iy * cols;
+        for ix in ix0..ix1 {
+            let cx = field.origin.x + (ix as f64 + 0.5) * field.cell;
+            // Deepest (min-Z) target across every relief covering this cell;
+            // the stock top when no surface reaches it.
+            let target = surfaces
+                .iter()
+                .map(|s| s.sample(cx, cy))
+                .reduce(f32::min)
+                .unwrap_or(SURFACE_TOP_Z);
+            // target_world lifts the target's stock-top-relative Z into the
+            // simulator's world frame so both sides share a datum.
+            let target_world = surface_z0 + target;
+            let delta = top[row + ix] - target_world;
+            out[row + ix] = if delta > tol {
+                Deviation::RestStock as u8
+            } else if delta < -tol {
+                Deviation::Gouge as u8
+            } else {
+                Deviation::OnTarget as u8
+            };
         }
     }
 }
@@ -1069,5 +1137,83 @@ mod tests {
         target.deviation_into(&field, field.top_z, 0.1, &mut buf, 1, 0, 1, 2);
         target.deviation_into(&field, field.top_z, 0.1, &mut buf, 0, 2, 2, 1);
         assert_eq!(buf, snapshot, "degenerate rects are no-ops");
+    }
+
+    // ---- deviation_union (multi-relief, deepest-cut-wins) --------------
+
+    /// A single-surface union is identical to `deviation_of` — the multi-relief
+    /// path is a strict generalization, not a different classifier.
+    #[test]
+    fn deviation_union_of_single_surface_matches_deviation_of() {
+        let mut field = DexelField::new(Point2::new(0.0, 0.0), 1.0, 3, 1, 0.0, -10.0);
+        let target = SurfaceField::new(Point2::new(0.0, 0.0), 1.0, 3, 1, vec![-2.0, -2.0, -2.0]);
+        field.lower_at(0, 0, -2.0);
+        field.lower_at(1, 0, -3.0);
+        assert_eq!(
+            deviation_union_of(std::slice::from_ref(&target), &field, field.top_z, 0.1),
+            target.deviation_of(&field, field.top_z, 0.1),
+        );
+    }
+
+    /// Two reliefs cutting the same footprint to different depths union to the
+    /// DEEPER target per cell (cumulative carving): a cut that gouges past the
+    /// shallow relief but stops above the deep one reads as rest stock, because
+    /// the deeper relief still wants more material gone there.
+    #[test]
+    fn deviation_union_takes_the_deepest_target_per_cell() {
+        // 2 columns, both covered by both reliefs.
+        let mut field = DexelField::new(Point2::new(0.0, 0.0), 1.0, 2, 1, 0.0, -10.0);
+        let shallow = SurfaceField::new(Point2::new(0.0, 0.0), 1.0, 2, 1, vec![-1.0, -1.0]);
+        let deep = SurfaceField::new(Point2::new(0.0, 0.0), 1.0, 2, 1, vec![-5.0, -5.0]);
+        // Col 0 carved to -3: past the shallow (-1) target but 2mm above the
+        // deep (-5) union target → rest stock (NOT a gouge).
+        field.lower_at(0, 0, -3.0);
+        // Col 1 carved to -6: 1mm below the deep union target → gouge.
+        field.lower_at(1, 0, -6.0);
+
+        let surfaces = [shallow.clone(), deep.clone()];
+        let dev = deviation_union_of(&surfaces, &field, field.top_z, 0.1);
+        assert_eq!(
+            dev,
+            vec![Deviation::RestStock as u8, Deviation::Gouge as u8],
+            "union classifies against the deepest (-5) target, not the shallow one"
+        );
+        // Order-independent: swapping the surfaces yields the same union.
+        let swapped = [deep, shallow];
+        assert_eq!(dev, deviation_union_of(&swapped, &field, field.top_z, 0.1));
+    }
+
+    /// Reliefs over disjoint footprints each govern only the cells they cover;
+    /// a cell outside a surface samples as the stock top (0), so it never drags
+    /// the union shallower than a relief that does reach it.
+    #[test]
+    fn deviation_union_respects_disjoint_footprints() {
+        // 3 columns; relief A covers col 0, relief B covers col 2.
+        let mut field = DexelField::new(Point2::new(0.0, 0.0), 1.0, 3, 1, 0.0, -10.0);
+        let a = SurfaceField::new(Point2::new(0.0, 0.0), 1.0, 1, 1, vec![-2.0]);
+        let b = SurfaceField::new(Point2::new(2.0, 0.0), 1.0, 1, 1, vec![-4.0]);
+        field.lower_at(0, 0, -2.0); // on A's target
+        field.lower_at(2, 0, -4.0); // on B's target
+                                    // col 1 uncut, covered by neither → stock top → on target
+        let dev = deviation_union_of(&[a, b], &field, field.top_z, 0.1);
+        assert_eq!(
+            dev,
+            vec![
+                Deviation::OnTarget as u8,
+                Deviation::OnTarget as u8,
+                Deviation::OnTarget as u8,
+            ],
+        );
+    }
+
+    /// No surfaces → everything reads against the bare stock top: uncut cells
+    /// are on-target, any carve is a gouge. (The overlay never calls this — it
+    /// clears the target instead — but the degenerate must not panic.)
+    #[test]
+    fn deviation_union_with_no_surfaces_is_stock_top() {
+        let mut field = DexelField::new(Point2::new(0.0, 0.0), 1.0, 2, 1, 0.0, -10.0);
+        field.lower_at(1, 0, -1.0);
+        let dev = deviation_union_of(&[], &field, field.top_z, 0.1);
+        assert_eq!(dev, vec![Deviation::OnTarget as u8, Deviation::Gouge as u8]);
     }
 }

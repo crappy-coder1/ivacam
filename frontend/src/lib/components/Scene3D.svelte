@@ -5,7 +5,7 @@
   import { project, playheadToSegment } from '../state/project.svelte';
   import { workspace } from '../state/workspace.svelte';
   import { HeightfieldDriver } from '../sim/driver';
-  import { activeDeviationTarget } from '../sim/deviation_target';
+  import { deviationTargets } from '../sim/deviation_target';
   import { pixelsPerCell } from '../scene3d/lod';
   import type { BuilderContext, CssColor } from '../scene3d/builder';
   import { StockBoxBuilder } from '../scene3d/stock_box';
@@ -894,10 +894,10 @@
     void project.data.operations;
     void project.data.reliefSources;
     if (!driver) return;
-    const target = on
-      ? activeDeviationTarget(project.data.operations, project.data.reliefSources)
-      : null;
-    driver.setDeviationTarget(target, tol);
+    const targets = on
+      ? deviationTargets(project.data.operations, project.data.reliefSources)
+      : [];
+    driver.setDeviationTarget(targets, tol);
   });
 
   async function ensureDriver(): Promise<void> {

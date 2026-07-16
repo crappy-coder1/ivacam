@@ -34,7 +34,7 @@
 use serde::Deserialize;
 use wasm_bindgen::prelude::*;
 
-use ivac_core::cam::surface::SurfaceField;
+use ivac_core::cam::surface::{deviation_union_into, deviation_union_of, SurfaceField};
 use ivac_core::gcode::preview::ToolpathSegment;
 use ivac_core::project::{Fixture, ToolEntry};
 use ivac_core::sim::dexel::{DexelField, DexelSnapshot};
@@ -117,11 +117,15 @@ pub struct Simulator {
     deviation_buf: Vec<u8>,
 }
 
-/// The cached deviation-overlay target: the surface plus the world-Z datum
-/// its `z = 0` maps to and the on-target tolerance band (mm).
+/// The cached deviation-overlay target: the relief surface(s) plus the
+/// world-Z datum their `z = 0` maps to and the on-target tolerance band (mm).
+/// `surfaces` holds every enabled relief op's target; a carved cell is
+/// classified against their deepest-cut union (see
+/// [`ivac_core::cam::surface::deviation_union_into`]), so a project milling
+/// several distinct reliefs verifies all of them at once.
 #[derive(Debug)]
 struct DeviationTarget {
-    surface: SurfaceField,
+    surfaces: Vec<SurfaceField>,
     surface_z0: f32,
     tol: f32,
 }
@@ -524,24 +528,30 @@ impl Simulator {
         self.field.top_ptr()
     }
 
-    /// Cache a target relief surface for the red/green deviation overlay — the
-    /// correctness view GrblGru can't offer (it never carves). `surface` is a
-    /// serde-serialized [`SurfaceField`] (`snake_case` fields, same shape the
-    /// STL rasterizer returns); `surface_z0` is the world Z its `z = 0` datum
-    /// maps to (pass `top_z()` for a relief job); `tol` is the on-target band
-    /// half-width in mm. Caching it once (instead of passing it every frame)
-    /// keeps per-frame [`Simulator::deviation`] cheap for large targets.
-    /// Replaces any previous target.
+    /// Cache the target relief surface(s) for the red/green deviation overlay —
+    /// the correctness view GrblGru can't offer (it never carves). `surfaces`
+    /// is a serde-serialized array of [`SurfaceField`] (`snake_case` fields,
+    /// same shape the STL rasterizer returns) — one per enabled relief op, so a
+    /// multi-relief project verifies all of them via their deepest-cut union;
+    /// `surface_z0` is the world Z their `z = 0` datum maps to (pass `top_z()`
+    /// for a relief job); `tol` is the on-target band half-width in mm. An
+    /// empty array clears the overlay (same as `clear_deviation_target`).
+    /// Caching once (instead of passing every frame) keeps the per-frame
+    /// recompute cheap for large targets. Replaces any previous target.
     pub fn set_deviation_target(
         &mut self,
-        surface: JsValue,
+        surfaces: JsValue,
         surface_z0: f32,
         tol: f32,
     ) -> Result<(), JsValue> {
-        let surface: SurfaceField =
-            serde_wasm_bindgen::from_value(surface).map_err(into_js_error)?;
+        let surfaces: Vec<SurfaceField> =
+            serde_wasm_bindgen::from_value(surfaces).map_err(into_js_error)?;
+        if surfaces.is_empty() {
+            self.clear_deviation_target();
+            return Ok(());
+        }
         self.deviation_target = Some(DeviationTarget {
-            surface,
+            surfaces,
             surface_z0,
             tol,
         });
@@ -576,7 +586,7 @@ impl Simulator {
     #[must_use]
     pub fn deviation(&self) -> Vec<u8> {
         match &self.deviation_target {
-            Some(t) => t.surface.deviation_of(&self.field, t.surface_z0, t.tol),
+            Some(t) => deviation_union_of(&t.surfaces, &self.field, t.surface_z0, t.tol),
             None => Vec::new(),
         }
     }
@@ -595,7 +605,8 @@ impl Simulator {
         let n = (self.field.cols as usize) * (self.field.rows as usize);
         self.deviation_buf.clear();
         self.deviation_buf.resize(n, 0);
-        t.surface.deviation_into(
+        deviation_union_into(
+            &t.surfaces,
             &self.field,
             t.surface_z0,
             t.tol,
@@ -626,7 +637,8 @@ impl Simulator {
         let Some(t) = self.deviation_target.as_ref() else {
             return;
         };
-        t.surface.deviation_into(
+        deviation_union_into(
+            &t.surfaces,
             &self.field,
             t.surface_z0,
             t.tol,
@@ -799,17 +811,18 @@ impl Simulator {
         &self.field
     }
 
-    /// Test-only: cache a deviation target without the `JsValue` round-trip
-    /// (`set_deviation_target` takes a `JsValue` the unit tests can't build).
+    /// Test-only: cache deviation target surface(s) without the `JsValue`
+    /// round-trip (`set_deviation_target` takes a `JsValue` the unit tests
+    /// can't build).
     #[cfg(test)]
     pub(crate) fn set_deviation_target_inner(
         &mut self,
-        surface: SurfaceField,
+        surfaces: Vec<SurfaceField>,
         surface_z0: f32,
         tol: f32,
     ) {
         self.deviation_target = Some(DeviationTarget {
-            surface,
+            surfaces,
             surface_z0,
             tol,
         });
@@ -1365,7 +1378,7 @@ mod tests {
             rows,
             vec![-1.0; (cols * rows) as usize],
         );
-        sim.set_deviation_target_inner(target, sim.top_z(), 0.25);
+        sim.set_deviation_target_inner(vec![target], sim.top_z(), 0.25);
         assert!(sim.has_deviation_target());
 
         // 4mm endmill plunged 2mm deep at the grid center.
@@ -1411,7 +1424,7 @@ mod tests {
         let (cols, rows) = (sim.cols(), sim.rows());
         let n = (cols * rows) as usize;
         let target = SurfaceField::new(Point2::new(0.0, 0.0), 1.0, cols, rows, vec![-1.0; n]);
-        sim.set_deviation_target_inner(target, sim.top_z(), 0.25);
+        sim.set_deviation_target_inner(vec![target], sim.top_z(), 0.25);
         // set_deviation_target invalidates the buffer until the next recompute.
         assert_eq!(sim.deviation_len(), 0);
 
@@ -1439,6 +1452,53 @@ mod tests {
         // (defensive): shrink the buffer to force the mismatch branch.
         sim.deviation_recompute_in(0, 0, 1, 1);
         assert_eq!(sim.deviation_len(), (cols * rows));
+    }
+
+    /// Multi-relief overlay: two cached targets combine deepest-cut-wins, so a
+    /// carve that overshoots the shallow relief but not the deep one reads as
+    /// rest stock, not a gouge — the whole point of item 3.
+    #[test]
+    fn deviation_unions_multiple_targets_deepest_wins() {
+        use ivac_core::cam::surface::{Deviation, SurfaceField};
+        use ivac_core::geometry::Point2;
+
+        let mut sim = new_sim(0.0, 0.0, 4.0, 4.0, 1.0, 0.0);
+        let (cols, rows) = (sim.cols(), sim.rows());
+        let n = (cols * rows) as usize;
+        // Shallow relief wants -1 everywhere; deep relief wants -5 everywhere.
+        let shallow = SurfaceField::new(Point2::new(0.0, 0.0), 1.0, cols, rows, vec![-1.0; n]);
+        let deep = SurfaceField::new(Point2::new(0.0, 0.0), 1.0, cols, rows, vec![-5.0; n]);
+        sim.set_deviation_target_inner(vec![shallow, deep], sim.top_z(), 0.25);
+
+        // Plunge 3mm deep at the center: past the shallow (-1) target but 2mm
+        // shy of the deep (-5) union target.
+        let segs = vec![plunge(2.0, 2.0, 0.0, -3.0)];
+        let _ = sim.advance_inner(&segs, &endmill(4.0), 0, 1);
+
+        let dev = sim.deviation();
+        assert_eq!(
+            dev[(2 * cols + 2) as usize],
+            Deviation::RestStock as u8,
+            "3mm cut is rest stock against the -5 union target, not a gouge"
+        );
+        // Against the shallow relief ALONE the same cell would be a gouge —
+        // proving the union (not per-surface class merge) drives the verdict.
+        sim.set_deviation_target_inner(
+            vec![SurfaceField::new(
+                Point2::new(0.0, 0.0),
+                1.0,
+                cols,
+                rows,
+                vec![-1.0; n],
+            )],
+            sim.top_z(),
+            0.25,
+        );
+        assert_eq!(
+            sim.deviation()[(2 * cols + 2) as usize],
+            Deviation::Gouge as u8,
+            "shallow-only target reads the same cut as a gouge"
+        );
     }
 
     /// The headline flip deliverable: plunging a T-slot (form) tool through an

@@ -105,12 +105,13 @@ interface SimulatorWasm {
   /// mesh drops to `stock_bottom_z` at every perimeter sample so the result
   /// is watertight. (Undercut voids below the top aren't meshed here yet.)
   export_stl(stock_bottom_z: number): Uint8Array;
-  /// Cache a target relief surface for the red/green deviation overlay: a
-  /// serialized SurfaceField, the world Z its `z = 0` datum maps to (the
-  /// stock top), and the on-target tolerance band (mm). Cached once so the
-  /// per-frame recompute doesn't re-cross the WASM boundary with the
-  /// (potentially large) target grid.
-  set_deviation_target(surface: unknown, surface_z0: number, tol: number): void;
+  /// Cache the target relief surface(s) for the red/green deviation overlay:
+  /// an array of serialized SurfaceField (one per enabled relief op, unioned
+  /// deepest-cut-wins), the world Z their `z = 0` datum maps to (the stock
+  /// top), and the on-target tolerance band (mm). An empty array clears the
+  /// overlay. Cached once so the per-frame recompute doesn't re-cross the WASM
+  /// boundary with the (potentially large) target grids.
+  set_deviation_target(surfaces: unknown, surface_z0: number, tol: number): void;
   /// Drop the cached deviation target (overlay turned off).
   clear_deviation_target(): void;
   /// Whether a deviation target is cached.
@@ -316,11 +317,12 @@ export class HeightfieldDriver {
   /// Cached buffer view; valid until the next advance() that may grow
   /// WASM linear memory. Re-taken after every advance.
   private heightView: Float32Array | null = null;
-  /// Target surface for the red/green deviation overlay, or `null` when the
+  /// Target surface(s) for the red/green deviation overlay — one per enabled
+  /// relief op, unioned deepest-cut-wins on the sim side — or `[]` when the
   /// overlay is off. Cached on the WASM sim (via `set_deviation_target`) at
   /// build() and whenever this changes; the terrain mesh is repainted from
   /// the sim's persistent class buffer after every carve while it's set.
-  private deviationTarget: SurfaceField | null = null;
+  private deviationTargets: SurfaceField[] = [];
   /// On-target tolerance band half-width (mm) for the overlay.
   private deviationTolMm = 0.05;
   /// Zero-copy view of the sim's persistent deviation-class buffer
@@ -527,8 +529,8 @@ export class HeightfieldDriver {
     this.refreshHeightView();
     this.refreshUndercutMesh();
     // Re-arm the deviation overlay on the fresh sim/mesh if it's active.
-    if (this.deviationTarget) {
-      this.sim.set_deviation_target(this.deviationTarget, this.sim.top_z(), this.deviationTolMm);
+    if (this.deviationTargets.length > 0) {
+      this.sim.set_deviation_target(this.deviationTargets, this.sim.top_z(), this.deviationTolMm);
       this.applyDeviation();
     }
   }
@@ -816,7 +818,7 @@ export class HeightfieldDriver {
       // Repaint the deviation overlay over the same dirty region (full on a
       // reset-driven replay, matching the mesh re-upload above). No-op when
       // the overlay is off.
-      if (this.deviationTarget) {
+      if (this.deviationTargets.length > 0) {
         this.applyDeviation(
           a && !plan.reset ? { ix0: a[0], iy0: a[1], ix1: a[2], iy1: a[3] } : undefined,
         );
@@ -866,18 +868,18 @@ export class HeightfieldDriver {
   }
 
   /// Turn the target-surface deviation overlay on or off. Pass the target
-  /// `SurfaceField` (from `activeDeviationTarget`) and the on-target
-  /// tolerance to enable it; pass `null` to clear it and restore the stock
-  /// color. The target is cached on the WASM sim so per-carve refreshes stay
-  /// cheap, then the whole terrain is repainted once from the current carve
-  /// state. Safe to call before build() — the pending target is applied when
-  /// the sim/mesh come up.
-  setDeviationTarget(target: SurfaceField | null, toleranceMm: number) {
-    this.deviationTarget = target;
+  /// `SurfaceField`s (from `deviationTargets` — one per enabled relief op,
+  /// unioned deepest-cut-wins) and the on-target tolerance to enable it; pass
+  /// `[]` to clear it and restore the stock color. The targets are cached on
+  /// the WASM sim so per-carve refreshes stay cheap, then the whole terrain is
+  /// repainted once from the current carve state. Safe to call before build()
+  /// — the pending targets are applied when the sim/mesh come up.
+  setDeviationTarget(targets: SurfaceField[], toleranceMm: number) {
+    this.deviationTargets = targets;
     this.deviationTolMm = toleranceMm;
     if (!this.sim || !this.mesh) return;
-    if (target) {
-      this.sim.set_deviation_target(target, this.sim.top_z(), toleranceMm);
+    if (targets.length > 0) {
+      this.sim.set_deviation_target(targets, this.sim.top_z(), toleranceMm);
       this.applyDeviation();
     } else {
       this.sim.clear_deviation_target();
@@ -895,7 +897,7 @@ export class HeightfieldDriver {
   /// for a full repaint (build / reset / target change). A no-op when the
   /// overlay is off.
   private applyDeviation(aabb?: { ix0: number; iy0: number; ix1: number; iy1: number }) {
-    if (!this.deviationTarget || !this.sim || !this.mesh || !this.wasm) return;
+    if (this.deviationTargets.length === 0 || !this.sim || !this.mesh || !this.wasm) return;
     if (aabb) {
       this.sim.deviation_recompute_in(aabb.ix0, aabb.iy0, aabb.ix1, aabb.iy1);
     } else {

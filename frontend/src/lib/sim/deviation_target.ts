@@ -40,21 +40,21 @@ export function reliefTargetSurface(
   return { origin: { x: origin.x, y: origin.y }, cell, cols, rows, z };
 }
 
-/// Pick the deviation-overlay target for a project: the first ENABLED
-/// `relief_mill` op in document order whose source resolves. Returns `null`
-/// when there is no such op (the overlay has nothing to compare against).
+/// Collect the deviation-overlay targets for a project: the surface of EVERY
+/// enabled `relief_mill` op whose source resolves, in document order. Returns
+/// `[]` when there is no such op (the overlay has nothing to compare against).
 ///
-/// v1 uses a single relief op — a project milling several distinct reliefs
-/// only verifies the first; unioning multiple targets is a follow-up.
-export function activeDeviationTarget(
-  ops: OpEntry[],
-  sources: ReliefSource[],
-): SurfaceField | null {
+/// Multiple targets are unioned deepest-cut-wins on the sim side (relief ops
+/// carve cumulatively, so the intended surface at a cell is the deepest target
+/// covering it) — a project milling several distinct reliefs verifies all of
+/// them at once, not just the first.
+export function deviationTargets(ops: OpEntry[], sources: ReliefSource[]): SurfaceField[] {
+  const targets: SurfaceField[] = [];
   for (const op of ops) {
     if (op.kind === 'relief_mill' && op.enabled) {
       const surf = reliefTargetSurface(op, sources);
-      if (surf) return surf;
+      if (surf) targets.push(surf);
     }
   }
-  return null;
+  return targets;
 }
