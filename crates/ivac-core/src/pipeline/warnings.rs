@@ -1241,6 +1241,7 @@ mod tests {
             kind,
             gcode_line: line,
             op_id: 0,
+            arc: None,
         };
         let toolpath = vec![
             // In-bounds cut — fine.
@@ -1289,6 +1290,7 @@ mod tests {
             kind: MoveKind::Cut,
             gcode_line: 5,
             op_id: 0,
+            arc: None,
         }];
         let mut warnings = Vec::new();
         push_work_area_warning(
@@ -1322,6 +1324,7 @@ mod tests {
             kind: MoveKind::Cut,
             gcode_line: 7,
             op_id: 0,
+            arc: None,
         }];
         let mut w2 = Vec::new();
         push_work_area_warning(&wild, &zeroed, &mut w2);
@@ -1360,6 +1363,7 @@ mod tests {
             kind,
             gcode_line: line,
             op_id: 0,
+            arc: None,
         };
         let toolpath = vec![
             // In-bounds cut — fine.
@@ -1418,6 +1422,7 @@ mod tests {
             kind,
             gcode_line: line,
             op_id: 0,
+            arc: None,
         };
         // z=+8 is inside [0,10]; z=-5 is below the shifted bottom (0).
         let toolpath = vec![seg(8.0, MoveKind::Cut, 10), seg(-5.0, MoveKind::Plunge, 11)];
@@ -1455,6 +1460,7 @@ mod tests {
             kind: MoveKind::Cut,
             gcode_line: 7,
             op_id: 0,
+            arc: None,
         }];
         // No stock model → skipped even for a wild cut.
         let mut w_none = Vec::new();
@@ -1488,6 +1494,7 @@ mod tests {
             kind: MoveKind::Cut,
             gcode_line: 5,
             op_id: 0,
+            arc: None,
         }];
         let stock = StockConfig {
             origin: [0.0, 0.0],

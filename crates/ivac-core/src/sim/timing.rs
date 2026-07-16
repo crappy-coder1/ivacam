@@ -708,6 +708,7 @@ mod tests {
             kind: MoveKind::Cut,
             gcode_line: 0,
             op_id: 0,
+            arc: None,
         }
     }
 
@@ -913,6 +914,7 @@ mod tests {
             kind: MoveKind::Plunge,
             gcode_line: 0,
             op_id: 0,
+            arc: None,
         }];
         let m = MachineConfig {
             accel: Some(AxisLimits {
@@ -957,6 +959,7 @@ mod tests {
                 kind: MoveKind::Plunge,
                 gcode_line: 0,
                 op_id: 7,
+                arc: None,
             },
             ToolpathSegment {
                 from: Pose3 {
@@ -972,6 +975,7 @@ mod tests {
                 kind: MoveKind::Cut,
                 gcode_line: 0,
                 op_id: 7,
+                arc: None,
             },
         ];
         // The post wrote ONE F1200 line — modal F = 1200 on both.

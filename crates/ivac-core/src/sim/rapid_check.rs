@@ -242,6 +242,7 @@ mod tests {
             kind: MoveKind::Rapid,
             gcode_line: 0,
             op_id: 0,
+            arc: None,
         }
     }
 
@@ -357,6 +358,7 @@ mod tests {
                 kind: MoveKind::Cut,
                 gcode_line: 0,
                 op_id: 0,
+                arc: None,
             },
             ToolpathSegment {
                 from: pose(15.0, 20.0, -2.0),
@@ -364,6 +366,7 @@ mod tests {
                 kind: MoveKind::Rapid,
                 gcode_line: 0,
                 op_id: 0,
+                arc: None,
             },
             ToolpathSegment {
                 from: pose(20.0, 30.0, 0.0),
@@ -371,6 +374,7 @@ mod tests {
                 kind: MoveKind::Plunge,
                 gcode_line: 0,
                 op_id: 0,
+                arc: None,
             },
         ];
         let touched = sweep_range(

@@ -72,6 +72,7 @@ fn tessellate(from: Pose3, to: Pose3, cx: f64, cy: f64, step_deg: f64) -> Vec<To
             kind: MoveKind::Cut,
             gcode_line: 0,
             op_id: 0,
+            arc: None,
         });
         prev = next;
     }
@@ -184,5 +185,67 @@ fn analytic_arc_matches_dense_chords_and_removes_the_tessellation_step() {
         max_ad < 0.25 * max_cd,
         "analytic ({max_ad:.4} mm) is not decisively closer to truth than the \
          coarse tessellation ({max_cd:.4} mm)"
+    );
+}
+
+#[test]
+fn live_interpret_then_sweep_carves_the_analytic_arc() {
+    // The full live wiring: real G3 gcode → `interpret` (tessellates + tags
+    // each chord with its parent arc) → `sweep_range` (dispatches each arc
+    // chord to the analytic sub-arc carve). The result must match the direct
+    // analytic arc carve — i.e. the live sim shows the arc, not the chords.
+    let g = "G21\nG0 X8 Y0\nG3 X0 Y8 I-8 J0 F500\n"; // quarter circle, R=8, CCW
+    let toolpath = ivac_core::gcode::preview::interpret(g);
+    // Guard: the arc must actually reach the sim as arc-tagged chords, else
+    // this would silently exercise the straight-chord path.
+    let n_arc = toolpath.iter().filter(|s| s.arc.is_some()).count();
+    assert!(n_arc >= 40, "expected many arc-tagged chords, got {n_arc}");
+
+    let r_tool = 2.5f32;
+    let profile = ToolProfile::BallNose { r: r_tool };
+    let origin = -3.5;
+    let span = 14.0;
+    let cell = 0.05;
+    let top_z = r_tool;
+
+    // Live path.
+    let mut live = fresh(origin, span, cell, top_z);
+    let mut diag = SimDiagnostics::default();
+    sweep_range(
+        &mut live,
+        &toolpath,
+        0,
+        toolpath.len(),
+        &profile,
+        &[],
+        None,
+        &mut diag,
+    );
+
+    // Direct analytic reference over the same arc geometry.
+    let from = Pose3 {
+        x: 8.0,
+        y: 0.0,
+        z: 0.0,
+    };
+    let to = Pose3 {
+        x: 0.0,
+        y: 8.0,
+        z: 0.0,
+    };
+    let arc = ArcXY {
+        cx: 0.0,
+        cy: 0.0,
+        ccw: true,
+    };
+    let mut reference = fresh(origin, span, cell, top_z);
+    let ref_touched = sweep_arc_segment(&mut reference, &from, &to, arc, &profile);
+    assert!(ref_touched > 0, "reference arc carved nothing");
+
+    let d = max_abs_diff(&live, &reference);
+    assert!(
+        d < (0.5 * cell) as f32,
+        "live interpret→sweep deviates from the analytic arc by {d:.4} mm \
+         (> half a {cell} mm cell)"
     );
 }

@@ -341,6 +341,7 @@ mod tests {
             kind: MoveKind::Cut,
             gcode_line: 0,
             op_id: 0,
+            arc: None,
         }
     }
 

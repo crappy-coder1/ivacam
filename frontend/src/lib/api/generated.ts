@@ -184,6 +184,25 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * @description Planar circular-arc descriptor attached to the chord segments a `G2`/`G3` tessellates into. `(cx, cy)` is the arc center in world XY; the radius is implied by the segment's `from` point (`R = |from − center|`). `ccw` is the sweep direction (G3 = `true`, G2 = `false`).
+         *
+         *     Every chord of one tessellated arc carries the SAME descriptor. The dense chords are kept so the wireframe renderer, envelope scans, and the interactive per-segment sim keep their existing geometry and indexing; the descriptor lets the simulator carve each chord as its exact analytic sub-arc (via `sim::sweep`) instead of a straight footprint, so the union is the true swept-arc tube — a scallop with no tessellation step even below the chord error (bd ivac-58nl.4).
+         */
+        ArcXY: {
+            /** @description Sweep direction: G3 (counter-clockwise) = `true`, G2 (clockwise) = `false`. */
+            ccw: boolean;
+            /**
+             * Format: double
+             * @description Arc center X (world mm).
+             */
+            cx: number;
+            /**
+             * Format: double
+             * @description Arc center Y (world mm).
+             */
+            cy: number;
+        };
         AutoFix: {
             /** @enum {string} */
             kind: "assign_tool";
@@ -2393,6 +2412,8 @@ export interface components {
         /** @enum {string} */
         ToolOffset: "none" | "outside" | "inside" | "on";
         ToolpathSegment: {
+            /** @description Present only on the chord segments of a tessellated `G2`/`G3` arc, carrying that arc's center + direction so the simulator can carve the analytic sub-arc footprint instead of the straight chord. `None` for every straight move. Omitted from the wire form when absent. */
+            arc?: components["schemas"]["ArcXY"] | null;
             from: components["schemas"]["Pose3"];
             /**
              * Format: uint32

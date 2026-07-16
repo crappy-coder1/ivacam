@@ -972,6 +972,7 @@ mod tests {
             kind: MoveKind::Plunge,
             gcode_line: 0,
             op_id: 0,
+            arc: None,
         }
     }
 
@@ -1050,6 +1051,7 @@ mod tests {
             kind: MoveKind::Rapid,
             gcode_line: 0,
             op_id: 0,
+            arc: None,
         }];
         let aabb = sim.advance_inner(&rapid, &endmill(2.0), 0, 1);
         assert!(
@@ -1110,6 +1112,7 @@ mod tests {
             kind: MoveKind::Cut,
             gcode_line: 0,
             op_id: 0,
+            arc: None,
         };
         let segs = vec![cut];
         let tool = endmill(2.0);
@@ -1276,6 +1279,7 @@ mod tests {
                 kind: MoveKind::Rapid,
                 gcode_line: 0,
                 op_id: 0,
+                arc: None,
             },
         ];
         let tool = endmill(4.0);
@@ -1339,6 +1343,7 @@ mod tests {
             kind: MoveKind::Rapid,
             gcode_line: 0,
             op_id: 0,
+            arc: None,
         };
         let segs = vec![rapid];
         let tool = endmill(2.0);

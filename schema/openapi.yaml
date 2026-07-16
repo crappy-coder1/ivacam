@@ -208,6 +208,28 @@ paths:
           $ref: '#/components/responses/BadRequest'
 components:
   schemas:
+    ArcXY:
+      description: |-
+        Planar circular-arc descriptor attached to the chord segments a `G2`/`G3` tessellates into. `(cx, cy)` is the arc center in world XY; the radius is implied by the segment's `from` point (`R = |from − center|`). `ccw` is the sweep direction (G3 = `true`, G2 = `false`).
+
+        Every chord of one tessellated arc carries the SAME descriptor. The dense chords are kept so the wireframe renderer, envelope scans, and the interactive per-segment sim keep their existing geometry and indexing; the descriptor lets the simulator carve each chord as its exact analytic sub-arc (via `sim::sweep`) instead of a straight footprint, so the union is the true swept-arc tube — a scallop with no tessellation step even below the chord error (bd ivac-58nl.4).
+      properties:
+        ccw:
+          description: 'Sweep direction: G3 (counter-clockwise) = `true`, G2 (clockwise) = `false`.'
+          type: boolean
+        cx:
+          description: Arc center X (world mm).
+          format: double
+          type: number
+        cy:
+          description: Arc center Y (world mm).
+          format: double
+          type: number
+      required:
+      - ccw
+      - cx
+      - cy
+      type: object
     AutoFix:
       oneOf:
       - properties:
@@ -3919,6 +3941,11 @@ components:
       type: string
     ToolpathSegment:
       properties:
+        arc:
+          anyOf:
+          - $ref: '#/components/schemas/ArcXY'
+          - type: 'null'
+          description: Present only on the chord segments of a tessellated `G2`/`G3` arc, carrying that arc's center + direction so the simulator can carve the analytic sub-arc footprint instead of the straight chord. `None` for every straight move. Omitted from the wire form when absent.
         from:
           $ref: '#/components/schemas/Pose3'
         gcode_line:

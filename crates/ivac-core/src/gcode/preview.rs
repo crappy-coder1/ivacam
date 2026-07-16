@@ -39,6 +39,29 @@ pub enum MoveKind {
     Arc,
 }
 
+/// Planar circular-arc descriptor attached to the chord segments a `G2`/`G3`
+/// tessellates into. `(cx, cy)` is the arc center in world XY; the radius is
+/// implied by the segment's `from` point (`R = |from − center|`). `ccw` is the
+/// sweep direction (G3 = `true`, G2 = `false`).
+///
+/// Every chord of one tessellated arc carries the SAME descriptor. The dense
+/// chords are kept so the wireframe renderer, envelope scans, and the
+/// interactive per-segment sim keep their existing geometry and indexing; the
+/// descriptor lets the simulator carve each chord as its exact analytic
+/// sub-arc (via `sim::sweep`) instead of a straight footprint, so the union is
+/// the true swept-arc tube — a scallop with no tessellation step even below
+/// the chord error (bd ivac-58nl.4).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ArcXY {
+    /// Arc center X (world mm).
+    pub cx: f64,
+    /// Arc center Y (world mm).
+    pub cy: f64,
+    /// Sweep direction: G3 (counter-clockwise) = `true`, G2 (clockwise) =
+    /// `false`.
+    pub ccw: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ToolpathSegment {
     pub from: Pose3,
@@ -51,6 +74,12 @@ pub struct ToolpathSegment {
     /// Op id from the per-op emitter. 0 = legacy / unstamped.
     #[serde(default)]
     pub op_id: u32,
+    /// Present only on the chord segments of a tessellated `G2`/`G3` arc,
+    /// carrying that arc's center + direction so the simulator can carve the
+    /// analytic sub-arc footprint instead of the straight chord. `None` for
+    /// every straight move. Omitted from the wire form when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arc: Option<ArcXY>,
 }
 
 /// Lookup table the frontend uses to wire the gcode text panel to the 3D
@@ -266,6 +295,7 @@ pub fn interpret_with_index(gcode: &str) -> (Vec<ToolpathSegment>, GcodeIndex) {
                     kind,
                     gcode_line: line_no,
                     op_id: active_op,
+                    arc: None,
                 });
                 let last = lines_to_segment.len() - 1;
                 if lines_to_segment[last] == NO_SEGMENT {
@@ -342,6 +372,9 @@ pub fn interpret_with_index(gcode: &str) -> (Vec<ToolpathSegment>, GcodeIndex) {
                     kind,
                     gcode_line: line_no,
                     op_id: active_op,
+                    // R-form we couldn't resolve to a center — fall back to a
+                    // straight chord (no analytic arc).
+                    arc: None,
                 });
                 let last = lines_to_segment.len() - 1;
                 lines_to_segment[last] = seg_idx;
@@ -373,14 +406,15 @@ pub fn interpret_with_index(gcode: &str) -> (Vec<ToolpathSegment>, GcodeIndex) {
                     sweep -= TAU;
                 }
             }
-            // ~2° per chord — chord error r·(1-cos(1°)) ≈ 0.00015·r,
-            // i.e. <0.0015 mm error on a 10 mm arc. The previous 10°
-            // setting left visible scallop "teeth" in ball-nose
-            // finishing-pass heightmaps (0.04 mm on a 10
-            // mm arc). 2° is fine enough to vanish into normal sim
-            // cell_size choice yet only ~5× the chord count of 10°.
-            // With a 4-chord minimum a quarter-circle gets at least
-            // max(45, 4) = 45 chords.
+            // ~2° per chord. This density now only bounds the RENDER (the
+            // wireframe polyline) and the endpoint-sampled envelope scans —
+            // the SIM no longer depends on it: each chord is tagged with its
+            // parent arc (`ArcXY`) below, so `sim::sweep` carves the exact
+            // analytic sub-arc and the union is the true arc tube regardless
+            // of chord count (bd ivac-58nl.4). 2° keeps the wireframe smooth
+            // and the envelope scans tight; the previous 10° setting left
+            // visible polyline "teeth". With a 4-chord minimum a
+            // quarter-circle still gets at least max(45, 4) = 45 chords.
             let n = (sweep.abs() / (2f64.to_radians())).ceil().max(4.0) as usize;
             let dtheta = sweep / (n as f64);
             let dz = to.z - from.z;
@@ -406,6 +440,13 @@ pub fn interpret_with_index(gcode: &str) -> (Vec<ToolpathSegment>, GcodeIndex) {
                     kind: MoveKind::Arc,
                     gcode_line: line_no,
                     op_id: active_op,
+                    // Tag every chord of this arc with the shared center +
+                    // direction so the sim carves the analytic sub-arc.
+                    arc: Some(ArcXY {
+                        cx,
+                        cy,
+                        ccw: active_code == 3,
+                    }),
                 });
                 segments_to_line.push(line_no);
                 prev = chord_to;
@@ -424,6 +465,7 @@ pub fn interpret_with_index(gcode: &str) -> (Vec<ToolpathSegment>, GcodeIndex) {
             kind,
             gcode_line: line_no,
             op_id: active_op,
+            arc: None,
         });
         // Last entry placeholder is for *this* line — overwrite it.
         let last = lines_to_segment.len() - 1;
@@ -492,6 +534,7 @@ fn strip_comment(line: &str) -> String {
 /// a same-file edit; `crate::schema::components_schemas` composes these.
 pub(crate) fn register_schemas(map: &mut crate::schema::SchemaMap) {
     crate::schema::insert::<ToolpathSegment>(map, "ToolpathSegment");
+    crate::schema::insert::<ArcXY>(map, "ArcXY");
 }
 
 #[cfg(test)]
@@ -796,5 +839,41 @@ mod tests {
         // Lines without a segment are NO_SEGMENT.
         assert_eq!(idx.lines_to_segment[0], super::NO_SEGMENT);
         assert_eq!(idx.lines_to_segment[1], super::NO_SEGMENT);
+    }
+
+    /// Every chord a `G2`/`G3` tessellates into carries its parent arc's
+    /// center + direction (bd ivac-58nl.4), so the simulator can carve the
+    /// analytic sub-arc; straight moves carry no descriptor.
+    #[test]
+    fn arc_chords_carry_the_parent_arc_descriptor() {
+        // G3 (CCW) quarter circle about the origin: from (10,0) to (0,10),
+        // I/J center offset (-10, 0) ⇒ center (0, 0).
+        let g = "G21\nG0 X10 Y0\nG3 X0 Y10 I-10 J0 F500\n";
+        let segs = interpret(g);
+        let arcs: Vec<&ToolpathSegment> = segs
+            .iter()
+            .filter(|s| matches!(s.kind, MoveKind::Arc))
+            .collect();
+        assert!(
+            arcs.len() >= 4,
+            "a quarter arc should tessellate into many chords, got {}",
+            arcs.len()
+        );
+        for s in &arcs {
+            let a = s.arc.expect("every arc chord must carry its parent arc");
+            assert!(
+                a.cx.abs() < 1e-9 && a.cy.abs() < 1e-9,
+                "arc center should be the origin, got ({}, {})",
+                a.cx,
+                a.cy
+            );
+            assert!(a.ccw, "G3 is counter-clockwise");
+        }
+        // The opening rapid is a straight move — no arc descriptor.
+        let rapid = segs
+            .iter()
+            .find(|s| matches!(s.kind, MoveKind::Rapid))
+            .expect("the G0 emits a rapid");
+        assert!(rapid.arc.is_none(), "a straight move carries no arc");
     }
 }

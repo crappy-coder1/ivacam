@@ -2,20 +2,22 @@
 //! the stock footprint and tool Z-profiles describe what radius of the
 //! cutter surface reaches how far down at a given radial offset.
 //!
-//! # Arc chord-error floor
+//! # Arcs: analytic swept-arc footprint (no chord-error floor)
 //!
-//! The sim sees arcs as pre-tessellated chord [`gcode::preview::ToolpathSegment`]s.
-//! `preview::interpret_with_index` walks G2/G3 at ~2° per chord, which gives
-//! a chord error of `r · (1 − cos(1°)) ≈ 0.00015 · r` — well below the
-//! finishing-pass surface tolerances on hobby CNCs (sub-µm on a 10 mm
-//! arc). For finishing-pass scallop inspection on heightmaps, choose a
-//! `cell_size` no smaller than this chord error or the visible scallop
-//! becomes a sim artifact rather than a real machining outcome.
+//! `preview::interpret_with_index` still tessellates each G2/G3 into ~2°
+//! chord [`gcode::preview::ToolpathSegment`]s (the wireframe renderer,
+//! envelope scans, and the interactive per-segment sim all rely on that dense
+//! stream and its indexing), but every arc chord now carries its parent arc's
+//! center + direction in [`gcode::preview::ArcXY`]. The sweep loop
+//! ([`sweep::sweep_segment`] and its dexel / partial siblings) dispatches an
+//! arc-tagged chord to the analytic sub-arc footprint
+//! ([`sweep::for_each_swept_cell_arc_windowed`]) instead of the straight
+//! chord, so the union of a G2/G3's chords is the exact swept-arc tube.
 //!
-//! The arc tessellation step is `~2°` in [`crate::gcode::preview`];
-//! tighter floors require the preview to emit `Arc` primitives rather
-//! than chord [`gcode::preview::ToolpathSegment`]s, which the sim's
-//! sweep loop doesn't model today.
+//! The upshot: the old chord-error floor `r · (1 − cos(1°))` is gone from the
+//! carve — a finishing scallop at any `cell_size` matches the analytic arc,
+//! not the tessellation step (bd ivac-58nl.4). The remaining tessellation is
+//! purely a rendering / envelope-scan detail, not a sim-accuracy limit.
 
 pub mod dexel;
 pub mod diagnostics;

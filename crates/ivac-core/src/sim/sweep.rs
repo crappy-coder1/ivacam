@@ -244,6 +244,12 @@ fn sweep_chord_carve<T: CarveTarget>(
     if r_tool <= 0.0 {
         return 0;
     }
+    // Analytic arc: a tessellated G2/G3 chord carries its parent arc's center
+    // + direction, so carve the exact sub-arc footprint instead of the
+    // straight chord (bd ivac-58nl.4). Arcs are milling moves — no dragoff.
+    if let Some(arc) = segment.arc {
+        return sweep_arc_chord_carve(target, &segment.from, &segment.to, arc, profile);
+    }
     // Drag-knife blade trails the spindle by `dragoff` in the
     // direction of travel, so the actual cut happens at
     // `spindle - dragoff * unit_dir`. Shift the chord before carving.
@@ -303,6 +309,13 @@ pub fn sweep_chord_carve_dexel(
     let r_tool = profile.radius() as f64;
     if r_tool <= 0.0 {
         return 0;
+    }
+    // Analytic arc (bd ivac-58nl.4): carve the exact sub-arc footprint. For a
+    // non-form tool the arc carve is top-down monotone-min into the dense top
+    // — byte-identical to the interval path below (the sidecar stays untouched
+    // for arcs, which are ball/endmill finishing moves, never form cutters).
+    if let Some(arc) = segment.arc {
+        return sweep_arc_chord_carve(field, &segment.from, &segment.to, arc, profile);
     }
     // Same dragoff-shift / air-skip / engagement-clamp preamble as
     // `sweep_chord_carve` — only the per-cell write differs.
@@ -393,6 +406,22 @@ fn sweep_chord_carve_partial<T: CarveTarget>(
     if r_tool <= 0.0 {
         return 0;
     }
+    // Analytic arc (bd ivac-58nl.4): carve the sub-arc slice `[t_start, t_end]`
+    // of the parent arc. The union of a segment's sub-slices is the exact
+    // arc-window carve; junction end-caps are re-carved idempotently
+    // (monotone-min), so a split matches the full sweep for constant-Z arcs
+    // and to sub-µm on a helix.
+    if let Some(arc) = segment.arc {
+        return sweep_arc_carve_windowed(
+            target,
+            &segment.from,
+            &segment.to,
+            arc,
+            profile,
+            t_start,
+            t_end,
+        );
+    }
     // Same dragoff-shift as `sweep_chord_carve`. The partial
     // version must use the same shifted geometry so split slices
     // line up bit-for-bit with the full sweep.
@@ -445,6 +474,20 @@ pub fn sweep_chord_carve_partial_dexel(
     let r_tool = profile.radius() as f64;
     if r_tool <= 0.0 {
         return 0;
+    }
+    // Analytic arc (bd ivac-58nl.4): carve the sub-arc slice `[t_start, t_end]`
+    // — see `sweep_chord_carve_partial`. Top-down into the dense top, so for
+    // the non-form tools arcs use this is byte-identical to the interval path.
+    if let Some(arc) = segment.arc {
+        return sweep_arc_carve_windowed(
+            field,
+            &segment.from,
+            &segment.to,
+            arc,
+            profile,
+            t_start,
+            t_end,
+        );
     }
     let shifted = apply_dragoff_offset(segment, profile);
     let segment = shifted.as_ref().unwrap_or(segment);
@@ -863,75 +906,26 @@ pub(super) fn for_each_swept_cell<F>(
     }
 }
 
-/// Planar circular-arc descriptor for an analytic swept-arc footprint.
-/// `(cx, cy)` is the arc center in world XY; the radius is implied by the
-/// segment's `from` point (`R = |from − center|`). `ccw` is the sweep
-/// direction (G3 = true, G2 = false) which — together with the segment
-/// endpoints — fixes the angular span exactly as `gcode::preview`'s arc
-/// tessellation does. Z is interpolated linearly by swept angle across the
-/// arc (a helix when `from.z != to.z`), matching that tessellation.
-///
-/// Feeding this to [`sweep_arc_segment`] carves the true swept-arc tube
-/// rather than a straight chord, so `cell` may drop below the ~2° chord
-/// error without the finishing scallop becoming a sim artifact (bd
-/// ivac-58nl.4).
-#[derive(Debug, Clone, Copy)]
-pub struct ArcXY {
-    /// Arc center X (world mm).
-    pub cx: f64,
-    /// Arc center Y (world mm).
-    pub cy: f64,
-    /// Sweep direction: G3 (counter-clockwise) = `true`, G2 (clockwise) =
-    /// `false`.
-    pub ccw: bool,
-}
+// The planar-arc descriptor is the wire type on `ToolpathSegment.arc`; the
+// sweep core just consumes it. Re-exported so `sim::sweep::ArcXY` stays a
+// valid path alongside the canonical `gcode::preview::ArcXY`.
+pub use crate::gcode::preview::ArcXY;
 
-/// Analytic swept-arc analogue of [`for_each_swept_cell`]: walk every cell
-/// under a cutter of radius `profile.radius()` swept along the circular arc
-/// (`from → to` about `arc` center), invoking `body` with the per-cell
-/// `(ix, iy, r, cutter_pz, dz)`.
-///
-/// Unlike the chord walker this projects each cell center onto the *arc*:
-///   * a cell whose polar angle falls inside the swept span sees radial
-///     offset `r = |ρ − R|` and parametric depth `t = swept_fraction`;
-///   * a cell in the angular gap falls to the nearer endpoint cap (`r =`
-///     distance to `from`/`to`, depth = that endpoint's z) — matching the
-///     endpoint-clamp semantics of the straight-chord walker.
-///
-/// So the carved scallop follows the true arc, not a tessellation staircase.
-///
-/// The bounding walk is the tight arc AABB (endpoints plus any axis-cardinal
-/// extreme inside the span) inflated by the tool radius; the per-cell
-/// radius/angle test remains the correctness gate, so the AABB only has to be
-/// a superset. Cells outside the tool radius or outside the tool's profile
-/// are skipped before `body` ever sees them.
-pub(super) fn for_each_swept_cell_arc<F>(
-    layout: &HeightmapLayout,
-    from: &Pose3,
-    to: &Pose3,
-    arc: ArcXY,
-    profile: &ToolProfile,
-    mut body: F,
-) where
-    F: FnMut(u32, u32, f32, f64, f32),
-{
-    use std::f64::consts::{FRAC_PI_2, PI, TAU};
-    let r_tool = profile.radius() as f64;
-    if r_tool <= 0.0 {
-        return;
-    }
+/// Resolve a segment's arc geometry: center `(cx, cy)`, radius, start angle,
+/// and signed sweep — the sweep resolved exactly like
+/// `preview::interpret_with_index` (coincident endpoints ⇒ a full revolution
+/// in the requested direction, otherwise bring the raw angle difference into
+/// the correct half-plane). Returns `None` for a degenerate arc (start on the
+/// center, or a vanishing sweep).
+fn arc_span(from: &Pose3, to: &Pose3, arc: ArcXY) -> Option<(f64, f64, f64, f64, f64)> {
+    use std::f64::consts::TAU;
     let (cx, cy) = (arc.cx, arc.cy);
-    let rx0 = from.x - cx;
-    let ry0 = from.y - cy;
-    let radius = rx0.hypot(ry0);
+    let radius = (from.x - cx).hypot(from.y - cy);
     if radius < 1e-9 {
-        return; // degenerate: start coincident with the center
+        return None; // start coincident with the center
     }
-    let theta_start = ry0.atan2(rx0);
+    let theta_start = (from.y - cy).atan2(from.x - cx);
     let theta_end = (to.y - cy).atan2(to.x - cx);
-    // Signed sweep, resolved exactly like `preview::interpret_with_index`:
-    // coincident endpoints ⇒ a full revolution in the requested direction,
-    // otherwise bring the raw angle difference into the correct half-plane.
     let coincident = (from.x - to.x).abs() < 1e-9 && (from.y - to.y).abs() < 1e-9;
     let mut sweep = theta_end - theta_start;
     if arc.ccw {
@@ -945,34 +939,88 @@ pub(super) fn for_each_swept_cell_arc<F>(
     } else if sweep >= -1e-9 {
         sweep -= TAU;
     }
-    let sweep_mag = sweep.abs();
-    if sweep_mag < 1e-12 {
+    if sweep.abs() < 1e-12 {
+        return None;
+    }
+    Some((cx, cy, radius, theta_start, sweep))
+}
+
+/// Analytic swept-arc analogue of [`for_each_swept_cell`], restricted to the
+/// parametric window `[t_lo, t_hi]` of the arc's sweep (`t = 0` at `from`,
+/// `t = 1` at `to`). Walks every cell under a cutter of radius
+/// `profile.radius()` swept along that slice, invoking `body` with the
+/// per-cell `(ix, iy, r, cutter_pz, dz)`.
+///
+/// Unlike the chord walker this projects each cell center onto the *arc*:
+///   * a cell whose parametric position `t` falls inside `[t_lo, t_hi]` sees
+///     radial offset `r = |ρ − R|` and depth interpolated by swept angle;
+///   * a cell outside the window falls to the nearer sub-arc endpoint cap
+///     (`r =` distance to the `t_lo` / `t_hi` point) — matching the
+///     endpoint-clamp semantics of the straight-chord walker.
+///
+/// So the carved scallop follows the true arc, not a tessellation staircase.
+/// The full-arc walk is `[0, 1]`; a 60 fps partial advance passes the frame's
+/// sub-window. The bounding walk is the sub-arc AABB (its endpoints plus any
+/// axis-cardinal circle point inside the window) inflated by the tool radius;
+/// the per-cell radius/`t` test remains the correctness gate, so the AABB only
+/// has to be a superset.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn for_each_swept_cell_arc_windowed<F>(
+    layout: &HeightmapLayout,
+    from: &Pose3,
+    to: &Pose3,
+    arc: ArcXY,
+    profile: &ToolProfile,
+    t_lo: f64,
+    t_hi: f64,
+    mut body: F,
+) where
+    F: FnMut(u32, u32, f32, f64, f32),
+{
+    use std::f64::consts::{FRAC_PI_2, PI, TAU};
+    let r_tool = profile.radius() as f64;
+    if r_tool <= 0.0 || t_hi <= t_lo {
         return;
     }
+    let Some((cx, cy, radius, theta_start, sweep)) = arc_span(from, to, arc) else {
+        return;
+    };
+    let sweep_mag = sweep.abs();
     let dir = if sweep >= 0.0 { 1.0 } else { -1.0 };
     let dz = to.z - from.z;
 
-    // `alpha` (a circle angle) is inside the swept span when its signed
-    // offset from `theta_start`, measured in the sweep direction and wrapped
-    // to [0, TAU), does not exceed the sweep magnitude.
-    let in_span = |alpha: f64| -> bool {
-        let d = ((alpha - theta_start) * dir).rem_euclid(TAU);
-        d <= sweep_mag + 1e-12
+    // Point on the arc at parametric position `t`.
+    let point_at = |t: f64| -> (f64, f64, f64) {
+        let theta = theta_start + sweep * t;
+        (
+            cx + radius * theta.cos(),
+            cy + radius * theta.sin(),
+            from.z + dz * t,
+        )
     };
+    let (lx, ly, lz) = point_at(t_lo);
+    let (hx, hy, hz) = point_at(t_hi);
 
-    // Tight arc AABB: the two endpoints plus every axis-cardinal circle
-    // point the sweep actually crosses (those are the only interior extrema).
-    let mut min_x = from.x.min(to.x);
-    let mut max_x = from.x.max(to.x);
-    let mut min_y = from.y.min(to.y);
-    let mut max_y = from.y.max(to.y);
+    // Parametric position of a circle angle: signed offset from `theta_start`,
+    // in the sweep direction, wrapped to [0, TAU), divided by the sweep
+    // magnitude. Cells with `t ∈ [t_lo, t_hi]` are the sub-arc interior.
+    let t_of = |alpha: f64| -> f64 { ((alpha - theta_start) * dir).rem_euclid(TAU) / sweep_mag };
+
+    // Sub-arc AABB: its two endpoints plus every axis-cardinal circle point
+    // whose parametric position falls inside the window (the only interior
+    // extrema), inflated by the tool radius.
+    let mut min_x = lx.min(hx);
+    let mut max_x = lx.max(hx);
+    let mut min_y = ly.min(hy);
+    let mut max_y = ly.max(hy);
     for (alpha, ex, ey) in [
         (0.0, cx + radius, cy),
         (FRAC_PI_2, cx, cy + radius),
         (PI, cx - radius, cy),
         (3.0 * FRAC_PI_2, cx, cy - radius),
     ] {
-        if in_span(alpha) {
+        let t = t_of(alpha);
+        if t >= t_lo - 1e-12 && t <= t_hi + 1e-12 {
             min_x = min_x.min(ex);
             max_x = max_x.max(ex);
             min_y = min_y.min(ey);
@@ -993,25 +1041,22 @@ pub(super) fn for_each_swept_cell_arc<F>(
         let cyy = layout.origin_y + (iy as f64 + 0.5) * cell;
         for ix in ix0..=ix1 {
             let cxx = layout.origin_x + (ix as f64 + 0.5) * cell;
-            let dpx = cxx - cx;
-            let dpy = cyy - cy;
-            let rho = dpx.hypot(dpy);
-            let phi = dpy.atan2(dpx);
-            let delta = ((phi - theta_start) * dir).rem_euclid(TAU);
-            let (r, cutter_pz) = if delta <= sweep_mag {
-                // Cell projects onto the arc interior: nearest arc point is
+            let rho = (cxx - cx).hypot(cyy - cy);
+            let phi = (cyy - cy).atan2(cxx - cx);
+            let t = t_of(phi);
+            let (r, cutter_pz) = if t >= t_lo && t <= t_hi {
+                // Cell projects onto the sub-arc interior: nearest arc point is
                 // the radial projection onto the circle.
-                let t = delta / sweep_mag;
                 ((rho - radius).abs(), from.z + dz * t)
             } else {
-                // Angular gap: nearest arc point is whichever endpoint is
-                // closer in the plane (the tool's end-cap disk there).
-                let d_from = (cxx - from.x).hypot(cyy - from.y);
-                let d_to = (cxx - to.x).hypot(cyy - to.y);
-                if d_from <= d_to {
-                    (d_from, from.z)
+                // Outside the window: nearest point is whichever sub-arc
+                // endpoint is closer in the plane (the tool's end-cap disk).
+                let d_lo = (cxx - lx).hypot(cyy - ly);
+                let d_hi = (cxx - hx).hypot(cyy - hy);
+                if d_lo <= d_hi {
+                    (d_lo, lz)
                 } else {
-                    (d_to, to.z)
+                    (d_hi, hz)
                 }
             };
             if r > r_tool {
@@ -1030,16 +1075,20 @@ pub(super) fn for_each_swept_cell_arc<F>(
     }
 }
 
-/// Carve-only pass for an analytic circular arc — the arc-native sibling of
-/// [`sweep_chord_carve`]. Shares the same air-skip and engagement-depth clamp
-/// preamble, then drives [`for_each_swept_cell_arc`] instead of the straight
-/// walker so the swept footprint follows the true arc.
-fn sweep_arc_chord_carve<T: CarveTarget>(
+/// Carve-only pass for the window `[t_lo, t_hi]` of an analytic circular arc —
+/// the arc-native sibling of [`sweep_chord_carve`] / [`sweep_chord_carve_partial`].
+/// Shares the air-skip and engagement-depth clamp preamble (evaluated on the
+/// full arc's endpoints — if the whole arc is in air so is any sub-window),
+/// then drives [`for_each_swept_cell_arc_windowed`] so the footprint follows
+/// the true arc.
+fn sweep_arc_carve_windowed<T: CarveTarget>(
     target: &mut T,
     from: &Pose3,
     to: &Pose3,
     arc: ArcXY,
     profile: &ToolProfile,
+    t_lo: f64,
+    t_hi: f64,
 ) -> u32 {
     let r_tool = profile.radius() as f64;
     if r_tool <= 0.0 {
@@ -1052,12 +1101,14 @@ fn sweep_arc_chord_carve<T: CarveTarget>(
     let depth_floor_z = profile.max_engagement_depth().map(|d| top_z - f64::from(d));
     let layout = target.carve_layout();
     let mut touched = 0u32;
-    for_each_swept_cell_arc(
+    for_each_swept_cell_arc_windowed(
         &layout,
         from,
         to,
         arc,
         profile,
+        t_lo,
+        t_hi,
         |ix, iy, _r, cutter_pz, dz| {
             let clamped_pz = depth_floor_z.map_or(cutter_pz, |floor| cutter_pz.max(floor));
             let surface_z = clamped_pz as f32 + dz;
@@ -1068,6 +1119,19 @@ fn sweep_arc_chord_carve<T: CarveTarget>(
     touched
 }
 
+/// Full-arc carve — [`sweep_arc_carve_windowed`] over the whole sweep. Used by
+/// the [`sweep_segment`] / `sweep_segment_dexel` arc dispatch and by
+/// [`sweep_arc_segment`].
+fn sweep_arc_chord_carve<T: CarveTarget>(
+    target: &mut T,
+    from: &Pose3,
+    to: &Pose3,
+    arc: ArcXY,
+    profile: &ToolProfile,
+) -> u32 {
+    sweep_arc_carve_windowed(target, from, to, arc, profile, 0.0, 1.0)
+}
+
 /// Carve a single analytic circular arc (`from → to` about `arc` center) into
 /// `heightmap`, lowering every cell the cutter sweeps over. The arc-native
 /// analogue of the chord carve inside [`sweep_segment`]: it models the true
@@ -1076,10 +1140,11 @@ fn sweep_arc_chord_carve<T: CarveTarget>(
 /// becoming a sim artifact (bd ivac-58nl.4).
 ///
 /// Diagnostics (fixture / holder / rapid) are NOT run here — this is the carve
-/// core. Today the live sim still sees arcs as tessellated chord segments (the
-/// gcode preview tessellates G2/G3), so this entry point has no live caller
-/// yet; it drives the parity test and is the carve stage 2 wires into
-/// `sweep_segment` once the preview emits [`ArcXY`] primitives.
+/// core, exposed for the parity test and any caller holding arc geometry. The
+/// live sim reaches the same carve through [`sweep_segment`] /
+/// `sweep_segment_dexel`, which dispatch to it whenever a chord segment
+/// carries an [`ArcXY`] descriptor (`preview::interpret` tags every chord of a
+/// tessellated `G2`/`G3`).
 #[must_use]
 pub fn sweep_arc_segment(
     heightmap: &mut Heightmap,
@@ -1602,6 +1667,7 @@ mod tests {
             kind,
             gcode_line: 0,
             op_id: 0,
+            arc: None,
         }
     }
 
@@ -3277,5 +3343,51 @@ mod tests {
         };
         let profile = ToolProfile::Endmill { r: 2.0 };
         assert_eq!(sweep_arc_segment(&mut map, &from, &to, arc, &profile), 0);
+    }
+
+    /// Carving an arc segment in one full sweep vs. two parametric halves via
+    /// the partial path lands the same surface — the arc analogue of the chord
+    /// split-invariance guard. Junction end-caps re-carve idempotently
+    /// (monotone-min), and for a constant-Z arc the cap depth equals the
+    /// interior depth, so the split is exact.
+    #[test]
+    fn arc_partial_split_matches_full_carve() {
+        let origin = Point2::new(-7.0, -7.0);
+        let cell_mm = 0.1;
+        let n = 140u32;
+        let arc = ArcXY {
+            cx: 0.0,
+            cy: 0.0,
+            ccw: true,
+        };
+        let seg = ToolpathSegment {
+            from: pose(5.0, 0.0, -1.0),
+            to: pose(0.0, 5.0, -1.0),
+            kind: MoveKind::Arc,
+            gcode_line: 0,
+            op_id: 0,
+            arc: Some(arc),
+        };
+        let profile = ToolProfile::BallNose { r: 1.5 };
+
+        let mut full = Heightmap::new(origin, cell_mm, n, n, 0.0);
+        let mut d0 = diag();
+        sweep_segment(&mut full, &seg, &profile, 0, &[], None, &mut d0);
+
+        let mut split = Heightmap::new(origin, cell_mm, n, n, 0.0);
+        let mut d1 = diag();
+        sweep_segment_partial(&mut split, &seg, &profile, 0, &[], None, &mut d1, 0.0, 0.5);
+        sweep_segment_partial(&mut split, &seg, &profile, 0, &[], None, &mut d1, 0.5, 1.0);
+
+        let max = full
+            .data
+            .iter()
+            .zip(&split.data)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            max < 1e-4,
+            "arc partial split diverged from the full carve by {max} mm"
+        );
     }
 }
