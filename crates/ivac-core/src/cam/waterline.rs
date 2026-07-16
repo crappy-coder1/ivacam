@@ -5,9 +5,11 @@
 //! [`crate::sim::stl::parse_stl`] / [`crate::sim::stl::StlTriangle`] return
 //! them) and a horizontal plane `Z = z`, intersect the mesh with the plane and
 //! stitch the per-triangle crossing segments into closed XY contour loops. Each
-//! loop is the outline of solid material at that height; the roughing driver
-//! then area-clears inside those loops level by level (that stage reuses
-//! `cam::offsets` and lands in a follow-up).
+//! loop is the outline of solid material at that height; [`clear_level`] then
+//! area-clears inside those loops (nesting outer boundaries vs. holes and
+//! raster-filling each via `cam::offsets`). What remains for a full op is the
+//! `WaterlineRough` op kind + driver that walks [`z_levels`], slices, clears,
+//! and stamps each level's Z into a toolpath.
 //!
 //! GrblGru's `DoJob3DWaterLine` is the reference flow (loop Z from the top down
 //! by the depth step, mesh-plane slice each level, rough each contour as a
@@ -41,7 +43,8 @@
 
 use std::collections::HashMap;
 
-use crate::geometry::Point2;
+use crate::cam::offsets::{inflate_islands_by_tool_radius, pocket_zigzag};
+use crate::geometry::{point_in_polygon, Point2, Segment};
 
 /// A closed cross-section contour at a slice height: an ordered ring of XY
 /// points, **implicitly closed** — the last vertex connects back to the first,
@@ -249,6 +252,108 @@ pub fn z_levels(top_z: f64, bottom_z: f64, step: f64) -> Vec<f64> {
     levels
 }
 
+/// One solid region of a Z-level cross-section: an outer boundary loop with the
+/// hole loops cut out of it. Both are raw sliced [`Loop`]s (see [`nest_loops`]);
+/// orientation is whatever [`slice_mesh_at_z`] produced.
+#[derive(Debug, Clone)]
+pub struct LevelRegion {
+    /// The solid's outer boundary.
+    pub boundary: Loop,
+    /// Islands to leave uncut (immediate children of `boundary`). A solid
+    /// nested inside one of these holes is a *separate* region, not listed here.
+    pub holes: Vec<Loop>,
+}
+
+/// Whether `inner`'s representative vertex lies inside polygon `outer`. Slice
+/// loops never share vertices, so a vertex of `inner` is a safe probe of
+/// containment in another loop.
+fn loop_inside(inner: &[Point2], outer: &[Point2]) -> bool {
+    inner.len() >= 3 && outer.len() >= 3 && point_in_polygon(outer, inner[0].x, inner[0].y)
+}
+
+/// Sort the sliced loops at one Z level into solid regions by even-odd
+/// containment. A loop nested inside an *even* number of others is a solid
+/// outer boundary; inside an *odd* number, it's a hole belonging to its
+/// immediate (innermost) container. A solid nested inside a hole (a boss in a
+/// cavity) becomes its own region, so arbitrary nesting resolves correctly.
+///
+/// The containment family of a planar slice is laminar (loops never cross), so
+/// a loop's innermost container is exactly its parent and every hole listed
+/// under a region is one containment level deeper than that region's boundary.
+#[must_use]
+pub fn nest_loops(loops: &[Loop]) -> Vec<LevelRegion> {
+    let n = loops.len();
+    // depth[i] = how many other loops contain loop i.
+    // parent[i] = the innermost such container (max depth), or None at top level.
+    let mut depth = vec![0usize; n];
+    let mut parent: Vec<Option<usize>> = vec![None; n];
+    for i in 0..n {
+        depth[i] = (0..n)
+            .filter(|&j| j != i && loop_inside(&loops[i], &loops[j]))
+            .count();
+    }
+    // Second pass: parent = the container with the greatest depth (innermost).
+    for i in 0..n {
+        let mut best: Option<usize> = None;
+        let mut best_depth = 0usize;
+        for j in 0..n {
+            if i == j || !loop_inside(&loops[i], &loops[j]) {
+                continue;
+            }
+            if best.is_none() || depth[j] >= best_depth {
+                best = Some(j);
+                best_depth = depth[j];
+            }
+        }
+        parent[i] = best;
+    }
+
+    // Each even-depth loop is a solid region; its holes are the loops whose
+    // immediate parent is it (necessarily one level deeper, i.e. odd depth).
+    let mut regions = Vec::new();
+    for s in 0..n {
+        if depth[s] % 2 != 0 || loops[s].len() < 3 {
+            continue;
+        }
+        let holes = (0..n)
+            .filter(|&i| parent[i] == Some(s))
+            .map(|i| loops[i].clone())
+            .collect();
+        regions.push(LevelRegion {
+            boundary: loops[s].clone(),
+            holes,
+        });
+    }
+    regions
+}
+
+/// Area-clear the solid cross-section at one Z level: [`nest_loops`] the sliced
+/// contours into regions, then raster-fill each region's boundary with its
+/// holes left standing. This is the "rough each contour as a pocket" step of
+/// waterline roughing, delegating to the same [`pocket_zigzag`] the 2.5D Pocket
+/// op uses (the boundary is inset and the holes inflated by the tool radius, so
+/// the cutter centerline keeps its clearance).
+///
+/// `tool_diameter` drives both the boundary inset and the island inflation;
+/// `stride` is the scanline stepover. Returns the cut-move chains for the level
+/// (the caller lifts to clearance between chains and stamps the level's Z). An
+/// empty slice, sub-tool region, or degenerate stride yields no chains.
+#[must_use]
+pub fn clear_level(loops: &[Loop], tool_diameter: f64, stride: f64) -> Vec<Vec<Segment>> {
+    let tool_r = tool_diameter * 0.5;
+    let mut chains = Vec::new();
+    for region in nest_loops(loops) {
+        let islands = inflate_islands_by_tool_radius(&region.holes, tool_r);
+        chains.extend(pocket_zigzag(
+            &region.boundary,
+            &islands,
+            stride,
+            tool_diameter,
+        ));
+    }
+    chains
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -414,5 +519,133 @@ mod tests {
         assert!(z_levels(5.0, 10.0, 1.0).is_empty());
         assert!(z_levels(10.0, 0.0, 0.0).is_empty());
         assert!(z_levels(10.0, 0.0, -2.0).is_empty());
+    }
+
+    // ── nesting + per-level clearing (stage 2) ───────────────────────────
+
+    /// An axis-aligned rectangle loop, CCW.
+    fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Loop {
+        vec![
+            Point2::new(x0, y0),
+            Point2::new(x1, y0),
+            Point2::new(x1, y1),
+            Point2::new(x0, y1),
+        ]
+    }
+
+    /// A lone solid loop nests to one region with no holes.
+    #[test]
+    fn nest_single_solid_has_no_holes() {
+        let regions = nest_loops(&[rect(0.0, 0.0, 10.0, 10.0)]);
+        assert_eq!(regions.len(), 1);
+        assert!(regions[0].holes.is_empty());
+    }
+
+    /// An annulus (outer + one contained loop) nests to one region whose single
+    /// hole is the inner loop.
+    #[test]
+    fn nest_annulus_is_one_region_with_one_hole() {
+        let outer = rect(0.0, 0.0, 20.0, 20.0);
+        let inner = rect(6.0, 6.0, 14.0, 14.0);
+        let regions = nest_loops(&[outer, inner.clone()]);
+        assert_eq!(regions.len(), 1, "the outer solid is the only region");
+        assert_eq!(regions[0].holes.len(), 1);
+        assert_eq!(regions[0].holes[0], inner, "the inner loop is the hole");
+    }
+
+    /// Two separated solids nest to two independent hole-free regions,
+    /// regardless of the order they're passed.
+    #[test]
+    fn nest_disjoint_solids_are_two_regions() {
+        let a = rect(0.0, 0.0, 5.0, 5.0);
+        let b = rect(20.0, 20.0, 25.0, 25.0);
+        let regions = nest_loops(&[b, a]);
+        assert_eq!(regions.len(), 2);
+        assert!(regions.iter().all(|r| r.holes.is_empty()));
+    }
+
+    /// A boss inside a cavity (outer solid ⊃ hole ⊃ inner solid) splits into
+    /// two regions: the outer keeps only the cavity as its hole, and the boss
+    /// is its own hole-free region — even-odd depth, not blind containment.
+    #[test]
+    fn nest_boss_in_cavity_becomes_its_own_region() {
+        let outer = rect(0.0, 0.0, 30.0, 30.0); // depth 0 → solid
+        let cavity = rect(6.0, 6.0, 24.0, 24.0); // depth 1 → hole of outer
+        let boss = rect(12.0, 12.0, 18.0, 18.0); // depth 2 → solid, own region
+        let regions = nest_loops(&[outer, cavity.clone(), boss.clone()]);
+        assert_eq!(regions.len(), 2);
+        let outer_reg = regions
+            .iter()
+            .find(|r| r.boundary[0] == Point2::new(0.0, 0.0))
+            .unwrap();
+        assert_eq!(
+            outer_reg.holes,
+            vec![cavity],
+            "outer's only hole is the cavity"
+        );
+        let boss_reg = regions.iter().find(|r| r.boundary == boss).unwrap();
+        assert!(
+            boss_reg.holes.is_empty(),
+            "the boss is a solid with no holes"
+        );
+    }
+
+    /// Clearing a solid square fills it with raster strokes whose every endpoint
+    /// stays inside the tool-radius-inset boundary (no wall gouge).
+    #[test]
+    fn clear_level_fills_solid_square_inside_the_inset() {
+        let sq = rect(0.0, 0.0, 20.0, 20.0);
+        let (tool_d, stride) = (2.0, 1.0);
+        let chains = clear_level(std::slice::from_ref(&sq), tool_d, stride);
+        assert!(!chains.is_empty(), "a solid square must produce strokes");
+        let r = tool_d * 0.5;
+        for chain in &chains {
+            for s in chain {
+                for p in [s.start, s.end] {
+                    assert!(
+                        p.x >= r - 1e-6 && p.x <= 20.0 - r + 1e-6,
+                        "endpoint x={} outside the inset [{r}, {}]",
+                        p.x,
+                        20.0 - r
+                    );
+                    assert!(
+                        p.y >= r - 1e-6 && p.y <= 20.0 - r + 1e-6,
+                        "endpoint y={} outside the inset",
+                        p.y
+                    );
+                }
+            }
+        }
+    }
+
+    /// Clearing an annulus leaves the hole standing: with the island inflated by
+    /// the tool radius, no cut endpoint lands inside the raw hole footprint.
+    #[test]
+    fn clear_level_leaves_the_hole_standing() {
+        let outer = rect(0.0, 0.0, 20.0, 20.0);
+        let hole = rect(6.0, 6.0, 14.0, 14.0);
+        let chains = clear_level(&[outer, hole], 2.0, 1.0);
+        assert!(!chains.is_empty());
+        for chain in &chains {
+            for s in chain {
+                for p in [s.start, s.end] {
+                    let inside_hole = p.x > 6.001 && p.x < 13.999 && p.y > 6.001 && p.y < 13.999;
+                    assert!(
+                        !inside_hole,
+                        "cut endpoint gouges the standing island: {p:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Clearing is deterministic for a fixed input.
+    #[test]
+    fn clear_level_is_deterministic() {
+        let outer = rect(0.0, 0.0, 15.0, 12.0);
+        let hole = rect(4.0, 4.0, 9.0, 8.0);
+        let a = clear_level(&[outer.clone(), hole.clone()], 2.0, 1.3);
+        let b = clear_level(&[outer, hole], 2.0, 1.3);
+        assert_eq!(a, b);
     }
 }
