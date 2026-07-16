@@ -1,15 +1,15 @@
 {
-  "cli.help.tagline": "ivac — ivaCAM headless CLI",
-  "cli.help.usage": "usage:",
-  "cli.help.import": "Parse a DXF and print /import JSON",
-  "cli.help.generate": "Generate gcode + preview toolpath",
-  "cli.help.help": "Show this message",
-  "cli.help.lang": "Interface language (en, de); overrides LANG/LC_ALL",
-  "cli.err.unknown_subcommand": "unknown subcommand: {name}",
-  "cli.err.missing_path": "missing path argument",
-  "cli.err.importing": "import {path}",
-  "cli.err.opt_needs_value": "{opt} needs a value",
-  "cli.err.unexpected_arg": "unexpected argument: {arg}",
-  "cli.err.missing_input_path": "missing input path",
-  "cli.err.unknown_post": "unknown post processor: {name}"
+  "cli.help.tagline": "ivac — ivaCAM-Kommandozeile (ohne Oberfläche)",
+  "cli.help.usage": "Verwendung:",
+  "cli.help.import": "Eine DXF einlesen und /import-JSON ausgeben",
+  "cli.help.generate": "G-Code + Vorschau-Werkzeugweg erzeugen",
+  "cli.help.help": "Diese Hilfe anzeigen",
+  "cli.help.lang": "Oberflächensprache (en, de); überschreibt LANG/LC_ALL",
+  "cli.err.unknown_subcommand": "unbekannter Unterbefehl: {name}",
+  "cli.err.missing_path": "fehlendes Pfad-Argument",
+  "cli.err.importing": "Import {path}",
+  "cli.err.opt_needs_value": "{opt} benötigt einen Wert",
+  "cli.err.unexpected_arg": "unerwartetes Argument: {arg}",
+  "cli.err.missing_input_path": "fehlender Eingabepfad",
+  "cli.err.unknown_post": "unbekannter Postprozessor: {name}"
 }
