@@ -34,6 +34,7 @@ pub mod thread;
 pub mod trochoidal;
 pub mod vcarve;
 pub mod vcarve_emit;
+pub mod waterline;
 
 /// `VcObject` analogue: a chain of segments grouped after `segments2objects`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
