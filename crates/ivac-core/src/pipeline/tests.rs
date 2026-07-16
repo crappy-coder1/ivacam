@@ -340,7 +340,7 @@ fn pipeline_waterline_rough_emits_level_chains_over_stl_basin() {
     let levels = crate::cam::waterline::z_levels(0.0, -6.0, 2.0);
     for &cz in &cut_zs {
         assert!(
-            cz <= 1e-6 && cz >= -6.0 - 1e-6,
+            (-6.0 - 1e-6..=1e-6).contains(&cz),
             "waterline cut Z {cz} out of the model range"
         );
         assert!(
