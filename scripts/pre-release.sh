@@ -70,6 +70,9 @@ else
   step "cargo test --workspace"  cargo test --workspace --all-features
 fi
 step "xtask schema-check"      cargo run --quiet -p xtask -- schema-check
+# Docs: README.md and README_de.md must stay structurally in sync
+# (same heading skeleton + reciprocal language links).
+step "readme parity"           scripts/check-readme-parity.sh
 
 #───────────── Frontend ─────────────
 #

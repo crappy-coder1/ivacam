@@ -1,5 +1,7 @@
 # ivaCAM
 
+**English** | [Deutsch](./README_de.md)
+
 **Turn DXF and SVG drawings into G-code for CNC mills, lasers, plasma cutters and drag knives.**
 
 Free, open-source CAM for the hobby shop. One self-contained app for desktop and Android — no Python, no install hell — plus an optional self-hosted web service and a fully in-browser (WebAssembly) mode where your drawings never leave your machine.

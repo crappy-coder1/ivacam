@@ -129,6 +129,16 @@ jobs:
       - name: build
         run: pnpm run build
 
+  docs:
+    name: docs / readme parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # README.md and README_de.md must expose the same heading skeleton
+      # (structure, not translated text) and cross-link each other, so a
+      # section added to one without a German counterpart fails the build.
+      - run: scripts/check-readme-parity.sh
+
   cargo-deny:
     name: cargo-deny
     runs-on: ubuntu-latest
