@@ -1,0 +1,15 @@
+{
+  "cli.help.tagline": "ivac — ivaCAM headless CLI",
+  "cli.help.usage": "usage:",
+  "cli.help.import": "Parse a DXF and print /import JSON",
+  "cli.help.generate": "Generate gcode + preview toolpath",
+  "cli.help.help": "Show this message",
+  "cli.help.lang": "Interface language (en, de); overrides LANG/LC_ALL",
+  "cli.err.unknown_subcommand": "unknown subcommand: {name}",
+  "cli.err.missing_path": "missing path argument",
+  "cli.err.importing": "import {path}",
+  "cli.err.opt_needs_value": "{opt} needs a value",
+  "cli.err.unexpected_arg": "unexpected argument: {arg}",
+  "cli.err.missing_input_path": "missing input path",
+  "cli.err.unknown_post": "unknown post processor: {name}"
+}

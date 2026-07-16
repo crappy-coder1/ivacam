@@ -7,6 +7,8 @@
 //!
 //! Mirrors the JSON contract in `schema/openapi.yaml`.
 
+mod i18n;
+
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
@@ -40,7 +42,15 @@ struct GenerateStats {
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt::try_init().ok();
-    let mut args = std::env::args().skip(1);
+    // Resolve the UI language once, before anything user-facing is printed:
+    // a `--lang` override (pulled out of argv here) beats the LANG/LC_ALL
+    // environment. Everything below goes through `i18n::t`/`tp`.
+    let (lang_override, rest) = i18n::extract_lang(std::env::args().skip(1).collect());
+    i18n::set_locale(i18n::detect_locale(lang_override.as_deref(), |k| {
+        std::env::var(k).ok()
+    }));
+
+    let mut args = rest.into_iter();
     let cmd = args.next().unwrap_or_default();
     match cmd.as_str() {
         "import" => cmd_import(args),
@@ -51,29 +61,40 @@ fn main() -> Result<()> {
         }
         other => {
             print_help();
-            bail!("unknown subcommand: {other}");
+            bail!(
+                "{}",
+                i18n::tp("cli.err.unknown_subcommand", &[("name", other)])
+            );
         }
     }
 }
 
 fn print_help() {
-    eprintln!(
-        "ivac — ivaCAM headless CLI\n\n\
-         usage:\n  \
-           ivac import <path>                        Parse a DXF and print /import JSON\n  \
-           ivac generate <path> [--post linuxcnc|grbl|hpgl] [--diameter MM] [--depth MM]\n  \
-                                                     [--inside|--outside|--on] [--overcut]\n  \
-                                                     Generate gcode + preview toolpath\n  \
-           ivac --help                               Show this message"
-    );
+    // The command skeletons (`ivac import <path>`, flag names) are literal and
+    // language-agnostic; only the descriptions and labels go through the
+    // catalog. Help prints to stderr so stdout stays clean JSON for pipes.
+    eprintln!("{}\n", i18n::t("cli.help.tagline"));
+    eprintln!("{}", i18n::t("cli.help.usage"));
+    eprintln!("  ivac import <path>");
+    eprintln!("      {}", i18n::t("cli.help.import"));
+    eprintln!("  ivac generate <path> [--post linuxcnc|grbl|hpgl] [--diameter MM] [--depth MM]");
+    eprintln!("                       [--inside|--outside|--on] [--overcut]");
+    eprintln!("      {}", i18n::t("cli.help.generate"));
+    eprintln!("  ivac --help");
+    eprintln!("      {}", i18n::t("cli.help.help"));
+    eprintln!("\n  --lang <en|de>   {}", i18n::t("cli.help.lang"));
 }
 
 fn cmd_import(mut args: impl Iterator<Item = String>) -> Result<()> {
-    let path = args.next().context("missing path argument")?;
+    let path = args.next().context(i18n::t("cli.err.missing_path"))?;
     let path = PathBuf::from(path);
     let opts = ImportOptions::default();
-    let out = ivac_core::input::import_path(&path, &opts)
-        .with_context(|| format!("import {}", path.display()))?;
+    let out = ivac_core::input::import_path(&path, &opts).with_context(|| {
+        i18n::tp(
+            "cli.err.importing",
+            &[("path", &path.display().to_string())],
+        )
+    })?;
     // Serialize the full ImportOutput — it already derives the /import
     // contract (snake_case field names matching the TS ImportResponse and
     // the wasm/server output), so emitting it directly keeps `objects`,
@@ -96,23 +117,35 @@ fn cmd_generate(args: impl Iterator<Item = String>) -> Result<()> {
     let mut overcut = false;
     let mut iter = args.peekable();
     while let Some(arg) = iter.next() {
+        let needs_value =
+            |opt: &'static str| move || i18n::tp("cli.err.opt_needs_value", &[("opt", opt)]);
         match arg.as_str() {
-            "--post" => post_kind = iter.next().context("--post needs a value")?,
-            "--diameter" => diameter = iter.next().context("--diameter needs a value")?.parse()?,
-            "--depth" => depth = iter.next().context("--depth needs a value")?.parse()?,
-            "--step" => step = iter.next().context("--step needs a value")?.parse()?,
+            "--post" => post_kind = iter.next().with_context(needs_value("--post"))?,
+            "--diameter" => {
+                diameter = iter
+                    .next()
+                    .with_context(needs_value("--diameter"))?
+                    .parse()?
+            }
+            "--depth" => depth = iter.next().with_context(needs_value("--depth"))?.parse()?,
+            "--step" => step = iter.next().with_context(needs_value("--step"))?.parse()?,
             "--inside" => tool_offset = ToolOffset::Inside,
             "--outside" => tool_offset = ToolOffset::Outside,
             "--on" => tool_offset = ToolOffset::On,
             "--overcut" => overcut = true,
             other if path.is_none() => path = Some(PathBuf::from(other)),
-            other => bail!("unexpected argument: {other}"),
+            other => bail!("{}", i18n::tp("cli.err.unexpected_arg", &[("arg", other)])),
         }
     }
-    let path = path.context("missing input path")?;
+    let path = path.context(i18n::t("cli.err.missing_input_path"))?;
 
-    let import = ivac_core::input::import_path(&path, &ImportOptions::default())
-        .with_context(|| format!("import {}", path.display()))?;
+    let import =
+        ivac_core::input::import_path(&path, &ImportOptions::default()).with_context(|| {
+            i18n::tp(
+                "cli.err.importing",
+                &[("path", &path.display().to_string())],
+            )
+        })?;
 
     let (offsets, stats) = build_offsets(&import, diameter, depth, step, tool_offset, overcut);
 
@@ -137,7 +170,7 @@ fn cmd_generate(args: impl Iterator<Item = String>) -> Result<()> {
             let mut p = hpgl::Post::new();
             emit_polylines(&setup, &offsets, &mut p)
         }
-        other => bail!("unknown post processor: {other}"),
+        other => bail!("{}", i18n::tp("cli.err.unknown_post", &[("name", other)])),
     };
 
     let toolpath = preview::interpret(&gcode);
