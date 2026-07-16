@@ -94,9 +94,9 @@ catch drift locally; CI runs the same checks.
 
 ## Extension recipes
 
-These are the two most common starter tasks. Both touch Rust + the
+These are the most common starter tasks. The first two touch Rust + the
 frontend + the JSON contract — the checklists exist so you don't ship a
-half-wired change.
+half-wired change. The third keeps new UI text translatable by default.
 
 ### Adding a new operation kind
 
@@ -190,6 +190,55 @@ HPGL today). Mirror the simplest existing one (GRBL):
    `Post::move_to` + `Post::footer`. The corpus smoke test runs the
    default (LinuxCNC) post only; if you want the new post in CI, add
    it to the golden corpus parametrisation.
+
+### Adding a user-facing string
+
+Every string a user can see routes through the i18n catalog so it stays
+translatable — never hardcode display text in a component, the coverage
+tests (`frontend/src/lib/i18n/coverage.test.ts`) fail on it. Architecture
+and rationale: [`docs/i18n/PLAN.md`](./i18n/PLAN.md).
+
+1. **Wrap the text in `t()`** — import from the i18n entry point and use a
+   namespaced key:
+   ```svelte
+   import { t } from '../i18n';        // frontend/src/lib/i18n
+   ...
+   <button>{t('common.cancel')}</button>
+   <span>{t('warn.tab_count', { count })}</span>   // {name} → params
+   ```
+   Keys are `namespace.snake_case` (`common.*`, `menu.*`, `settings.*`,
+   `dialog.*`, `error.*`, `warn.*`, …). Reuse an existing key if one fits;
+   don't duplicate a string under a new key.
+2. **Add the English value** — put the key + plain-English text in the base
+   catalog `frontend/src/lib/i18n/messages/en.json`. Placeholders are
+   `{name}` and must match the `params` object you pass to `t()`.
+3. **Regenerate typed keys** — `pnpm run i18n:codegen` rewrites
+   `frontend/src/lib/i18n/keys.ts` (the `MsgKey` union) from `en.json`.
+   **Never hand-edit `keys.ts`.** A missing key is then a `svelte-check`
+   error at the call site, and the drift guard (`git diff --exit-code` on
+   `keys.ts`, in `scripts/pre-release.sh` and CI) fails if you forget to
+   regenerate.
+4. **Leave German to the translators** — do NOT edit `messages/de.json`
+   unless you know the German CAM term. Translators own it and use the
+   established terminology in [`docs/i18n/glossary-de.md`](./i18n/glossary-de.md).
+   The coverage tests enforce locale parity (every `en` key present in
+   `de`), no-empty values, and placeholder parity, so an untranslated key
+   surfaces there rather than shipping silently.
+5. **Backend errors/warnings carry a code, not prose** — if the string
+   originates in Rust, give the error/warning a stable `code` + structured
+   `params` (`crates/ivac-core/src/errors.rs`); the **frontend** owns the
+   translated template under an `error.*` / `warn.*` key, rendered from
+   `code` + `params` by `ErrorToast.svelte`. Codes are language-agnostic
+   like the op enums — one translation home for everything the GUI shows.
+6. **CLI strings live in the CLI's own catalog** — the headless CLI runs
+   without the frontend, so its text is embedded from
+   `crates/ivac-cli/i18n/{en,de}.json` (`cli.*` keys, no codegen). Add the
+   key to **both** files; the `ivac-cli` catalog-parity test (rides
+   `cargo test --workspace`) fails if the `en`/`de` key sets diverge.
+
+Verify: `pnpm run i18n:codegen && pnpm exec svelte-check` clean and
+`pnpm test --run` green (the coverage gates); for CLI strings also
+`cargo test -p ivac-cli`.
 
 ## Pull requests
 
