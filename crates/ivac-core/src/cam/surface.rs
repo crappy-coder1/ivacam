@@ -437,20 +437,73 @@ impl SurfaceField {
     /// are out of scope for a 3-axis relief verify).
     #[must_use]
     pub fn deviation_of(&self, field: &DexelField, surface_z0: f32, tol: f32) -> Vec<u8> {
-        let tol = tol.max(0.0);
         let cols = field.cols as usize;
         let rows = field.rows as usize;
-        let top = field.top();
         let mut out = vec![Deviation::OnTarget as u8; cols * rows];
-        for iy in 0..rows {
+        self.deviation_into(
+            field, surface_z0, tol, &mut out, 0, 0, field.cols, field.rows,
+        );
+        out
+    }
+
+    /// Reclassify only the half-open cell rectangle `[ix0, ix1) × [iy0, iy1)`
+    /// (in `field`'s grid coordinates) in place, leaving every cell outside it
+    /// untouched — the dirty-AABB counterpart of [`SurfaceField::deviation_of`].
+    ///
+    /// A carve frame only changes the small rectangle the tool swept, so the
+    /// per-cell class of every other cell is already correct in `out`. Passing
+    /// that carve's dirty AABB here reclassifies just those cells instead of
+    /// re-sampling the whole target every frame, mirroring the mesh's
+    /// partial-AABB re-upload. Over many frames the caller keeps `out` globally
+    /// valid by only ever passing rectangles that cover the cells whose height
+    /// changed.
+    ///
+    /// `out` must be exactly `field.cols * field.rows` long and index-aligned
+    /// with [`DexelField::top`]; the rectangle is clamped to the grid, and an
+    /// empty or inverted rectangle is a no-op. See [`SurfaceField::deviation_of`]
+    /// for the classification and the meaning of `surface_z0` / `tol`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `out.len() != field.cols * field.rows`.
+    pub fn deviation_into(
+        &self,
+        field: &DexelField,
+        surface_z0: f32,
+        tol: f32,
+        out: &mut [u8],
+        ix0: u32,
+        iy0: u32,
+        ix1: u32,
+        iy1: u32,
+    ) {
+        let cols = field.cols as usize;
+        let rows = field.rows as usize;
+        assert_eq!(
+            out.len(),
+            cols * rows,
+            "deviation buffer must be field.cols * field.rows"
+        );
+        let tol = tol.max(0.0);
+        // Clamp the requested rectangle to the grid; bail on an empty/inverted one.
+        let ix0 = (ix0 as usize).min(cols);
+        let iy0 = (iy0 as usize).min(rows);
+        let ix1 = (ix1 as usize).min(cols);
+        let iy1 = (iy1 as usize).min(rows);
+        if ix0 >= ix1 || iy0 >= iy1 {
+            return;
+        }
+        let top = field.top();
+        for iy in iy0..iy1 {
             let cy = field.origin.y + (iy as f64 + 0.5) * field.cell;
-            for ix in 0..cols {
+            let row = iy * cols;
+            for ix in ix0..ix1 {
                 let cx = field.origin.x + (ix as f64 + 0.5) * field.cell;
                 // target_world lifts the target's stock-top-relative Z into the
                 // simulator's world frame so both sides share a datum.
                 let target_world = surface_z0 + self.sample(cx, cy);
-                let delta = top[iy * cols + ix] - target_world;
-                out[iy * cols + ix] = if delta > tol {
+                let delta = top[row + ix] - target_world;
+                out[row + ix] = if delta > tol {
                     Deviation::RestStock as u8
                 } else if delta < -tol {
                     Deviation::Gouge as u8
@@ -459,7 +512,6 @@ impl SurfaceField {
                 };
             }
         }
-        out
     }
 }
 
@@ -936,5 +988,86 @@ mod tests {
                 Deviation::Gouge as u8,
             ],
         );
+    }
+
+    // ---- deviation_into (dirty-AABB partial reclassify) ----------------
+
+    /// The partial path only rewrites cells inside the requested rectangle and
+    /// leaves the rest of the buffer exactly as it found it — the invariant the
+    /// per-frame carve overlay relies on (untouched cells keep their prior,
+    /// still-correct class instead of being re-sampled every frame).
+    #[test]
+    fn deviation_into_touches_only_the_requested_rect() {
+        let mut field = DexelField::new(Point2::new(0.0, 0.0), 1.0, 3, 1, 0.0, -10.0);
+        let target = SurfaceField::new(Point2::new(0.0, 0.0), 1.0, 3, 1, vec![-2.0, -2.0, -2.0]);
+        field.lower_at(0, 0, -2.0); // on target
+        field.lower_at(1, 0, -3.0); // gouge
+                                    // col 2 uncut → rest stock
+
+        // Seed the buffer with a sentinel that is NOT a real class so any cell
+        // the call leaves alone is obvious.
+        let mut buf = vec![0xFFu8; 3];
+        // Reclassify only the middle column.
+        target.deviation_into(&field, field.top_z, 0.1, &mut buf, 1, 0, 2, 1);
+        assert_eq!(
+            buf,
+            vec![0xFF, Deviation::Gouge as u8, 0xFF],
+            "only col 1 should have been rewritten"
+        );
+    }
+
+    /// Reclassifying the whole grid rectangle produces the identical buffer the
+    /// full [`SurfaceField::deviation_of`] does — the partial path is a strict
+    /// refinement, not a different classifier.
+    #[test]
+    fn deviation_into_full_rect_matches_deviation_of() {
+        let mut field = DexelField::new(Point2::new(-1.0, 2.0), 0.75, 4, 3, 1.0, -8.0);
+        let target = SurfaceField::new(
+            Point2::new(-1.0, 2.0),
+            0.75,
+            4,
+            3,
+            vec![
+                -1.5, -0.5, 0.0, -2.0, -1.0, -0.25, -3.0, -0.75, -1.25, -2.5, 0.0, -0.5,
+            ],
+        );
+        // Carve an irregular pattern so all three classes show up.
+        field.lower_at(0, 0, -0.5);
+        field.lower_at(2, 1, -4.0);
+        field.lower_at(3, 2, 0.5);
+        field.lower_at(1, 2, -1.0);
+
+        let full = target.deviation_of(&field, field.top_z, 0.1);
+        let mut piecewise = vec![Deviation::OnTarget as u8; 4 * 3];
+        // Cover the grid as a union of two disjoint rectangles that together
+        // tile it — the same way accumulated carve AABBs eventually do.
+        target.deviation_into(&field, field.top_z, 0.1, &mut piecewise, 0, 0, 4, 2);
+        target.deviation_into(&field, field.top_z, 0.1, &mut piecewise, 0, 2, 4, 3);
+        assert_eq!(piecewise, full);
+    }
+
+    /// The rectangle is clamped to the grid and an empty/inverted one is a
+    /// no-op, so an over-wide or degenerate carve AABB can never panic or write
+    /// out of bounds.
+    #[test]
+    fn deviation_into_clamps_and_ignores_empty_rects() {
+        let mut field = DexelField::new(Point2::new(0.0, 0.0), 1.0, 2, 2, 0.0, -10.0);
+        let target = SurfaceField::new(Point2::new(0.0, 0.0), 1.0, 2, 2, vec![-1.0; 4]);
+        field.lower_at(0, 0, -1.0);
+        field.lower_at(1, 1, -1.0);
+        let mut buf = vec![0xFFu8; 4];
+
+        // Over-wide rect is clamped to the 2×2 grid (no panic, all reclassified).
+        target.deviation_into(&field, field.top_z, 0.1, &mut buf, 0, 0, 99, 99);
+        assert!(
+            buf.iter().all(|&c| c != 0xFF),
+            "clamped rect covered the grid"
+        );
+
+        // Empty (ix0 == ix1) and inverted (iy0 > iy1) rects change nothing.
+        let snapshot = buf.clone();
+        target.deviation_into(&field, field.top_z, 0.1, &mut buf, 1, 0, 1, 2);
+        target.deviation_into(&field, field.top_z, 0.1, &mut buf, 0, 2, 2, 1);
+        assert_eq!(buf, snapshot, "degenerate rects are no-ops");
     }
 }

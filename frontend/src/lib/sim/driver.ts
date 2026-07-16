@@ -108,17 +108,28 @@ interface SimulatorWasm {
   /// Cache a target relief surface for the red/green deviation overlay: a
   /// serialized SurfaceField, the world Z its `z = 0` datum maps to (the
   /// stock top), and the on-target tolerance band (mm). Cached once so the
-  /// per-frame `deviation()` doesn't re-cross the WASM boundary with the
+  /// per-frame recompute doesn't re-cross the WASM boundary with the
   /// (potentially large) target grid.
   set_deviation_target(surface: unknown, surface_z0: number, tol: number): void;
   /// Drop the cached deviation target (overlay turned off).
   clear_deviation_target(): void;
   /// Whether a deviation target is cached.
   has_deviation_target(): boolean;
-  /// Row-major cols*rows Uint8Array of deviation codes (0 on-target, 1
-  /// gouge, 2 rest stock) classifying the carved field against the cached
-  /// target; empty when no target is set. Aligned with `data_ptr()`.
-  deviation(): Uint8Array;
+  /// Reclassify the WHOLE carved field into the persistent class buffer
+  /// (`deviation_ptr`), resizing it to cols*rows. Full-repaint path (overlay
+  /// on, reset/backstep replay, rebuild).
+  deviation_recompute(): void;
+  /// Reclassify ONLY the half-open cell rectangle `[ix0,ix1) × [iy0,iy1)` in
+  /// the persistent buffer, leaving other cells' classes intact — the carve's
+  /// dirty AABB, mirroring the mesh partial re-upload. Falls back to a full
+  /// recompute if the buffer isn't yet sized to the grid.
+  deviation_recompute_in(ix0: number, iy0: number, ix1: number, iy1: number): void;
+  /// Pointer to the persistent row-major cols*rows Uint8Array of deviation
+  /// codes (0 on-target, 1 gouge, 2 rest stock), aligned with `data_ptr()`.
+  /// Re-take the view after every advance/recompute — a growing heap detaches
+  /// it. Length is `deviation_len()` (0 until the first recompute / overlay off).
+  deviation_ptr(): number;
+  deviation_len(): number;
   free(): void;
 }
 
@@ -308,10 +319,14 @@ export class HeightfieldDriver {
   /// Target surface for the red/green deviation overlay, or `null` when the
   /// overlay is off. Cached on the WASM sim (via `set_deviation_target`) at
   /// build() and whenever this changes; the terrain mesh is repainted from
-  /// `sim.deviation()` after every carve while it's set.
+  /// the sim's persistent class buffer after every carve while it's set.
   private deviationTarget: SurfaceField | null = null;
   /// On-target tolerance band half-width (mm) for the overlay.
   private deviationTolMm = 0.05;
+  /// Zero-copy view of the sim's persistent deviation-class buffer
+  /// (`deviation_ptr`), re-taken after every recompute — a growing WASM heap
+  /// detaches it, same contract as `heightView`. `null` while the overlay is off.
+  private deviationView: Uint8Array | null = null;
   /// Reference to the toolpath array that's currently cached on the
   /// WASM Simulator. Used to detect identity drift (e.g. a stale
   /// driver picking up a new Generate response) and trigger a single
@@ -866,21 +881,32 @@ export class HeightfieldDriver {
       this.applyDeviation();
     } else {
       this.sim.clear_deviation_target();
+      this.deviationView = null;
       this.mesh.setDeviation(null);
     }
     this.opts.requestRender();
   }
 
   /// Repaint the deviation overlay from the current carve state. `aabb`
-  /// restricts the mesh re-upload to the dirty rectangle (the class buffer
-  /// itself is recomputed whole, but cells outside the AABB didn't change
-  /// height so their class is unchanged); omit it for a full repaint (build /
-  /// reset / target change). A no-op when the overlay is off.
+  /// restricts BOTH the Rust reclassify and the mesh re-upload to the dirty
+  /// rectangle: only cells the tool just swept get re-sampled against the
+  /// target, every other cell keeps its still-correct class in the sim's
+  /// persistent buffer (mirroring the mesh's partial re-upload). Omit `aabb`
+  /// for a full repaint (build / reset / target change). A no-op when the
+  /// overlay is off.
   private applyDeviation(aabb?: { ix0: number; iy0: number; ix1: number; iy1: number }) {
-    if (!this.deviationTarget || !this.sim || !this.mesh) return;
-    const classes = this.sim.deviation();
-    if (classes.length === 0) return;
-    this.mesh.setDeviation(classes, aabb);
+    if (!this.deviationTarget || !this.sim || !this.mesh || !this.wasm) return;
+    if (aabb) {
+      this.sim.deviation_recompute_in(aabb.ix0, aabb.iy0, aabb.ix1, aabb.iy1);
+    } else {
+      this.sim.deviation_recompute();
+    }
+    const len = this.sim.deviation_len();
+    if (len === 0) return;
+    // Re-take the zero-copy view: the preceding advance/recompute may have
+    // grown WASM memory and detached any prior view (same as `heightView`).
+    this.deviationView = new Uint8Array(this.wasm.memory.buffer, this.sim.deviation_ptr(), len);
+    this.mesh.setDeviation(this.deviationView, aabb);
   }
 
   /// Drive the LOD pyramid's active level. Caller is Scene3D's
@@ -956,6 +982,7 @@ export class HeightfieldDriver {
     this.undercut?.clear();
     this.lastUndercutCount = 0;
     this.heightView = null;
+    this.deviationView = null;
     this.appliedSeg = 0;
     this.partialT = 0;
     this.cachedToolpath = null;

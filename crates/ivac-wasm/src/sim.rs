@@ -108,6 +108,13 @@ pub struct Simulator {
     /// (potentially large) target grid each call — mirrors how `toolpath`
     /// is cached. `None` = overlay off.
     deviation_target: Option<DeviationTarget>,
+    /// Persistent row-major `cols * rows` per-cell deviation-class buffer,
+    /// index-aligned with `data_ptr()`. `deviation_recompute*` write into it
+    /// and JS reads it zero-copy via `deviation_ptr()` (same contract as the
+    /// dense top). Kept between frames so `deviation_recompute_in` can rewrite
+    /// only the dirty AABB while every other cell keeps its still-correct
+    /// class. Empty until the first recompute / cleared when the overlay is off.
+    deviation_buf: Vec<u8>,
 }
 
 /// The cached deviation-overlay target: the surface plus the world-Z datum
@@ -177,6 +184,7 @@ impl Simulator {
             undercut_span_offsets: vec![0],
             undercut_spans: Vec::new(),
             deviation_target: None,
+            deviation_buf: Vec::new(),
         }
     }
 
@@ -537,12 +545,16 @@ impl Simulator {
             surface_z0,
             tol,
         });
+        // Force the next recompute to rebuild the whole class buffer against
+        // the new target rather than partially patching stale classes.
+        self.deviation_buf.clear();
         Ok(())
     }
 
     /// Drop the cached deviation target (overlay turned off).
     pub fn clear_deviation_target(&mut self) {
         self.deviation_target = None;
+        self.deviation_buf = Vec::new();
     }
 
     /// Whether a deviation target is cached.
@@ -552,17 +564,97 @@ impl Simulator {
     }
 
     /// Classify the carved field against the cached deviation target (see
-    /// [`SurfaceField::deviation_of`]). Returns a row-major `cols * rows`
-    /// `Uint8Array` of [`ivac_core::cam::surface::Deviation`] codes (0 =
-    /// on-target, 1 = gouge, 2 = rest stock), aligned index-for-index with
-    /// `data_ptr()`, so the JS driver can repaint per-cell vertex colors off
-    /// the same dirty AABB the carve reports. Empty when no target is cached.
+    /// [`SurfaceField::deviation_of`]). Returns a fresh row-major `cols * rows`
+    /// `Vec` of [`ivac_core::cam::surface::Deviation`] codes (0 = on-target,
+    /// 1 = gouge, 2 = rest stock), aligned index-for-index with `data_ptr()`.
+    /// Empty when no target is cached.
+    ///
+    /// The zero-copy per-frame path is [`Simulator::deviation_recompute`] /
+    /// [`Simulator::deviation_recompute_in`] plus [`Simulator::deviation_ptr`];
+    /// this owned-`Vec` form stays for callers (and tests) that just want a
+    /// one-shot snapshot without touching the persistent buffer.
     #[must_use]
     pub fn deviation(&self) -> Vec<u8> {
         match &self.deviation_target {
             Some(t) => t.surface.deviation_of(&self.field, t.surface_z0, t.tol),
             None => Vec::new(),
         }
+    }
+
+    /// Reclassify the ENTIRE carved field into the persistent class buffer
+    /// (`deviation_ptr()` / `deviation_len()`), resizing it to `cols * rows`.
+    /// Use on the full-repaint paths — overlay turned on, a sim reset/backstep
+    /// replay, or a mesh rebuild — after which JS re-takes the zero-copy view
+    /// and uploads the whole grid. A no-op (buffer emptied) when no target is
+    /// cached.
+    pub fn deviation_recompute(&mut self) {
+        let Some(t) = self.deviation_target.as_ref() else {
+            self.deviation_buf.clear();
+            return;
+        };
+        let n = (self.field.cols as usize) * (self.field.rows as usize);
+        self.deviation_buf.clear();
+        self.deviation_buf.resize(n, 0);
+        t.surface.deviation_into(
+            &self.field,
+            t.surface_z0,
+            t.tol,
+            &mut self.deviation_buf,
+            0,
+            0,
+            self.field.cols,
+            self.field.rows,
+        );
+    }
+
+    /// Reclassify ONLY the half-open cell rectangle `[ix0, ix1) × [iy0, iy1)`
+    /// in the persistent class buffer, leaving every other cell — whose height
+    /// didn't change this frame — at its prior, still-correct class. Pass the
+    /// carve's dirty AABB so a frame reclassifies just the cells the tool swept
+    /// instead of re-sampling the whole target, mirroring the mesh's
+    /// partial-AABB re-upload. JS then re-takes the view and uploads only that
+    /// rectangle. A no-op when no target is cached; falls back to a full
+    /// recompute if the buffer isn't yet sized to the current grid (e.g. the
+    /// first partial after a resolution change slipped through without a full
+    /// repaint).
+    pub fn deviation_recompute_in(&mut self, ix0: u32, iy0: u32, ix1: u32, iy1: u32) {
+        let n = (self.field.cols as usize) * (self.field.rows as usize);
+        if self.deviation_buf.len() != n {
+            self.deviation_recompute();
+            return;
+        }
+        let Some(t) = self.deviation_target.as_ref() else {
+            return;
+        };
+        t.surface.deviation_into(
+            &self.field,
+            t.surface_z0,
+            t.tol,
+            &mut self.deviation_buf,
+            ix0,
+            iy0,
+            ix1,
+            iy1,
+        );
+    }
+
+    /// Pointer to the persistent per-cell deviation-class buffer — one `u8`
+    /// [`ivac_core::cam::surface::Deviation`] code per cell, row-major and
+    /// index-aligned with `data_ptr()`. Zero-copy read the same way as the
+    /// dense top: re-take the `Uint8Array` view after every `advance()` /
+    /// recompute, since a growing WASM heap detaches it. Length is
+    /// `deviation_len()` (0 until the first recompute or when the overlay is
+    /// off).
+    #[must_use]
+    pub fn deviation_ptr(&self) -> *const u8 {
+        self.deviation_buf.as_ptr()
+    }
+
+    /// Length of the persistent deviation-class buffer (`cols * rows` once a
+    /// recompute has run, else `0`).
+    #[must_use]
+    pub fn deviation_len(&self) -> u32 {
+        self.deviation_buf.len() as u32
     }
 
     /// Number of columns currently carrying an undercut sidecar entry (`0`
@@ -721,12 +813,21 @@ impl Simulator {
             surface_z0,
             tol,
         });
+        self.deviation_buf.clear();
     }
 
     /// Test-only: number of segments with cached diagnostics.
     #[cfg(test)]
     pub(crate) fn warning_cache_len(&self) -> usize {
         self.warning_cache.len()
+    }
+
+    /// Test-only view of the persistent deviation-class buffer that
+    /// `deviation_ptr()` exposes to JS zero-copy (reading it via the raw
+    /// pointer would force `unsafe`).
+    #[cfg(test)]
+    pub(crate) fn deviation_buf(&self) -> &[u8] {
+        &self.deviation_buf
     }
 }
 
@@ -1290,6 +1391,54 @@ mod tests {
         sim.clear_deviation_target();
         assert!(!sim.has_deviation_target());
         assert!(sim.deviation().is_empty());
+    }
+
+    /// The zero-copy per-frame path: `deviation_recompute_in` patches only the
+    /// carve's dirty AABB into the persistent buffer, and the result matches a
+    /// full `deviation_recompute` / `deviation()` — the whole point of item 4
+    /// (reclassify the touched cells, not the whole grid, every frame).
+    #[test]
+    fn deviation_recompute_in_matches_full_over_the_dirty_aabb() {
+        use ivac_core::cam::surface::SurfaceField;
+        use ivac_core::geometry::Point2;
+
+        let mut sim = new_sim(0.0, 0.0, 4.0, 4.0, 1.0, 0.0);
+        // Buffer empty until a target + recompute.
+        assert_eq!(sim.deviation_len(), 0);
+        sim.deviation_recompute();
+        assert_eq!(sim.deviation_len(), 0, "no target → buffer stays empty");
+
+        let (cols, rows) = (sim.cols(), sim.rows());
+        let n = (cols * rows) as usize;
+        let target = SurfaceField::new(Point2::new(0.0, 0.0), 1.0, cols, rows, vec![-1.0; n]);
+        sim.set_deviation_target_inner(target, sim.top_z(), 0.25);
+        // set_deviation_target invalidates the buffer until the next recompute.
+        assert_eq!(sim.deviation_len(), 0);
+
+        // Full recompute over the un-carved stock: every cell is 1mm of rest
+        // stock above the -1 target.
+        sim.deviation_recompute();
+        assert_eq!(sim.deviation_len(), (cols * rows));
+        assert_eq!(sim.deviation_buf(), sim.deviation().as_slice());
+
+        // Carve a plunge, then reclassify ONLY the reported dirty AABB.
+        let segs = vec![plunge(2.0, 2.0, 0.0, -2.0)];
+        let aabb = sim.advance_inner(&segs, &endmill(4.0), 0, 1);
+        assert_eq!(aabb.len(), 4, "carve reported a dirty AABB");
+        sim.deviation_recompute_in(aabb[0], aabb[1], aabb[2], aabb[3]);
+
+        // The partial buffer equals a from-scratch full classification: the
+        // touched cells flipped to gouge, the untouched ones kept rest stock.
+        assert_eq!(
+            sim.deviation_buf(),
+            sim.deviation().as_slice(),
+            "partial-AABB recompute must equal the full classification"
+        );
+
+        // A partial call after a size change falls back to a full recompute
+        // (defensive): shrink the buffer to force the mismatch branch.
+        sim.deviation_recompute_in(0, 0, 1, 1);
+        assert_eq!(sim.deviation_len(), (cols * rows));
     }
 
     /// The headline flip deliverable: plunging a T-slot (form) tool through an
