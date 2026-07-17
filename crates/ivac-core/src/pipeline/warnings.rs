@@ -283,12 +283,92 @@ pub(super) fn push_grbl_fixed_sensor_warning(
     ));
 }
 
+/// The XY bulge extrema of one tessellated `G2`/`G3` chord's sub-arc — the
+/// axis-cardinal circle points (±X / ±Y tangent) whose angular position falls
+/// inside *this chord's* sweep, carrying the arc's linearly interpolated Z.
+///
+/// A straight endpoint-only scan misses these: a coarse arc chord can span a
+/// wide angle, so the true arc bulges out past both of its endpoints. When a
+/// cardinal extreme falls inside the chord's angular window it is the point
+/// where the arc reaches furthest in that axis — so an arc that clears the
+/// work area / stock at its crest while keeping both endpoints inside is only
+/// caught by sampling here. Mirrors the parametric-position test
+/// (`t_of`) in `sim::sweep::for_each_swept_cell_arc_windowed` so the scan and
+/// the carve agree on the sub-arc geometry. Returns an empty vec for a
+/// degenerate arc (start on the center, or a vanishing sweep).
+fn arc_chord_extremes(
+    from: &crate::gcode::preview::Pose3,
+    to: &crate::gcode::preview::Pose3,
+    arc: &crate::gcode::preview::ArcXY,
+) -> Vec<crate::gcode::preview::Pose3> {
+    use crate::gcode::preview::Pose3;
+    use std::f64::consts::{FRAC_PI_2, PI, TAU};
+    let (cx, cy) = (arc.cx, arc.cy);
+    let radius = (from.x - cx).hypot(from.y - cy);
+    if radius < 1e-9 {
+        return Vec::new();
+    }
+    let theta_start = (from.y - cy).atan2(from.x - cx);
+    let theta_end = (to.y - cy).atan2(to.x - cx);
+    let coincident = (from.x - to.x).abs() < 1e-9 && (from.y - to.y).abs() < 1e-9;
+    // Resolve the signed sweep exactly like `preview::interpret_with_index` /
+    // `sim::sweep::arc_span`: coincident endpoints ⇒ a full revolution in the
+    // requested direction, otherwise bring the raw angle diff into the correct
+    // half-plane.
+    let mut sweep = theta_end - theta_start;
+    if arc.ccw {
+        if coincident {
+            sweep = TAU;
+        } else if sweep <= 1e-9 {
+            sweep += TAU;
+        }
+    } else if coincident {
+        sweep = -TAU;
+    } else if sweep >= -1e-9 {
+        sweep -= TAU;
+    }
+    if sweep.abs() < 1e-12 {
+        return Vec::new();
+    }
+    let dir = if sweep >= 0.0 { 1.0 } else { -1.0 };
+    let sweep_mag = sweep.abs();
+    let dz = to.z - from.z;
+    let mut out = Vec::new();
+    for (alpha, ex, ey) in [
+        (0.0, cx + radius, cy),
+        (FRAC_PI_2, cx, cy + radius),
+        (PI, cx - radius, cy),
+        (3.0 * FRAC_PI_2, cx, cy - radius),
+    ] {
+        // Parametric position of this cardinal angle within the sweep: signed
+        // offset from `theta_start` in the sweep direction, wrapped to
+        // [0, TAU) then normalized by the sweep magnitude. `t <= 1` ⇒ the
+        // cardinal point lies on this chord's sub-arc.
+        let t = ((alpha - theta_start) * dir).rem_euclid(TAU) / sweep_mag;
+        if t <= 1.0 + 1e-12 {
+            out.push(Pose3 {
+                x: ex,
+                y: ey,
+                z: from.z + dz * t,
+            });
+        }
+    }
+    out
+}
+
 /// Count cut moves (Cut / Plunge / Arc — rapids and retracts excluded,
-/// since they legitimately fly to clearance / park positions) whose END
-/// point lands outside an axis-aligned envelope, returning the count and
-/// the gcode line of the first offender (0 if none / unstamped).
-/// `is_outside` decides containment for a single endpoint; the work-area
-/// and stock scans differ only in that predicate.
+/// since they legitimately fly to clearance / park positions) that land
+/// outside an axis-aligned envelope, returning the count and the gcode line
+/// of the first offender (0 if none / unstamped). `is_outside` decides
+/// containment for a single point; the work-area and stock scans differ only
+/// in that predicate.
+///
+/// A move is "outside" when its END point is — or, for a tessellated `G2`/`G3`
+/// chord (one carrying an [`ArcXY`] descriptor), when any of its sub-arc bulge
+/// extrema is. Sampling the bulge keeps the scan tight even when the arc
+/// stream is coarsened: a wide chord whose endpoints stay inside but whose arc
+/// crest clears the envelope still trips the warning. Each offending move is
+/// counted once regardless of how many of its sampled points are outside.
 fn count_cuts_outside(
     toolpath: &[crate::gcode::preview::ToolpathSegment],
     is_outside: impl Fn(&crate::gcode::preview::Pose3) -> bool,
@@ -300,7 +380,13 @@ fn count_cuts_outside(
         if !matches!(seg.kind, MoveKind::Cut | MoveKind::Plunge | MoveKind::Arc) {
             continue;
         }
-        if is_outside(&seg.to) {
+        let outside = is_outside(&seg.to)
+            || seg.arc.as_ref().is_some_and(|arc| {
+                arc_chord_extremes(&seg.from, &seg.to, arc)
+                    .iter()
+                    .any(&is_outside)
+            });
+        if outside {
             count += 1;
             if first_line == 0 {
                 first_line = seg.gcode_line;
@@ -1437,6 +1523,104 @@ mod tests {
             hits[0].message.contains("1 cut move") && hits[0].message.contains("gcode line 11"),
             "only the z=-5 plunge (line 11) is out of the shifted stock: {}",
             hits[0].message
+        );
+    }
+
+    /// A single coarse `G2`/`G3` chord whose ENDPOINTS both sit inside the
+    /// work area but whose arc crest bulges past +X trips `out_of_work_area`
+    /// — the arc-aware bulge sampling (bd ivac-58nl.9). The identical chord
+    /// WITHOUT its `arc` descriptor (endpoint-only) stays silent, proving the
+    /// crest sample is what catches the coarsened arc.
+    #[test]
+    fn work_area_scan_flags_arc_bulge_past_endpoints() {
+        use crate::gcode::preview::{ArcXY, MoveKind, Pose3, ToolpathSegment};
+        let machine = crate::project::MachineConfig::default(); // 200×300×50
+                                                                // CCW semicircle about (195, 150) R=30: endpoints (195,120)/(195,180)
+                                                                // are inside X≤200, but the 0° crest reaches (225,150) — 25 mm past
+                                                                // the +X travel.
+        let arc_seg = |arc| ToolpathSegment {
+            from: Pose3 {
+                x: 195.0,
+                y: 120.0,
+                z: -2.0,
+            },
+            to: Pose3 {
+                x: 195.0,
+                y: 180.0,
+                z: -2.0,
+            },
+            kind: MoveKind::Arc,
+            gcode_line: 20,
+            op_id: 0,
+            arc,
+        };
+        // With the descriptor: the crest sample fires.
+        let mut warnings = Vec::new();
+        push_work_area_warning(
+            &[arc_seg(Some(ArcXY {
+                cx: 195.0,
+                cy: 150.0,
+                ccw: true,
+            }))],
+            &machine,
+            &mut warnings,
+        );
+        assert!(
+            warnings.iter().any(|w| w.kind == "out_of_work_area"),
+            "arc crest bulging past +X should trip the work-area scan: {warnings:?}"
+        );
+        // Endpoint-only (arc: None): both endpoints are inside, so silent —
+        // this is exactly the regression coarsening would cause without the
+        // bulge sampling.
+        let mut endpoint_only = Vec::new();
+        push_work_area_warning(&[arc_seg(None)], &machine, &mut endpoint_only);
+        assert!(
+            endpoint_only.is_empty(),
+            "endpoint-only scan of the same chord must stay silent: {endpoint_only:?}"
+        );
+    }
+
+    /// The stock scan is arc-aware too: a coarse chord whose crest clears
+    /// the stock in +Y (while both endpoints stay inside) trips
+    /// `out_of_stock` (bd ivac-58nl.9).
+    #[test]
+    fn stock_scan_flags_arc_bulge_outside_stock() {
+        use crate::gcode::preview::{ArcXY, MoveKind, Pose3, ToolpathSegment};
+        // 100×80 stock at origin, z ∈ [-10, 0].
+        let stock = StockConfig {
+            origin: [0.0, 0.0],
+            width_mm: 100.0,
+            height_mm: 80.0,
+            thickness_mm: 10.0,
+            ..Default::default()
+        };
+        // CCW arc about (50, 78) R=10: endpoints (60,78)/(40,78) inside,
+        // 90° crest reaches (50, 88) — 8 mm past the +Y stock edge.
+        let seg = ToolpathSegment {
+            from: Pose3 {
+                x: 60.0,
+                y: 78.0,
+                z: -5.0,
+            },
+            to: Pose3 {
+                x: 40.0,
+                y: 78.0,
+                z: -5.0,
+            },
+            kind: MoveKind::Arc,
+            gcode_line: 12,
+            op_id: 0,
+            arc: Some(ArcXY {
+                cx: 50.0,
+                cy: 78.0,
+                ccw: true,
+            }),
+        };
+        let mut warnings = Vec::new();
+        push_stock_warning(&[seg], Some(&stock), &mut warnings);
+        assert!(
+            warnings.iter().any(|w| w.kind == "out_of_stock"),
+            "arc crest bulging past the +Y stock edge should trip the stock scan: {warnings:?}"
         );
     }
 
