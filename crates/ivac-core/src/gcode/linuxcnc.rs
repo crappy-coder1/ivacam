@@ -7,6 +7,7 @@
 #![allow(clippy::many_single_char_names, clippy::match_same_arms)]
 
 use crate::gcode::post_profile::{template_lines, AxisFormat, PostProfile, TokenCtx};
+use crate::gcode::sink::GcodeSink;
 use crate::gcode::{
     configure_post_state, fmt_num_dp, line_number_prefix, CapturedPostState, CoolantState,
     PostProcessor, PostState,
@@ -20,7 +21,11 @@ pub struct Post {
     /// check `state.profile` to decide whether to delegate to
     /// `LinuxCNC`'s template-driven `program_start` / _end / tool path.
     pub(crate) state: PostState,
-    out: Vec<String>,
+    /// Emitted g-code lines. Routed through [`GcodeSink`] — the
+    /// write-through seam for the streaming-gcode evolution (`ivac-3j1p`) —
+    /// rather than a bare `Vec<String>`, so a future append-only sink can
+    /// stream without buffering the whole program. Behavior is unchanged.
+    sink: GcodeSink,
 }
 
 impl Post {
@@ -33,9 +38,9 @@ impl Post {
         let raw: String = line.into();
         let prefix = line_number_prefix(&mut self.state);
         if prefix.is_empty() {
-            self.out.push(raw);
+            self.sink.push(raw);
         } else {
-            self.out.push(format!("{prefix}{raw}"));
+            self.sink.push(format!("{prefix}{raw}"));
         }
     }
 
@@ -766,20 +771,16 @@ impl PostProcessor for Post {
         self.state.last_z = Some(r);
     }
     fn finish(&self) -> String {
-        self.out.join("\n") + "\n"
+        self.sink.finish()
     }
     fn out_lines_count(&self) -> usize {
-        self.out.len()
+        self.sink.len()
     }
     fn out_lines_clone_from(&self, start: usize) -> Vec<String> {
-        if start >= self.out.len() {
-            Vec::new()
-        } else {
-            self.out[start..].to_vec()
-        }
+        self.sink.clone_from(start)
     }
     fn out_extend_lines(&mut self, lines: &[String]) {
-        self.out.extend_from_slice(lines);
+        self.sink.extend_from_slice(lines);
     }
     fn reset_state(&mut self) {
         self.state.last_x = None;

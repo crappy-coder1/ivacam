@@ -131,6 +131,7 @@ pub mod linuxcnc;
 mod order;
 pub mod post_profile;
 pub mod preview;
+pub(crate) mod sink;
 mod tabs;
 mod walk;
 mod z_schedule;
