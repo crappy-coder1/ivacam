@@ -406,16 +406,31 @@ pub fn interpret_with_index(gcode: &str) -> (Vec<ToolpathSegment>, GcodeIndex) {
                     sweep -= TAU;
                 }
             }
-            // ~2° per chord. This density now only bounds the RENDER (the
-            // wireframe polyline) and the endpoint-sampled envelope scans —
-            // the SIM no longer depends on it: each chord is tagged with its
-            // parent arc (`ArcXY`) below, so `sim::sweep` carves the exact
-            // analytic sub-arc and the union is the true arc tube regardless
-            // of chord count (bd ivac-58nl.4). 2° keeps the wireframe smooth
-            // and the envelope scans tight; the previous 10° setting left
-            // visible polyline "teeth". With a 4-chord minimum a
-            // quarter-circle still gets at least max(45, 4) = 45 chords.
-            let n = (sweep.abs() / (2f64.to_radians())).ceil().max(4.0) as usize;
+            // Coarse chord tessellation. As of bd ivac-58nl.9 NONE of the
+            // dense-stream consumers depend on this density any more, so the
+            // step is set for a SMALL payload (fewer segments ⇒ smaller
+            // toolpath, faster preview / sim / serialize) rather than for
+            // smoothness:
+            //   * the SIM carves each chord as its exact analytic sub-arc —
+            //     every chord is tagged with its parent arc (`ArcXY`) below, so
+            //     the union is the true arc tube for any chord count
+            //     (bd ivac-58nl.4);
+            //   * the wireframe renderer re-tessellates arc-tagged chords on
+            //     read (`tessellateArc`), so a coarse stream still draws round;
+            //   * the envelope scans sample each chord's arc bulge extrema, not
+            //     just its endpoints (`arc_chord_extremes`), so a wide chord
+            //     that clears the work area / stock still warns.
+            // What the chord count still sets is the granularity of interactive
+            // per-segment scrubbing / picking (both stay smooth — the sim's
+            // partial-advance carves the analytic sub-arc window within a
+            // chord). 15° gives ~7.5× fewer arc segments than the old 2°; the
+            // 4-chord minimum keeps a small arc from degenerating to one or two
+            // chords, and every chord stays ≤ 15° — well under the 180° where a
+            // sub-arc's direction would be ambiguous.
+            const ARC_CHORD_STEP_DEG: f64 = 15.0;
+            let n = (sweep.abs() / ARC_CHORD_STEP_DEG.to_radians())
+                .ceil()
+                .max(4.0) as usize;
             let dtheta = sweep / (n as f64);
             let dz = to.z - from.z;
             let mut prev = from;
@@ -854,9 +869,14 @@ mod tests {
             .iter()
             .filter(|s| matches!(s.kind, MoveKind::Arc))
             .collect();
+        // Coarse tessellation (bd ivac-58nl.9): a 90° quarter at ~15° per
+        // chord is ~6 sub-arcs — materially fewer than the old ~2° (45), but
+        // still ≥ the 4-chord floor so scrubbing / picking stay usable and the
+        // render tessellator has real sub-arcs to smooth. The analytic carve is
+        // chord-count-independent, so the exact number only affects payload.
         assert!(
-            arcs.len() >= 4,
-            "a quarter arc should tessellate into many chords, got {}",
+            (4..=12).contains(&arcs.len()),
+            "a quarter arc should tessellate into a handful of coarse chords, got {}",
             arcs.len()
         );
         for s in &arcs {

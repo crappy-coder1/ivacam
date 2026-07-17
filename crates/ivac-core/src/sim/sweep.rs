@@ -2005,15 +2005,19 @@ mod tests {
         // heightmap — no visible chord-tessellation scallop along the
         // arc's centerline. Earlier 10° tessellation produced 0.04 mm
         // scallop teeth on a 10 mm arc (sim artifact, not a real
-        // machining outcome). The preview now tessellates at ~2°,
-        // which drops the chord error to ~0.0015 mm.
+        // machining outcome).
         //
-        // Test strategy: emit a 90° G2 arc, simulate, then bilinearly
+        // Smoothness no longer comes from dense tessellation: the preview now
+        // emits a COARSE chord stream (~15°, ~6 chords for this 90° arc, bd
+        // ivac-58nl.9), but every chord is tagged with its parent arc, so
+        // `sweep_segment` carves the exact analytic sub-arc (bd ivac-58nl.4).
+        // The union is the true arc tube regardless of chord count — so this
+        // test doubles as proof that the coarsened stream still carves smooth.
+        //
+        // Test strategy: emit a 90° G3 arc, simulate, then bilinearly
         // sample the heightmap along the analytic centerline at fine
         // angular resolution. The MAX-MINUS-MIN variance along the
-        // centerline samples is the visible "scallop teeth" magnitude
-        // — assert it stays below 2 × chord error of the new 2°
-        // tessellation (≈ 0.003 mm), well below the prior 0.04 mm.
+        // centerline samples is the visible "scallop teeth" magnitude.
         //
         // Use a 0.25 mm cell grid so the centerline-following bilinear
         // sample isn't quantized by cell size.
@@ -2026,9 +2030,12 @@ mod tests {
             .iter()
             .filter(|s| matches!(s.kind, MoveKind::Arc))
             .collect();
+        // Coarse stream: a handful of arc-tagged chords, each carved
+        // analytically (the low count is the point — smoothness below is not
+        // from chord density).
         assert!(
-            arc_segs.len() >= 45,
-            "expected ≥45 chord segments from 90° arc at 2° tess, got {}",
+            arc_segs.len() >= 4 && arc_segs.iter().all(|s| s.arc.is_some()),
+            "expected a few arc-tagged chords from the 90° arc, got {}",
             arc_segs.len()
         );
         let mut map = Heightmap::new(Point2::new(-2.0, -2.0), 0.25, 80, 80, 0.0);
@@ -2060,13 +2067,13 @@ mod tests {
             }
         }
         let variance = max_z - min_z;
-        // Theoretical chord error at 2° tessellation is 0.0015 mm on
-        // a 10 mm arc; once the 0.25 mm cell grid and f32 storage
-        // add their own noise, the observed centerline variance lands
-        // at ~0.01 mm. That's still 4× tighter than the previous 10°
-        // tessellation's 0.04 mm and well below the original
-        // user-visible scallop floor (0.04 mm "teeth" between
-        // adjacent chords).
+        // The analytic sub-arc carve has no chord-error term — it projects
+        // every cell onto the true circle — so the residual centerline
+        // variance is just the 0.25 mm cell grid + f32 storage noise, ~0.01 mm.
+        // That holds at the coarse 15° tessellation exactly as it did at 2°
+        // (the carve is chord-count-independent) and stays well below the
+        // original user-visible scallop floor (0.04 mm "teeth" between
+        // adjacent chords under the old straight-chord carve).
         assert!(
             variance < 0.02,
             "ball-nose arc scallop {variance} mm exceeds 0.02 mm bound (min={min_z}, max={max_z})",

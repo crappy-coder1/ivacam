@@ -197,9 +197,15 @@ fn live_interpret_then_sweep_carves_the_analytic_arc() {
     let g = "G21\nG0 X8 Y0\nG3 X0 Y8 I-8 J0 F500\n"; // quarter circle, R=8, CCW
     let toolpath = ivac_core::gcode::preview::interpret(g);
     // Guard: the arc must actually reach the sim as arc-tagged chords, else
-    // this would silently exercise the straight-chord path.
+    // this would silently exercise the straight-chord path. The preview now
+    // tessellates coarsely (~15°, bd ivac-58nl.9), so a 90° quarter is ~6
+    // chords — the analytic sub-arc carve is chord-count-independent, which is
+    // exactly what this test proves.
     let n_arc = toolpath.iter().filter(|s| s.arc.is_some()).count();
-    assert!(n_arc >= 40, "expected many arc-tagged chords, got {n_arc}");
+    assert!(
+        n_arc >= 4,
+        "expected the arc to reach the sim as arc-tagged chords, got {n_arc}"
+    );
 
     let r_tool = 2.5f32;
     let profile = ToolProfile::BallNose { r: r_tool };
