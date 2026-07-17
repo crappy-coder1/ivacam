@@ -552,6 +552,10 @@ components:
         enum:
         - internal_panic
         type: string
+      - description: A two-sided (flip-stock) job has a front op that cuts clean through the stock, severing it before the flip. See the two-sided conflict guard ([`crate::cam::two_sided`]).
+        enum:
+        - two_sided_through
+        type: string
     ErrorKind:
       enum:
       - bad_input
@@ -4260,6 +4264,10 @@ components:
       - description: The pipeline panicked — surfaced as a reportable internal error.
         enum:
         - internal_panic
+        type: string
+      - description: A two-sided (flip-stock) job has a front op that cuts clean through the stock, severing it before the flip. See the two-sided conflict guard ([`crate::cam::two_sided`]).
+        enum:
+        - two_sided_through
         type: string
     WiacErrorKind:
       enum:

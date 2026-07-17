@@ -8,11 +8,13 @@
 
 use crate::cam::offsets::PolylineOffset;
 use crate::cam::setup::Setup;
+use crate::cam::two_sided::{self, Conflict, SideExtent};
 use crate::cam::VcObject;
+use crate::geometry::BBox;
 use crate::project::{Op, OpKind, OpSource, PocketStrategy, Project, StockConfig};
-use crate::project::{ToolChangeStrategy, ToolOffset};
+use crate::project::{TabPlacementMode, ToolChangeStrategy, ToolOffset, WorkpieceSide};
 
-use super::{op_includes_object, PipelineWarning};
+use super::{op_includes_object, resolve_op_segment_refs, PipelineError, PipelineWarning};
 
 /// Surface a warning when the imported geometry's
 /// bounding box does NOT contain the gcode origin (0,0). The full
@@ -507,6 +509,114 @@ pub(super) fn push_stock_warning(
     .with_param("count", count)
     .with_param("first_line", first_line)
     .with_param("variant", if first_line != 0 { "at_line" } else { "" }));
+}
+
+/// Two-sided (flip-stock) conflict guard — the correctness gate for jobs
+/// that machine both faces of the stock. Resolves each cutting op to a
+/// [`SideExtent`] (which face, XY footprint, removal depth, whether it's
+/// tabbed) and hands the set to [`two_sided::analyze`].
+///
+/// Only a genuine two-sided job — one with at least one enabled `Back` op
+/// AND a known stock thickness — is checked. Single-sided programs (where a
+/// through-cut is normal) and thickness-unknown jobs are left exactly as
+/// they were, so nothing here changes existing behaviour.
+///
+/// Returns `Err(PipelineError::TwoSidedThrough)` when a front op cuts clean
+/// through the stock without tabs (severing it before the flip) — the
+/// caller refuses to emit. Opposing front/back cuts that overlap in the
+/// middle are pushed as non-fatal `two_sided_overlap` warnings.
+pub(super) fn two_sided_guard(
+    project: &Project,
+    objects: &[VcObject],
+    warnings: &mut Vec<PipelineWarning>,
+) -> Result<(), PipelineError> {
+    let Some(stock) = project.stock.as_ref() else {
+        return Ok(());
+    };
+    let thickness = stock.thickness_mm;
+    let has_back = project
+        .operations
+        .iter()
+        .any(|o| o.enabled && o.side == WorkpieceSide::Back);
+    if !has_back || thickness <= 1e-6 {
+        return Ok(());
+    }
+
+    let extents: Vec<SideExtent> = project
+        .operations
+        .iter()
+        .filter(|o| o.enabled && !o.is_program_only())
+        .filter_map(|op| {
+            let mut footprint = BBox::EMPTY;
+            for s in resolve_op_segment_refs(op, &project.segments, objects) {
+                footprint.extend_point(s.start);
+                footprint.extend_point(s.end);
+            }
+            // Ops with no resolvable source geometry (selection drifted to a
+            // now-gone object) contribute no footprint — skip them.
+            if !footprint.is_finite() {
+                return None;
+            }
+            Some(SideExtent {
+                op_id: op.id,
+                side: op.side,
+                footprint,
+                removal_mm: op_removal_mm(op),
+                tabbed: op_has_tabs(op),
+            })
+        })
+        .collect();
+
+    for conflict in two_sided::analyze(&extents, thickness) {
+        match conflict {
+            Conflict::FrontSever { op_id, removal_mm } => {
+                return Err(PipelineError::TwoSidedThrough {
+                    op_id,
+                    thickness_mm: thickness,
+                    removal_mm,
+                });
+            }
+            Conflict::OpposingOverlap {
+                front_op,
+                back_op,
+                overlap_mm,
+            } => {
+                warnings.push(
+                    PipelineWarning::for_op(
+                        back_op,
+                        "two_sided_overlap",
+                        format!(
+                            "front op #{front_op} and back op #{back_op} machine overlapping areas \
+                             whose cuts meet {overlap_mm:.2} mm past the stock thickness — verify \
+                             this through-feature is intended"
+                        ),
+                    )
+                    .with_param("front_op", front_op)
+                    .with_param("back_op", back_op)
+                    .with_param("overlap_mm", format!("{overlap_mm:.3}")),
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// How far an op removes material below its own face (mm, positive),
+/// derived from the universal depth schedule: from `start_depth` down to
+/// `depth`, extended by `through_depth`. Op kinds that carry their cut
+/// depth elsewhere (V-Carve, Halfpipe, Thread) report their common depth
+/// only — see the module note on [`crate::cam::two_sided`].
+fn op_removal_mm(op: &Op) -> f64 {
+    let p = &op.params;
+    (p.start_depth - p.depth).max(0.0) + p.through_depth.max(0.0)
+}
+
+/// Whether an op leaves holding tabs (bridges). Tabs are emitted for any
+/// `tab_mode` other than `Off`; a tabbed front through-cut keeps the part
+/// bridged across the flip, so the guard doesn't treat it as a sever.
+fn op_has_tabs(op: &Op) -> bool {
+    op.contour_params()
+        .is_some_and(|c| !matches!(c.tab_mode, TabPlacementMode::Off))
 }
 
 /// Scan the enabled-op sequence for obviously wrong orderings —

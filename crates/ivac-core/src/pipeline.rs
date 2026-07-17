@@ -245,6 +245,15 @@ pub enum PipelineError {
     UnimplementedKind(Box<OpKind>),
     #[error("text render failed: {0}")]
     TextRender(String),
+    #[error(
+        "two-sided job: operation #{op_id} removes {removal_mm} mm through {thickness_mm} mm stock \
+         from the front, severing it before the flip"
+    )]
+    TwoSidedThrough {
+        op_id: u32,
+        thickness_mm: f64,
+        removal_mm: f64,
+    },
     #[error("pipeline cancelled")]
     Cancelled,
 }
@@ -292,6 +301,24 @@ impl PipelineError {
                     .with_code(ErrorCode::TextRenderFailed)
                     .with_param("detail", msg)
                     .with_hint("Pick a different font or fix the text contents."),
+            ),
+            PipelineError::TwoSidedThrough {
+                op_id,
+                thickness_mm,
+                removal_mm,
+            } => Some(
+                Structured::misconfigured(format!(
+                    "two-sided job: operation #{op_id} cuts clean through the {thickness_mm} mm \
+                     stock from the front, so it can't be flipped and re-registered"
+                ))
+                .with_code(ErrorCode::TwoSidedThrough)
+                .with_param("op_id", op_id)
+                .with_param("thickness_mm", thickness_mm)
+                .with_param("removal_mm", removal_mm)
+                .with_hint(
+                    "Reduce the front op's depth below the stock thickness, add holding tabs, \
+                     or move the through-cut to the back (last) side.",
+                ),
             ),
         }
     }
@@ -505,6 +532,10 @@ fn run_pipeline_impl<F: Fn(&str, f64, &str)>(
     // Warnings computable from the project alone (no assembled toolpath).
     // Shared with the streaming entry so both surfaces raise the same set.
     push_pre_emit_warnings(&project, post_kind, &mut warnings);
+    // Two-sided (flip-stock) correctness gate: refuse a front op that cuts
+    // clean through the stock (can't flip a severed part), warn on opposing
+    // front/back cuts that overlap. No-op for single-sided jobs.
+    warnings::two_sided_guard(&project, &objects, &mut warnings)?;
 
     let post_tag: u8 = post_kind.cache_tag();
     // run_per_op + every downstream driver now take

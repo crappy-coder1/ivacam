@@ -63,6 +63,10 @@ pub enum ErrorCode {
     TextRenderFailed,
     /// The pipeline panicked — surfaced as a reportable internal error.
     InternalPanic,
+    /// A two-sided (flip-stock) job has a front op that cuts clean through
+    /// the stock, severing it before the flip. See the two-sided conflict
+    /// guard ([`crate::cam::two_sided`]).
+    TwoSidedThrough,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

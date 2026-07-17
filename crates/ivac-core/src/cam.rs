@@ -33,6 +33,7 @@ pub mod surface_mill;
 pub mod tabs;
 pub mod thread;
 pub mod trochoidal;
+pub mod two_sided;
 pub mod vcarve;
 pub mod vcarve_emit;
 pub mod waterline;

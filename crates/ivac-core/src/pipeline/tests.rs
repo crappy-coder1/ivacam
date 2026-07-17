@@ -7111,3 +7111,134 @@ mod streaming_gcode {
         assert_eq!(with_preview, bytes_only);
     }
 }
+
+/// End-to-end coverage for the two-sided (flip-stock) conflict guard
+/// (`warnings::two_sided_guard`, rt1.11.3). The pure depth/overlap logic
+/// is unit-tested in `cam::two_sided`; these assert the pipeline wiring:
+/// gating on a real two-sided job, the hard refuse, and the overlap warning.
+mod two_sided_guard {
+    use super::*;
+    use crate::project::{StockConfig, WorkpieceSide};
+
+    /// 20 × 20 stock, 10 mm thick, top at z = 0 — matches the
+    /// `closed_square(20.0)` geometry `project_with` builds.
+    fn stock_10mm() -> StockConfig {
+        StockConfig {
+            origin: [0.0, 0.0],
+            width_mm: 20.0,
+            height_mm: 20.0,
+            thickness_mm: 10.0,
+            top_z_mm: 0.0,
+            flip: None,
+        }
+    }
+
+    fn pocket_depth(id: u32, side: WorkpieceSide, depth: f64) -> Op {
+        let mut op = pocket_op(id, 1, OpSource::All);
+        op.params.depth = depth;
+        op.side = side;
+        op
+    }
+
+    fn run(project: Project) -> Result<PipelineResponse, PipelineError> {
+        run_pipeline(
+            PipelineRequest {
+                project,
+                post_processor: Some(PostProcessorKind::Linuxcnc),
+            },
+            |_, _, _| {},
+        )
+    }
+
+    /// A front op cutting clean through the stock (12 mm > 10 mm) with no
+    /// tabs severs the part before the flip — the pipeline refuses.
+    #[test]
+    fn front_through_cut_refuses() {
+        let mut project = project_with(
+            vec![
+                pocket_depth(1, WorkpieceSide::Front, -12.0),
+                pocket_depth(2, WorkpieceSide::Back, -3.0),
+            ],
+            vec![endmill(1, 3.0)],
+        );
+        project.stock = Some(stock_10mm());
+        match run(project) {
+            Err(PipelineError::TwoSidedThrough { op_id, .. }) => assert_eq!(op_id, 1),
+            other => panic!("expected TwoSidedThrough refuse, got {other:?}"),
+        }
+    }
+
+    /// Shallow front + back cuts (4 + 4 = 8 < 10) leave a web — emit
+    /// cleanly with no `two_sided_overlap` warning.
+    #[test]
+    fn shallow_two_sided_cuts_leave_a_web() {
+        let mut project = project_with(
+            vec![
+                pocket_depth(1, WorkpieceSide::Front, -4.0),
+                pocket_depth(2, WorkpieceSide::Back, -4.0),
+            ],
+            vec![endmill(1, 3.0)],
+        );
+        project.stock = Some(stock_10mm());
+        let resp = run(project).expect("shallow two-sided job emits");
+        assert!(
+            !resp.warnings.iter().any(|w| w.kind == "two_sided_overlap"),
+            "a 2 mm web remains — no overlap warning expected"
+        );
+    }
+
+    /// Opposing front + back cuts that meet in the middle (6 + 6 = 12 > 10,
+    /// neither alone through) emit but raise a `two_sided_overlap` warning.
+    #[test]
+    fn opposing_cuts_warn_but_emit() {
+        let mut project = project_with(
+            vec![
+                pocket_depth(1, WorkpieceSide::Front, -6.0),
+                pocket_depth(2, WorkpieceSide::Back, -6.0),
+            ],
+            vec![endmill(1, 3.0)],
+        );
+        project.stock = Some(stock_10mm());
+        let resp = run(project).expect("overlapping two-sided job still emits");
+        let overlap = resp
+            .warnings
+            .iter()
+            .find(|w| w.kind == "two_sided_overlap")
+            .expect("expected a two_sided_overlap warning");
+        assert_eq!(overlap.op_id, Some(2));
+        assert_eq!(overlap.params.get("front_op").map(String::as_str), Some("1"));
+        assert_eq!(overlap.params.get("back_op").map(String::as_str), Some("2"));
+    }
+
+    /// Back-compat: a single-sided job (no `Back` op) with a through-cut is
+    /// NOT gated — through-cuts are normal there. No refuse, no warning.
+    #[test]
+    fn single_sided_through_cut_is_not_gated() {
+        let mut project = project_with(
+            vec![pocket_depth(1, WorkpieceSide::Front, -12.0)],
+            vec![endmill(1, 3.0)],
+        );
+        project.stock = Some(stock_10mm());
+        let resp = run(project).expect("single-sided through-cut emits normally");
+        assert!(!resp.warnings.iter().any(|w| w.kind == "two_sided_overlap"));
+    }
+
+    /// A tabbed front through-cut keeps the part bridged across the flip, so
+    /// it is allowed (no refuse) even though it reaches the far face.
+    #[test]
+    fn tabbed_front_through_cut_is_allowed() {
+        let mut through = pocket_depth(1, WorkpieceSide::Front, -12.0);
+        if let OpKind::Pocket { contour, .. } = &mut through.kind {
+            contour.tab_mode = crate::project::TabPlacementMode::Auto { count: 4 };
+        }
+        let mut project = project_with(
+            vec![through, pocket_depth(2, WorkpieceSide::Back, -3.0)],
+            vec![endmill(1, 3.0)],
+        );
+        project.stock = Some(stock_10mm());
+        assert!(
+            run(project).is_ok(),
+            "a tabbed front through-cut holds the part — must not refuse"
+        );
+    }
+}

@@ -192,6 +192,7 @@ export type MsgKey =
   | "error.code.internal_panic"
   | "error.code.missing_tool"
   | "error.code.text_render_failed"
+  | "error.code.two_sided_through"
   | "error.code.unimplemented_op_kind"
   | "error.code.unknown_post_processor"
   | "error.fix.apply"
@@ -202,6 +203,7 @@ export type MsgKey =
   | "error.hint.internal_panic"
   | "error.hint.missing_tool"
   | "error.hint.text_render_failed"
+  | "error.hint.two_sided_through"
   | "error.hint.unimplemented_op_kind"
   | "error.hint.unknown_post_processor"
   | "error.span"
@@ -1593,6 +1595,7 @@ export type MsgKey =
   | "warn.trochoidal_incomplete"
   | "warn.tslot_requires_stem_slot.generic"
   | "warn.tslot_requires_stem_slot.known"
+  | "warn.two_sided_overlap"
   | "warn.vcarve_below_tip_radius.full_none"
   | "warn.vcarve_below_tip_radius.full_some"
   | "warn.vcarve_below_tip_radius.perimeter"
@@ -1792,6 +1795,7 @@ export const MSG_KEYS: readonly MsgKey[] = [
   "error.code.internal_panic",
   "error.code.missing_tool",
   "error.code.text_render_failed",
+  "error.code.two_sided_through",
   "error.code.unimplemented_op_kind",
   "error.code.unknown_post_processor",
   "error.fix.apply",
@@ -1802,6 +1806,7 @@ export const MSG_KEYS: readonly MsgKey[] = [
   "error.hint.internal_panic",
   "error.hint.missing_tool",
   "error.hint.text_render_failed",
+  "error.hint.two_sided_through",
   "error.hint.unimplemented_op_kind",
   "error.hint.unknown_post_processor",
   "error.span",
@@ -3193,6 +3198,7 @@ export const MSG_KEYS: readonly MsgKey[] = [
   "warn.trochoidal_incomplete",
   "warn.tslot_requires_stem_slot.generic",
   "warn.tslot_requires_stem_slot.known",
+  "warn.two_sided_overlap",
   "warn.vcarve_below_tip_radius.full_none",
   "warn.vcarve_below_tip_radius.full_some",
   "warn.vcarve_below_tip_radius.perimeter",
