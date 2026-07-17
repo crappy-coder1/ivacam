@@ -22,6 +22,8 @@ import {
   arrowSpacingMm,
   resolveSegmentColor,
   fadeColor,
+  tessellateArc,
+  lowerBoundSeg,
 } from './toolpath_buffers';
 import { powerGrid, maxPower } from '../cam/raster_preview';
 import { powerAtWorld, heatColor, type HeatGrid } from './raster_heatmap';
@@ -45,9 +47,20 @@ export interface ToolpathInput {
   totalLen: number;
 }
 
-/// Per-segment baked color: `start` is the vertex index of the segment's
-/// first vertex, `base` its un-faded color.
-type ToolpathColor = { start: number; base: [number, number, number] };
+/// Render density for on-read arc tessellation: ~2° per render chord keeps
+/// the wireframe as smooth as the old dense backend stream, independent of how
+/// coarse the payload is (bd ivac-58nl.9).
+const ARC_RENDER_STEP = Math.PI / 90;
+
+/// Per-render-line baked color: `start` is the vertex index of the render
+/// line's first vertex, `base` its un-faded color, and `seg` the BACKEND
+/// toolpath-segment index it belongs to. One backend segment maps to one
+/// render line normally, but an arc-tagged segment is tessellated on read into
+/// many render lines that all share its `seg` (bd ivac-58nl.9) — the fade and
+/// the sim-warning tint key off `seg`, not the render-line position, so both
+/// stay correct across the split (and across disabled-op / raster-strided
+/// segments that have no render line at all).
+type ToolpathColor = { start: number; base: [number, number, number]; seg: number };
 
 export class ToolpathBuilder implements PickableLineBuilder {
   readonly group = new THREE.Group();
@@ -224,11 +237,29 @@ export class ToolpathBuilder implements PickableLineBuilder {
           opColFor(opId),
         );
       }
-      const startVertex = positions.length / 3;
-      positions.push(seg.from.x, seg.from.y, seg.from.z, seg.to.x, seg.to.y, seg.to.z);
-      colors.push(r, g, b, r, g, b);
-      this.owners.push({ kind: 'toolpath', segIdx: i });
-      this.colors.push({ start: startVertex, base: [r, g, b] });
+      // Arc-tagged segments (tessellated G2/G3 chords) render as a smooth
+      // sub-arc polyline instead of a single straight chord, so a coarse
+      // backend stream still draws round (bd ivac-58nl.9). All render lines of
+      // one chord share `segIdx`/`seg`, so picking selects the whole segment
+      // and the playhead fades it as a unit. Straight moves stay a single line.
+      const renderPts = seg.arc ? tessellateArc(seg.from, seg.to, seg.arc, ARC_RENDER_STEP) : null;
+      if (renderPts) {
+        for (let k = 0; k + 1 < renderPts.length; k++) {
+          const a = renderPts[k];
+          const c = renderPts[k + 1];
+          const startVertex = positions.length / 3;
+          positions.push(a.x, a.y, a.z, c.x, c.y, c.z);
+          colors.push(r, g, b, r, g, b);
+          this.owners.push({ kind: 'toolpath', segIdx: i });
+          this.colors.push({ start: startVertex, base: [r, g, b], seg: i });
+        }
+      } else {
+        const startVertex = positions.length / 3;
+        positions.push(seg.from.x, seg.from.y, seg.from.z, seg.to.x, seg.to.y, seg.to.z);
+        colors.push(r, g, b, r, g, b);
+        this.owners.push({ kind: 'toolpath', segIdx: i });
+        this.colors.push({ start: startVertex, base: [r, g, b], seg: i });
+      }
 
       // Direction-arrow chevron at the segment midpoint when qualifying.
       // Rapids skip — feed direction matters only for material-cutting
@@ -307,14 +338,20 @@ export class ToolpathBuilder implements PickableLineBuilder {
   applyFade(playhead: number, cumLen: Float64Array | null, totalLen: number) {
     if (!this.lines || this.colors.length === 0) return;
     const total = this.colors.length;
-    // Arc-length mapping: head = segIdx + 1 so the segment currently under
-    // the cutter (segIdx) renders as "past" (fully colored) and everything
-    // strictly after is faded.
+    // Arc-length mapping: the segment currently under the cutter (segIdx) and
+    // everything before it render as "past" (fully colored); everything after
+    // is faded. `segIdx` indexes the BACKEND toolpath, but `this.colors` is
+    // one entry per RENDER line — an arc segment tessellates into many
+    // (bd ivac-58nl.9) — so map the backend boundary to a render-line boundary
+    // via lowerBoundSeg: the first render line whose `seg > segIdx`. Colors
+    // are pushed in backend-segment order, so they're sorted by `seg`. This
+    // also fixes the long-standing skew where disabled-op / raster-strided
+    // segments (which have no render line) shifted the fade edge.
     const { segIdx } = playheadToSegment(playhead, cumLen, totalLen);
     const head =
       segIdx < 0
         ? Math.max(0, Math.min(total, Math.round(playhead * total)))
-        : Math.max(0, Math.min(total, segIdx + 1));
+        : lowerBoundSeg((j) => this.colors[j].seg, total, segIdx + 1);
     if (head === this.appliedHead) return;
     // LineSegmentsGeometry stores colors as one interleaved instance buffer
     // (6 floats / segment: start-rgb, end-rgb), so the `start * 3` offset
@@ -331,8 +368,11 @@ export class ToolpathBuilder implements PickableLineBuilder {
       const tc = this.colors[i];
       const past = i < head;
       // A warning-tinted segment fades from its tint, else from its
-      // base color; the past/future offset math is the pure fadeColor.
-      const tint = this.warningSegmentColors.get(i);
+      // base color; the past/future offset math is the pure fadeColor. The
+      // tint map is keyed by BACKEND segment index, so look it up via `tc.seg`
+      // (not the render-line position `i`) — an arc's render lines all share
+      // one `seg` (bd ivac-58nl.9).
+      const tint = this.warningSegmentColors.get(tc.seg);
       const [r, g, b] = fadeColor(tint ?? tc.base, past, f, fade_offset);
       const off = tc.start * 3;
       arr[off] = r;

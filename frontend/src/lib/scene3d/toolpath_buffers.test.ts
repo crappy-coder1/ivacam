@@ -5,6 +5,8 @@ import {
   moveBoost,
   resolveSegmentColor,
   fadeColor,
+  tessellateArc,
+  lowerBoundSeg,
   type ArrowParams,
   type Rgb,
 } from './toolpath_buffers';
@@ -113,5 +115,103 @@ describe('fadeColor', () => {
     expect(b).toBeCloseTo(0.2 * 0.25 + 0.05);
     // A black base still floors at the offset so it's not invisible.
     expect(fadeColor([0, 0, 0], false, 0.25, 0.05)).toEqual([0.05, 0.05, 0.05]);
+  });
+});
+
+describe('tessellateArc', () => {
+  const step = Math.PI / 90; // 2°
+
+  it('walks a CCW quarter circle: interior points sit on the circle, endpoints exact', () => {
+    // Quarter circle about the origin, R=10, from (10,0) to (0,10), CCW (G3).
+    const from = { x: 10, y: 0, z: 0 };
+    const to = { x: 0, y: 10, z: 0 };
+    const pts = tessellateArc(from, to, { cx: 0, cy: 0, ccw: true }, step);
+    // 90° / 2° = 45 render chords ⇒ 46 points.
+    expect(pts.length).toBe(46);
+    // Endpoints copied verbatim (no float drift at the joins).
+    expect(pts[0]).toEqual(from);
+    expect(pts[pts.length - 1]).toEqual(to);
+    // Every interior point lies on the R=10 circle...
+    for (const p of pts) {
+      expect(Math.hypot(p.x, p.y)).toBeCloseTo(10, 9);
+    }
+    // ...and the sweep goes CCW through the first quadrant (a midpoint bulges
+    // out to ~45°, not straight across the chord).
+    const mid = pts[Math.floor(pts.length / 2)];
+    expect(mid.x).toBeGreaterThan(0);
+    expect(mid.y).toBeGreaterThan(0);
+    // Roughly on the 45° diagonal (~(7.07, 7.07)) — the arc bulges out, it
+    // doesn't cut straight across the chord.
+    expect(mid.x).toBeCloseTo(Math.SQRT1_2 * 10, 0);
+    expect(mid.y).toBeCloseTo(Math.SQRT1_2 * 10, 0);
+  });
+
+  it('interpolates Z linearly across the sweep (helical arc)', () => {
+    const from = { x: 10, y: 0, z: 0 };
+    const to = { x: 0, y: 10, z: 4 };
+    const pts = tessellateArc(from, to, { cx: 0, cy: 0, ccw: true }, step);
+    expect(pts[0].z).toBe(0);
+    expect(pts[pts.length - 1].z).toBe(4);
+    // Z rises monotonically from 0 to 4.
+    for (let i = 1; i < pts.length; i++) expect(pts[i].z).toBeGreaterThanOrEqual(pts[i - 1].z);
+  });
+
+  it('coincident endpoints ⇒ a full revolution in the requested direction', () => {
+    const p = { x: 10, y: 0, z: 0 };
+    const pts = tessellateArc(p, { ...p }, { cx: 0, cy: 0, ccw: true }, step);
+    // 360° / 2° = 180 chords ⇒ 181 points, all on the circle.
+    expect(pts.length).toBe(181);
+    for (const q of pts) expect(Math.hypot(q.x, q.y)).toBeCloseTo(10, 9);
+  });
+
+  it('CW (G2) sweeps the other way than CCW for the same endpoints', () => {
+    const from = { x: 10, y: 0, z: 0 };
+    const to = { x: 0, y: 10, z: 0 };
+    const ccw = tessellateArc(from, to, { cx: 0, cy: 0, ccw: true }, step);
+    const cw = tessellateArc(from, to, { cx: 0, cy: 0, ccw: false }, step);
+    // CCW takes the short way (first quadrant, y>0 midpoint); CW the long way
+    // (270° around, a midpoint in the third quadrant with x<0, y<0).
+    const cwMid = cw[Math.floor(cw.length / 2)];
+    expect(cwMid.x).toBeLessThan(0);
+    expect(cwMid.y).toBeLessThan(0);
+    // The long way around is many more chords than the short way.
+    expect(cw.length).toBeGreaterThan(ccw.length);
+  });
+
+  it('degenerate (start on center) falls back to a straight chord', () => {
+    const from = { x: 0, y: 0, z: 0 };
+    const to = { x: 5, y: 5, z: 0 };
+    expect(tessellateArc(from, to, { cx: 0, cy: 0, ccw: true }, step)).toEqual([from, to]);
+  });
+});
+
+describe('lowerBoundSeg', () => {
+  // Render-line → backend-seg map for two arcs (seg 0 spans 3 lines, seg 1
+  // spans 2) surrounding straight moves — exactly the on-read tessellation
+  // shape the playhead fade walks.
+  const segs = [0, 0, 0, 1, 1, 2, 3, 3];
+  const at = (i: number) => segs[i];
+
+  it('finds the first render line at or after a backend segment boundary', () => {
+    // "seg 0 is past" ⇒ boundary = first line with seg >= 1 ⇒ index 3.
+    expect(lowerBoundSeg(at, segs.length, 1)).toBe(3);
+    // seg >= 2 ⇒ index 5; seg >= 3 ⇒ index 6.
+    expect(lowerBoundSeg(at, segs.length, 2)).toBe(5);
+    expect(lowerBoundSeg(at, segs.length, 3)).toBe(6);
+  });
+
+  it('boundary 0 is the start; past-the-end targets return len', () => {
+    expect(lowerBoundSeg(at, segs.length, 0)).toBe(0);
+    expect(lowerBoundSeg(at, segs.length, 4)).toBe(segs.length);
+    expect(lowerBoundSeg(at, segs.length, 99)).toBe(segs.length);
+  });
+
+  it('a missing backend seg maps to where it would begin (skipped/disabled ops)', () => {
+    // No render line carries seg 2 here (e.g. a disabled op between 1 and 4).
+    const sparse = [0, 1, 1, 4, 4];
+    const sat = (i: number) => sparse[i];
+    // Boundary "seg <= 2 past" ⇒ first line with seg >= 3 ⇒ the seg-4 run at 3.
+    expect(lowerBoundSeg(sat, sparse.length, 3)).toBe(3);
+    expect(lowerBoundSeg(sat, sparse.length, 2)).toBe(3);
   });
 });

@@ -92,6 +92,76 @@ export function computeArrowChevron(from: Vec3, to: Vec3, p: ArrowParams): Arrow
   };
 }
 
+/// Planar arc descriptor carried on a tessellated `G2`/`G3` chord —
+/// mirrors the backend `ArcXY` wire type (`toolpath[i].arc`). `(cx, cy)` is
+/// the arc center in world XY; the radius is implied by the chord's `from`
+/// point; `ccw` is the sweep direction (G3 = `true`, G2 = `false`).
+export interface ArcXY {
+  cx: number;
+  cy: number;
+  ccw: boolean;
+}
+
+/// Tessellate one arc-tagged toolpath chord into a smooth render polyline —
+/// the on-read half of bd ivac-58nl.9. The backend now emits a COARSE G2/G3
+/// chord stream (the sim carves each chord as its exact analytic sub-arc via
+/// the `arc` descriptor, so density no longer bounds sim accuracy), which
+/// would draw as visible polyline teeth if rendered verbatim. This walks the
+/// chord's true sub-arc at `stepRad` per render-chord so the wireframe stays
+/// smooth regardless of how coarse the payload is.
+///
+/// Returns the full point list INCLUDING the exact `from` / `to` endpoints
+/// (interior points computed from the swept angle, endpoints copied verbatim
+/// so adjacent chords meet with no gap). The Z is interpolated linearly across
+/// the sweep (a helical G2/G3). Sweep resolution mirrors
+/// `preview::interpret_with_index` on the Rust side (coincident endpoints ⇒ a
+/// full revolution in the requested direction).
+export function tessellateArc(from: Vec3, to: Vec3, arc: ArcXY, stepRad: number): Vec3[] {
+  const TAU = Math.PI * 2;
+  const { cx, cy, ccw } = arc;
+  const r = Math.hypot(from.x - cx, from.y - cy);
+  if (r < 1e-9) return [from, to]; // start on the center — degenerate
+  const thetaStart = Math.atan2(from.y - cy, from.x - cx);
+  const thetaEnd = Math.atan2(to.y - cy, to.x - cx);
+  const coincident = Math.abs(from.x - to.x) < 1e-9 && Math.abs(from.y - to.y) < 1e-9;
+  let sweep = thetaEnd - thetaStart;
+  if (ccw) {
+    if (coincident) sweep = TAU;
+    else if (sweep <= 1e-9) sweep += TAU;
+  } else if (coincident) sweep = -TAU;
+  else if (sweep >= -1e-9) sweep -= TAU;
+  const n = Math.max(1, Math.ceil(Math.abs(sweep) / Math.max(stepRad, 1e-6)));
+  if (n <= 1) return [from, to];
+  const dz = to.z - from.z;
+  const pts: Vec3[] = [from];
+  for (let k = 1; k < n; k++) {
+    const theta = thetaStart + (sweep * k) / n;
+    pts.push({
+      x: cx + r * Math.cos(theta),
+      y: cy + r * Math.sin(theta),
+      z: from.z + (dz * k) / n,
+    });
+  }
+  pts.push(to);
+  return pts;
+}
+
+/// Lower bound over a sorted-by-`seg` sequence: the first index `i ∈ [0, len)`
+/// whose `segAt(i) >= target`, or `len` if none. Used by the playhead fade to
+/// map a backend segment boundary to a render-line boundary now that one arc
+/// segment can span many render lines (bd ivac-58nl.9) — the per-segment color
+/// entries are pushed in backend-segment order, so they're sorted by `seg`.
+export function lowerBoundSeg(segAt: (i: number) => number, len: number, target: number): number {
+  let lo = 0;
+  let hi = len;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (segAt(mid) < target) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
 /// An RGB triple, each channel in [0, 1] (the fat-line buffer's color
 /// layout). Not clamped here — the toolpath base colors can ride a
 /// move-kind boost slightly past 1.0, exactly as the inline math did.
