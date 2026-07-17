@@ -6,6 +6,12 @@
 //! With ~5 ops on a moderate project that's the difference between
 //! 5–10 s of work and ~100 ms of dictionary lookups.
 //!
+//! [`PipelineCache`] also carries a second, independent cache: a
+//! single-slot memo of the final whole-program toolpath interpret
+//! ([`PipelineCache::interpret_memoized`]). The per-op cache above skips
+//! re-emitting gcode; the memo skips re-*interpreting* that gcode into the
+//! preview toolpath on a byte-identical re-Generate (bd ivac-ryan.14).
+//!
 //! ## Hashing discipline (read this before adding fields)
 //!
 //! The op/tool/machine/config inputs are hashed via their canonical
@@ -47,6 +53,7 @@ use lru::LruCache;
 use seahash::SeaHasher;
 use serde::Serialize;
 
+use crate::gcode::preview::{GcodeIndex, ToolpathSegment};
 use crate::gcode::CapturedPostState;
 use crate::geometry::{Point2, Segment, SegmentKind};
 use crate::pipeline::PipelineWarning;
@@ -105,9 +112,27 @@ pub struct OpCacheValue {
     pub warnings: Vec<PipelineWarning>,
 }
 
+/// Memoized result of the whole-program toolpath interpret
+/// ([`crate::gcode::preview::interpret_with_index`]) for one exact gcode
+/// string. Held in a single slot on [`PipelineCache`]; see
+/// [`PipelineCache::interpret_memoized`] for the rationale.
+#[derive(Debug)]
+struct InterpretMemo {
+    /// The exact assembled gcode this result was interpreted from. The
+    /// memo key is byte-for-byte string equality against this — no hash,
+    /// so a hit can never be a collision (the whole point of option (c):
+    /// trivially correct).
+    gcode: String,
+    toolpath: Vec<ToolpathSegment>,
+    index: GcodeIndex,
+}
+
 #[derive(Debug)]
 pub struct PipelineCache {
     inner: Mutex<LruCache<u64, OpCacheValue>>,
+    /// Single-slot memo for the final whole-program toolpath interpret.
+    /// See [`PipelineCache::interpret_memoized`].
+    interp_memo: Mutex<Option<InterpretMemo>>,
 }
 
 impl PipelineCache {
@@ -122,7 +147,60 @@ impl PipelineCache {
         let cap = NonZeroUsize::new(capacity.max(1)).expect("non-zero capacity");
         Self {
             inner: Mutex::new(LruCache::new(cap)),
+            interp_memo: Mutex::new(None),
         }
+    }
+
+    /// Memoize the whole-program toolpath interpret.
+    /// [`crate::gcode::preview::interpret_with_index`] is a pure function
+    /// of the assembled gcode string, so a byte-identical re-Generate —
+    /// the full-cache-hit case, where every op's body was served from the
+    /// per-op cache and the program re-assembled identically — can reuse
+    /// the previous `(toolpath, gcode_index)` instead of re-parsing every
+    /// line and re-tessellating every arc (the O(total_lines) cost this
+    /// targets; bd ivac-ryan.14).
+    ///
+    /// Keyed by exact gcode-string equality in a single slot:
+    /// - **Collision-free by construction** — a hit is a real byte match,
+    ///   never a hash coincidence, so a stale/wrong toolpath is impossible.
+    /// - **Single slot is proportionate** — the dominant scenario is
+    ///   re-clicking Generate with nothing changed, which one slot serves
+    ///   exactly. A toggle between two programs re-interprets on each flip,
+    ///   but that miss is cheap relative to the op re-emission it rides
+    ///   along with.
+    /// - **Miss cost is negligible** — an interpret miss means the gcode
+    ///   changed, which only happens when at least one op was re-emitted
+    ///   (offset cascade + gcode). The single extra result-clone stored
+    ///   here is dwarfed by that work.
+    ///
+    /// The lock is never held across `compute` (the expensive interpret),
+    /// so concurrent Generates don't serialize on it; a race just
+    /// recomputes, which stays correct because the result is a pure
+    /// function of `gcode`.
+    pub fn interpret_memoized<F>(
+        &self,
+        gcode: &str,
+        compute: F,
+    ) -> (Vec<ToolpathSegment>, GcodeIndex)
+    where
+        F: FnOnce() -> (Vec<ToolpathSegment>, GcodeIndex),
+    {
+        if let Ok(guard) = self.interp_memo.lock() {
+            if let Some(memo) = guard.as_ref() {
+                if memo.gcode == gcode {
+                    return (memo.toolpath.clone(), memo.index.clone());
+                }
+            }
+        }
+        let (toolpath, index) = compute();
+        if let Ok(mut guard) = self.interp_memo.lock() {
+            *guard = Some(InterpretMemo {
+                gcode: gcode.to_owned(),
+                toolpath: toolpath.clone(),
+                index: index.clone(),
+            });
+        }
+        (toolpath, index)
     }
 
     pub fn get(&self, key: OpCacheKey) -> Option<OpCacheValue> {
@@ -139,6 +217,13 @@ impl PipelineCache {
     pub fn clear(&self) {
         if let Ok(mut g) = self.inner.lock() {
             g.clear();
+        }
+        // The interpret memo keys on the assembled gcode, so a stale entry
+        // could never serve a wrong toolpath — but a project-wide reload
+        // should still drop it so it doesn't pin memory for a program that
+        // will never recur.
+        if let Ok(mut m) = self.interp_memo.lock() {
+            *m = None;
         }
     }
 
@@ -1321,5 +1406,98 @@ mod tests {
         );
         let k2 = op_cache_key(&op_b, &endmill(), &MachineConfig::default(), &segs, &[], 0);
         assert_ne!(k1, k2);
+    }
+
+    // ─── interpret memo (bd ivac-ryan.14, option c) ─────────────────
+
+    /// A byte-identical gcode string must reuse the memoized interpret
+    /// result instead of recomputing — that's the whole full-cache-hit
+    /// win. A changed program must recompute. The `panic!`-on-hit closure
+    /// proves the second identical call never re-enters `compute`.
+    #[test]
+    fn interpret_memo_reuses_result_for_identical_gcode() {
+        use std::cell::Cell;
+        let cache = PipelineCache::new(4);
+        let calls = Cell::new(0);
+        let g = "G21\nG0 X10 Y0\nG1 X10 Y10 F800\n";
+
+        let (tp1, idx1) = cache.interpret_memoized(g, || {
+            calls.set(calls.get() + 1);
+            crate::gcode::preview::interpret_with_index(g)
+        });
+        assert_eq!(calls.get(), 1, "first call is a miss and must compute");
+
+        // Second identical call: must be served from the memo. The
+        // compute closure panics if entered, proving the hit path.
+        let (tp2, idx2) =
+            cache.interpret_memoized(g, || panic!("identical gcode must not recompute"));
+        assert_eq!(tp1.len(), tp2.len());
+        assert_eq!(idx1.segments_to_line, idx2.segments_to_line);
+        assert_eq!(idx1.lines_to_segment, idx2.lines_to_segment);
+
+        // A different program is a miss and recomputes.
+        let g2 = "G21\nG0 X10 Y0\nG1 X10 Y20 F800\n";
+        let _ = cache.interpret_memoized(g2, || {
+            calls.set(calls.get() + 1);
+            crate::gcode::preview::interpret_with_index(g2)
+        });
+        assert_eq!(calls.get(), 2, "changed gcode must recompute");
+    }
+
+    /// The memoized `(toolpath, gcode_index)` — on BOTH the computing
+    /// miss and the reused hit — must be byte-identical to calling
+    /// `interpret_with_index` directly. This is the equivalence gate for
+    /// option (c): the memo is a transparent cache over a pure function,
+    /// never a different result.
+    #[test]
+    fn interpret_memo_matches_fresh_interpret() {
+        let cache = PipelineCache::new(4);
+        // Include an arc so tessellation (the expensive part we skip on a
+        // hit) is exercised and compared.
+        let g = "G21\nG0 X10 Y0\nG3 X0 Y10 I-10 J0 F500\nG1 X0 Y20 F800\n";
+        let (fresh_tp, fresh_idx) = crate::gcode::preview::interpret_with_index(g);
+
+        // First call — miss (computes).
+        let (miss_tp, miss_idx) =
+            cache.interpret_memoized(g, || crate::gcode::preview::interpret_with_index(g));
+        assert_eq!(
+            serde_json::to_vec(&miss_tp).unwrap(),
+            serde_json::to_vec(&fresh_tp).unwrap(),
+            "computing miss must equal a fresh interpret"
+        );
+        assert_eq!(miss_idx.lines_to_segment, fresh_idx.lines_to_segment);
+        assert_eq!(miss_idx.segments_to_line, fresh_idx.segments_to_line);
+
+        // Second call — hit (reuses the stored clone). Must STILL equal
+        // fresh, proving clone fidelity.
+        let (hit_tp, hit_idx) = cache.interpret_memoized(g, || panic!("hit must not recompute"));
+        assert_eq!(
+            serde_json::to_vec(&hit_tp).unwrap(),
+            serde_json::to_vec(&fresh_tp).unwrap(),
+            "reused hit must equal a fresh interpret"
+        );
+        assert_eq!(hit_idx.lines_to_segment, fresh_idx.lines_to_segment);
+        assert_eq!(hit_idx.segments_to_line, fresh_idx.segments_to_line);
+    }
+
+    /// `clear()` drops the interpret memo, so the next identical Generate
+    /// recomputes rather than serving a pinned result (matters on a
+    /// project-wide reload where the old program will never recur).
+    #[test]
+    fn clear_drops_interpret_memo() {
+        use std::cell::Cell;
+        let cache = PipelineCache::new(4);
+        let calls = Cell::new(0);
+        let g = "G21\nG0 X1 Y0\n";
+        let _ = cache.interpret_memoized(g, || {
+            calls.set(calls.get() + 1);
+            crate::gcode::preview::interpret_with_index(g)
+        });
+        cache.clear();
+        let _ = cache.interpret_memoized(g, || {
+            calls.set(calls.get() + 1);
+            crate::gcode::preview::interpret_with_index(g)
+        });
+        assert_eq!(calls.get(), 2, "clear() must force a recompute");
     }
 }

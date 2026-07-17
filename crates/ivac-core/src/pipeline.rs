@@ -577,7 +577,16 @@ fn run_pipeline_impl<F: Fn(&str, f64, &str)>(
     if cancelled(cancel) {
         return Err(PipelineError::Cancelled);
     }
-    let (toolpath, gcode_index) = preview::interpret_with_index(&gcode);
+    // Interpret the assembled program into the preview toolpath + line
+    // index. This is a pure function of `gcode`, so on a full-cache-hit
+    // re-Generate (identical program) the memo returns the prior result
+    // instead of re-parsing every line and re-tessellating every arc
+    // (bd ivac-ryan.14). With caching off (`cache == None`) we interpret
+    // directly, same as before.
+    let (toolpath, gcode_index) = match cache {
+        Some(c) => c.interpret_memoized(&gcode, || preview::interpret_with_index(&gcode)),
+        None => preview::interpret_with_index(&gcode),
+    };
     // Scan the emitted toolpath against the machine work-area
     // envelope here (core-side) so every transport — not just the
     // frontend — surfaces soft-limit / gantry-crash risk as a critical

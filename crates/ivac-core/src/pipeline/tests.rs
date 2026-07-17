@@ -2322,11 +2322,34 @@ fn cache_hit_produces_identical_response() {
     let r1 = run_pipeline(req(), |_, _, _| {}).expect("first run");
     let r2 = run_pipeline(req(), |_, _, _| {}).expect("cached run");
     assert_eq!(r1.gcode, r2.gcode, "gcode must match across cache hit");
+    // Equivalence gate for the interpret memo (bd ivac-ryan.14, option c):
+    // the second run serves its toolpath + line index from the memo instead
+    // of re-interpreting, so both must be byte-identical to the first run's
+    // freshly-interpreted result.
     assert_eq!(
-        r1.toolpath.len(),
-        r2.toolpath.len(),
-        "toolpath segment count must match"
+        serde_json::to_vec(&r1.toolpath).unwrap(),
+        serde_json::to_vec(&r2.toolpath).unwrap(),
+        "toolpath must be byte-identical across the memoized cache hit"
     );
+    assert_eq!(
+        r1.gcode_index.lines_to_segment, r2.gcode_index.lines_to_segment,
+        "gcode_index.lines_to_segment must match across cache hit"
+    );
+    assert_eq!(
+        r1.gcode_index.segments_to_line, r2.gcode_index.segments_to_line,
+        "gcode_index.segments_to_line must match across cache hit"
+    );
+    // And the memoized toolpath must equal what a fresh interpret of the
+    // very same gcode produces — proving the memo is a transparent cache
+    // over a pure function, not a divergent shortcut.
+    let (fresh_tp, fresh_idx) = crate::gcode::preview::interpret_with_index(&r2.gcode);
+    assert_eq!(
+        serde_json::to_vec(&r2.toolpath).unwrap(),
+        serde_json::to_vec(&fresh_tp).unwrap(),
+        "memoized cache-hit toolpath must equal a fresh interpret of the same gcode"
+    );
+    assert_eq!(r2.gcode_index.lines_to_segment, fresh_idx.lines_to_segment);
+    assert_eq!(r2.gcode_index.segments_to_line, fresh_idx.segments_to_line);
     assert_eq!(r1.stats.offset_count, r2.stats.offset_count);
     assert_eq!(r1.stats.closed_object_count, r2.stats.closed_object_count);
 }
