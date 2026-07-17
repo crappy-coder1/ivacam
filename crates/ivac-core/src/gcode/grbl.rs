@@ -334,6 +334,9 @@ impl PostProcessor for Post {
     fn out_extend_lines(&mut self, lines: &[String]) {
         self.inner.out_extend_lines(lines);
     }
+    fn checkpoint(&mut self) {
+        self.inner.checkpoint();
+    }
     fn reset_state(&mut self) {
         self.inner.reset_state();
     }

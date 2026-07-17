@@ -401,6 +401,17 @@ pub trait PostProcessor {
     /// state.
     fn out_extend_lines(&mut self, _lines: &[String]) {}
 
+    /// Mark an op boundary for a **streaming** post's bounded per-op tee.
+    /// The pipeline emit loop calls this at each op boundary — the same
+    /// point it captures `out_lines_count` as the op's `body_marker` — so a
+    /// streaming sink can drop the previous op's teed lines (already written
+    /// through) and keep only the current op's contribution, the one range
+    /// [`out_lines_clone_from`](Self::out_lines_clone_from) ever reads back.
+    /// A no-op for buffered posts (the default), which retain the whole
+    /// program anyway, so the loop can call it unconditionally. Part of the
+    /// streaming-gcode evolution (`ivac-3j1p`).
+    fn checkpoint(&mut self) {}
+
     /// Reset the delta-encoding state so the next emitted move writes
     /// every coordinate explicitly (no `last_x`-based suppression).
     /// Used at op boundaries by the per-op pipeline cache so each op's

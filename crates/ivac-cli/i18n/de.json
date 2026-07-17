@@ -3,6 +3,7 @@
   "cli.help.usage": "Verwendung:",
   "cli.help.import": "Eine DXF einlesen und /import-JSON ausgeben",
   "cli.help.generate": "G-Code + Vorschau-Werkzeugweg erzeugen",
+  "cli.help.stream": "G-Code aus einer Projekt-JSON direkt in eine Datei streamen (speicherarm)",
   "cli.help.help": "Diese Hilfe anzeigen",
   "cli.help.lang": "Oberflächensprache (en, de); überschreibt LANG/LC_ALL",
   "cli.err.unknown_subcommand": "unbekannter Unterbefehl: {name}",
@@ -11,5 +12,10 @@
   "cli.err.opt_needs_value": "{opt} benötigt einen Wert",
   "cli.err.unexpected_arg": "unerwartetes Argument: {arg}",
   "cli.err.missing_input_path": "fehlender Eingabepfad",
-  "cli.err.unknown_post": "unbekannter Postprozessor: {name}"
+  "cli.err.unknown_post": "unbekannter Postprozessor: {name}",
+  "cli.err.reading": "Lesen {path}",
+  "cli.err.parse_project": "Projekt-JSON einlesen {path}",
+  "cli.err.output": "Ausgabedatei erstellen {path}",
+  "cli.err.streaming": "G-Code streamen: {detail}",
+  "cli.stream.done": "G-Code nach {dest} geschrieben ({objects} Objekte, {offsets} Offsets)"
 }

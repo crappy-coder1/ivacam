@@ -4,6 +4,9 @@
 //!   * `ivac import <file>`            — emit /import-shaped JSON to stdout
 //!   * `ivac generate <file> [--post]` — emit /generate-shaped JSON
 //!     (gcode + 3D preview toolpath) to stdout
+//!   * `ivac stream-gcode <project.json> [--output FILE]` — stream gcode
+//!     from a full project (a /generate request body) straight to a file or
+//!     stdout, never holding the whole program in memory (ivac-3j1p).
 //!
 //! Mirrors the JSON contract in `schema/openapi.yaml`.
 
@@ -55,6 +58,7 @@ fn main() -> Result<()> {
     match cmd.as_str() {
         "import" => cmd_import(args),
         "generate" => cmd_generate(args),
+        "stream-gcode" => cmd_stream(args),
         "" | "-h" | "--help" => {
             print_help();
             Ok(())
@@ -80,6 +84,8 @@ fn print_help() {
     eprintln!("  ivac generate <path> [--post linuxcnc|grbl|hpgl] [--diameter MM] [--depth MM]");
     eprintln!("                       [--inside|--outside|--on] [--overcut]");
     eprintln!("      {}", i18n::t("cli.help.generate"));
+    eprintln!("  ivac stream-gcode <project.json> [--output FILE]");
+    eprintln!("      {}", i18n::t("cli.help.stream"));
     eprintln!("  ivac --help");
     eprintln!("      {}", i18n::t("cli.help.help"));
     eprintln!("\n  --lang <en|de>   {}", i18n::t("cli.help.lang"));
@@ -182,6 +188,84 @@ fn cmd_generate(args: impl Iterator<Item = String>) -> Result<()> {
     };
     serde_json::to_writer_pretty(std::io::stdout(), &body)?;
     println!();
+    Ok(())
+}
+
+/// Stream g-code from a full project JSON (a serialized `PipelineRequest` —
+/// the same `/generate` request body the server + tauri accept) straight to
+/// `--output FILE`, or to stdout when omitted. Runs the real CAM pipeline
+/// through the write-through post, so peak memory is O(largest single op)
+/// rather than O(whole program) (ivac-3j1p). The preview toolpath + time
+/// estimate are skipped (they'd need a second pass over the program); a
+/// short stats + warnings summary prints to stderr so stdout stays pure
+/// g-code.
+fn cmd_stream(args: impl Iterator<Item = String>) -> Result<()> {
+    let mut path: Option<PathBuf> = None;
+    let mut output: Option<PathBuf> = None;
+    let mut iter = args.peekable();
+    while let Some(arg) = iter.next() {
+        let needs_value =
+            |opt: &'static str| move || i18n::tp("cli.err.opt_needs_value", &[("opt", opt)]);
+        match arg.as_str() {
+            "--output" | "-o" => {
+                output = Some(PathBuf::from(
+                    iter.next().with_context(needs_value("--output"))?,
+                ));
+            }
+            other if path.is_none() => path = Some(PathBuf::from(other)),
+            other => bail!("{}", i18n::tp("cli.err.unexpected_arg", &[("arg", other)])),
+        }
+    }
+    let path = path.context(i18n::t("cli.err.missing_input_path"))?;
+
+    // The input is a serialized PipelineRequest (project + optional post).
+    let file = std::fs::File::open(&path)
+        .with_context(|| i18n::tp("cli.err.reading", &[("path", &path.display().to_string())]))?;
+    let request: ivac_core::pipeline::PipelineRequest =
+        serde_json::from_reader(std::io::BufReader::new(file)).with_context(|| {
+            i18n::tp(
+                "cli.err.parse_project",
+                &[("path", &path.display().to_string())],
+            )
+        })?;
+
+    // Destination: a file if --output was given, else stdout. Both buffered —
+    // the streaming sink issues one write per emitted line.
+    let (writer, dest): (Box<dyn std::io::Write + Send>, String) = match &output {
+        Some(out) => {
+            let f = std::fs::File::create(out).with_context(|| {
+                i18n::tp("cli.err.output", &[("path", &out.display().to_string())])
+            })?;
+            (
+                Box::new(std::io::BufWriter::new(f)),
+                out.display().to_string(),
+            )
+        }
+        None => (
+            Box::new(std::io::BufWriter::new(std::io::stdout())),
+            "stdout".to_string(),
+        ),
+    };
+
+    let outcome = ivac_core::pipeline::stream_gcode_to_writer(request, writer).map_err(|e| {
+        anyhow::anyhow!(i18n::tp("cli.err.streaming", &[("detail", &e.to_string())]))
+    })?;
+
+    // Summary + warnings to stderr — stdout stays pure g-code.
+    eprintln!(
+        "{}",
+        i18n::tp(
+            "cli.stream.done",
+            &[
+                ("dest", &dest),
+                ("objects", &outcome.stats.object_count.to_string()),
+                ("offsets", &outcome.stats.offset_count.to_string()),
+            ],
+        )
+    );
+    for w in &outcome.warnings {
+        eprintln!("  ! {}", w.message);
+    }
     Ok(())
 }
 

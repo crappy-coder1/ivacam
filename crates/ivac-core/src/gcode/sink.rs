@@ -57,16 +57,22 @@
 //! it once at the end. Line bookkeeping (`len` / `tail`) advances regardless,
 //! so the op cache stays consistent even after a write fails.
 //!
-//! # Not yet wired into the pipeline
+//! # Wired through the pipeline
 //!
-//! This increment (`ivac-3j1p.3` step 4a) makes the posts *constructible*
-//! streaming ([`linuxcnc::Post::streaming`](crate::gcode::linuxcnc) /
-//! [`grbl::Post::streaming`](crate::gcode::grbl)) with byte-identical output;
-//! threading a `Write` through the pipeline emit loop + the cli/server/tauri/
-//! wasm transports (so a real Generate streams to a file/socket) is the
-//! following increment. HPGL stays buffered-only: its `finish()` re-derives
-//! the program by splitting each buffered entry on `;`, which needs the whole
-//! buffer the streaming mode does not retain.
+//! `ivac-3j1p.3` step 4a made the posts *constructible* streaming
+//! ([`linuxcnc::Post::streaming`](crate::gcode::linuxcnc) /
+//! [`grbl::Post::streaming`](crate::gcode::grbl)); step 4b threads a `Write`
+//! through the pipeline emit loop (the loop calls
+//! [`PostProcessor::checkpoint`](crate::gcode::PostProcessor::checkpoint) at
+//! each op boundary and finalizes a streaming post with `finish_stream`
+//! instead of `finish`), exposed as
+//! [`stream_gcode_to_writer`](crate::pipeline::stream_gcode_to_writer) — a
+//! real Generate can stream straight to a file. The buffered `finish() ->
+//! String` path stays the default for interactive Generate (the frontend
+//! g-code panel + 3D preview still want the whole program). HPGL stays
+//! buffered-only: its `finish()` re-derives the program by splitting each
+//! buffered entry on `;`, which needs the whole buffer the streaming mode
+//! does not retain.
 //!
 //! # Known limitation (`ivac-3j1p.4` follow-up)
 //!
@@ -279,13 +285,10 @@ impl GcodeSink {
     /// no-op in buffered mode (the whole program is retained anyway), so the
     /// emit loop can call it unconditionally.
     ///
-    /// Exercised by the module tests today; its production caller is the
-    /// pipeline emit loop, which the following increment wires to call this
-    /// (via a new `PostProcessor::checkpoint`) at each op boundary — the same
-    /// point it captures `out_lines_count`. Annotated `dead_code` until then,
-    /// exactly as the standalone streaming sink's methods were before this
-    /// mode had a consumer.
-    #[allow(dead_code)] // production caller lands with the pipeline emit-loop wiring (ivac-3j1p.3).
+    /// The pipeline emit loop calls this (via [`PostProcessor::checkpoint`]
+    /// (crate::gcode::PostProcessor::checkpoint)) at each op boundary — the
+    /// same point it captures `out_lines_count` as the op's `body_marker` —
+    /// so the tee stays bounded to a single op's output.
     pub(crate) fn checkpoint(&mut self) {
         if let Mode::Streaming(s) = &mut self.mode {
             s.tail_start = s.total;

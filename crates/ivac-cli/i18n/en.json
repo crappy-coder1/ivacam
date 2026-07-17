@@ -3,6 +3,7 @@
   "cli.help.usage": "usage:",
   "cli.help.import": "Parse a DXF and print /import JSON",
   "cli.help.generate": "Generate gcode + preview toolpath",
+  "cli.help.stream": "Stream gcode from a project JSON straight to a file (low memory)",
   "cli.help.help": "Show this message",
   "cli.help.lang": "Interface language (en, de); overrides LANG/LC_ALL",
   "cli.err.unknown_subcommand": "unknown subcommand: {name}",
@@ -11,5 +12,10 @@
   "cli.err.opt_needs_value": "{opt} needs a value",
   "cli.err.unexpected_arg": "unexpected argument: {arg}",
   "cli.err.missing_input_path": "missing input path",
-  "cli.err.unknown_post": "unknown post processor: {name}"
+  "cli.err.unknown_post": "unknown post processor: {name}",
+  "cli.err.reading": "read {path}",
+  "cli.err.parse_project": "parse project JSON {path}",
+  "cli.err.output": "create output {path}",
+  "cli.err.streaming": "stream gcode: {detail}",
+  "cli.stream.done": "wrote gcode to {dest} ({objects} objects, {offsets} offsets)"
 }

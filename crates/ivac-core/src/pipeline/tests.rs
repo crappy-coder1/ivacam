@@ -6839,3 +6839,136 @@ fn optional_stop_swaps_manual_toolchange_m0_for_m1() {
         "optional_stop must NOT emit M0:\n{m1}"
     );
 }
+
+/// Streaming the pipeline g-code straight to a writer (ivac-3j1p.3
+/// increment 4b) must produce byte-for-byte the same program the buffered
+/// `run_pipeline` builds. This proves the claim through the REAL emit loop
+/// (the per-op `checkpoint` + op-cache-over-streaming), not just the sink
+/// unit tests.
+mod streaming_gcode {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    /// A `Write + Send` sink whose bytes stay readable after the streaming
+    /// post has moved the boxed writer in.
+    #[derive(Clone)]
+    struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for SharedBuf {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Two real cutting ops over a closed square: a header, two per-op bodies
+    /// (each captured into the op cache — so the bounded tee is exercised
+    /// across an op boundary), and a footer.
+    fn a_project() -> Project {
+        project_with(
+            vec![
+                profile_op(1, 1, ToolOffset::Outside),
+                pocket_op(2, 1, OpSource::All),
+            ],
+            vec![endmill(1, 3.0)],
+        )
+    }
+
+    fn buffered_gcode(kind: PostProcessorKind) -> String {
+        run_pipeline(
+            PipelineRequest {
+                project: a_project(),
+                post_processor: Some(kind),
+            },
+            |_, _, _| {},
+        )
+        .expect("buffered pipeline runs")
+        .gcode
+    }
+
+    fn streamed_gcode(kind: PostProcessorKind) -> (Vec<u8>, StreamGcodeOutcome) {
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let outcome = stream_gcode_to_writer(
+            PipelineRequest {
+                project: a_project(),
+                post_processor: Some(kind),
+            },
+            Box::new(SharedBuf(buf.clone())),
+        )
+        .expect("streaming pipeline runs");
+        let bytes = buf.lock().unwrap().clone();
+        (bytes, outcome)
+    }
+
+    #[test]
+    fn linuxcnc_stream_is_byte_identical_to_buffered() {
+        // Twice: the first pass may miss the op cache (fresh emit into the
+        // stream), the second replays cached bodies through the stream — both
+        // must equal the buffered program.
+        for pass in 0..2 {
+            let buffered = buffered_gcode(PostProcessorKind::Linuxcnc);
+            let (streamed, outcome) = streamed_gcode(PostProcessorKind::Linuxcnc);
+            assert_eq!(
+                String::from_utf8(streamed).unwrap(),
+                buffered,
+                "streamed linuxcnc program must equal the buffered one (pass {pass})",
+            );
+            // The emit-loop stats survive the streaming path even though the
+            // toolpath / timing passes are skipped.
+            assert!(outcome.stats.object_count >= 1, "objects counted");
+        }
+    }
+
+    #[test]
+    fn grbl_stream_is_byte_identical_to_buffered() {
+        let buffered = buffered_gcode(PostProcessorKind::Grbl);
+        let (streamed, _) = streamed_gcode(PostProcessorKind::Grbl);
+        assert_eq!(String::from_utf8(streamed).unwrap(), buffered);
+    }
+
+    #[test]
+    fn hpgl_streaming_is_rejected() {
+        // HPGL re-derives its program from the whole buffer at finish(), so
+        // it has no write-through mode — reject before any bytes are written.
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let err = stream_gcode_to_writer(
+            PipelineRequest {
+                project: a_project(),
+                post_processor: Some(PostProcessorKind::Hpgl),
+            },
+            Box::new(SharedBuf(buf.clone())),
+        )
+        .expect_err("HPGL cannot stream");
+        assert!(matches!(
+            err,
+            StreamGcodeError::Unsupported(PostProcessorKind::Hpgl)
+        ));
+        assert!(buf.lock().unwrap().is_empty(), "nothing written on reject");
+    }
+
+    #[test]
+    fn write_error_surfaces_as_stream_error() {
+        // The infallible emit API defers the first write error; finish_stream
+        // surfaces it as StreamGcodeError::Write instead of panicking.
+        struct AlwaysFails;
+        impl std::io::Write for AlwaysFails {
+            fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(std::io::ErrorKind::Other, "disk full"))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::new(std::io::ErrorKind::Other, "disk full"))
+            }
+        }
+        let err = stream_gcode_to_writer(
+            PipelineRequest {
+                project: a_project(),
+                post_processor: Some(PostProcessorKind::Linuxcnc),
+            },
+            Box::new(AlwaysFails),
+        )
+        .expect_err("write failure must surface");
+        assert!(matches!(err, StreamGcodeError::Write(_)));
+    }
+}

@@ -136,6 +136,7 @@ mod tests {
         "cli.help.usage",
         "cli.help.import",
         "cli.help.generate",
+        "cli.help.stream",
         "cli.help.help",
         "cli.help.lang",
         "cli.err.unknown_subcommand",
@@ -145,6 +146,11 @@ mod tests {
         "cli.err.unexpected_arg",
         "cli.err.missing_input_path",
         "cli.err.unknown_post",
+        "cli.err.reading",
+        "cli.err.parse_project",
+        "cli.err.output",
+        "cli.err.streaming",
+        "cli.stream.done",
     ];
 
     fn parse(json: &str) -> HashMap<String, String> {

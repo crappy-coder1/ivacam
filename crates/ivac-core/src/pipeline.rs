@@ -502,40 +502,9 @@ fn run_pipeline_impl<F: Fn(&str, f64, &str)>(
         .count()
         .max(1);
     let mut warnings: Vec<PipelineWarning> = Vec::new();
-    // Scan the op sequence for obviously wrong orderings (Profile
-    // that cuts the part free preceding drill / finish on the same
-    // source). Warnings only — no auto-reorder, because the user may
-    // have a real reason for the declared order (jig, manual reset). The
-    // safety gate downgrades the program when an `op_order_suspect`
-    // surfaces, so the user has to acknowledge before the gcode ships.
-    // Check the EFFECTIVE order (post tool-grouping) so the
-    // drill-after-profile / finish-before-rough warnings reflect what
-    // actually ships — grouping can itself reorder these.
-    let enabled_for_order: Vec<&Op> = project.operations.iter().filter(|o| o.enabled).collect();
-    let effective_order = order_ops_by_tool(&enabled_for_order, project.group_ops_by_tool);
-    warnings::push_op_order_warnings(&effective_order, &project, &mut warnings);
-    // Nudge users to rough the bulk before a ball-nose relief finish.
-    warnings::push_relief_roughing_warnings(&project, &mut warnings);
-    // Warn when geometry bbox doesn't contain (0,0). Full
-    // WCS / G54..G59 support is a feature on the roadmap; this loud
-    // warning closes the silent-misalignment case (part-center DXF +
-    // corner-zero G54 → sim shows cuts in the wrong place, user trusts
-    // the sim, runs the program).
-    warnings::push_wcs_origin_warning(&project, &mut warnings);
-    // Flag the manual-intervention requirement when a multi-tool
-    // program runs on a machine without an automatic tool changer.
-    warnings::push_manual_toolchange_warning(&project, &mut warnings);
-    // Block the GRBL + ATC + no-template footgun where post.tool()
-    // would silently emit no swap and the next op cuts with the wrong tool.
-    warnings::push_grbl_atc_footgun_warning(&project, post_kind, &mut warnings);
-    // Block the GRBL + FixedSensor footgun where the emitted G38.2
-    // probe is never followed by an applied tool-length offset (GRBL has no
-    // numbered-parameter system), so the post-change cut runs uncompensated.
-    warnings::push_grbl_fixed_sensor_warning(&project, post_kind, &mut warnings);
-    // Block the FixedSensor reference-ordering footgun: tools changed
-    // before the reference tool's baseline probe would difference
-    // against an unset parameter.
-    warnings::push_fixed_sensor_reference_order_warning(&project, &mut warnings);
+    // Warnings computable from the project alone (no assembled toolpath).
+    // Shared with the streaming entry so both surfaces raise the same set.
+    push_pre_emit_warnings(&project, post_kind, &mut warnings);
 
     let post_tag: u8 = post_kind.cache_tag();
     // run_per_op + every downstream driver now take
@@ -543,14 +512,18 @@ fn run_pipeline_impl<F: Fn(&str, f64, &str)>(
     // by reference; pattern / frame expansion is owned inside
     // build_op_offsets.
     // Single source for the run_per_op call; each arm only varies the
-    // concrete Post. Add a run_per_op argument here once, not 3x.
+    // concrete Post, which it binds locally so it can finalize it after the
+    // emit loop returns. `finish()` joins the buffered program into the
+    // `String` the preview + timing passes below consume. Add a run_per_op
+    // argument here once, not 3x.
     macro_rules! run_with_post {
-        ($post:expr) => {
+        ($post:expr) => {{
+            let mut p = $post;
             run_per_op(
                 &project,
                 &objects,
                 &header_setup,
-                $post,
+                &mut p,
                 &stats_collector,
                 progress,
                 n_ops,
@@ -559,18 +532,21 @@ fn run_pipeline_impl<F: Fn(&str, f64, &str)>(
                 cancel,
                 cache,
                 post_tag,
-            )
-        };
+            )?;
+            p.finish()
+        }};
     }
     let gcode = match post_kind {
-        PostProcessorKind::Linuxcnc => run_with_post!(&mut linuxcnc::Post::new()),
+        PostProcessorKind::Linuxcnc => run_with_post!(linuxcnc::Post::new()),
         // z9zh: GRBL dynamic-power (M4) laser mode is opt-in per machine
         // config; default M3 keeps portable output.
-        PostProcessorKind::Grbl => run_with_post!(&mut grbl::Post::with_dynamic_laser(
-            project.machine.laser_dynamic_power,
-        )),
-        PostProcessorKind::Hpgl => run_with_post!(&mut hpgl::Post::new()),
-    }?;
+        PostProcessorKind::Grbl => {
+            run_with_post!(grbl::Post::with_dynamic_laser(
+                project.machine.laser_dynamic_power,
+            ))
+        }
+        PostProcessorKind::Hpgl => run_with_post!(hpgl::Post::new()),
+    };
     let (total_closed, total_offsets, _) = *stats_collector.borrow();
 
     progress("preview", 0.92, "interpreting toolpath");
@@ -641,6 +617,184 @@ fn run_pipeline_impl<F: Fn(&str, f64, &str)>(
         warnings,
         time_estimate,
     })
+}
+
+/// A streaming Generate's result: planning stats + the warnings that don't
+/// need the assembled toolpath. The g-code itself has already been written
+/// straight to the caller's `Write` (that's the point — it's never held in
+/// memory whole).
+#[derive(Debug, Clone)]
+pub struct StreamGcodeOutcome {
+    pub stats: PipelineStats,
+    pub warnings: Vec<PipelineWarning>,
+}
+
+/// Failure surface of [`stream_gcode_to_writer`]. Distinct from
+/// [`PipelineError`] because streaming adds two modes the buffered pipeline
+/// has not: the write sink erroring, and a post that can't stream at all.
+#[derive(Debug, thiserror::Error)]
+pub enum StreamGcodeError {
+    /// A planning failure shared with [`run_pipeline`] (offset collapse,
+    /// missing tool, unimplemented kind, text render).
+    #[error(transparent)]
+    Pipeline(#[from] PipelineError),
+    /// The write sink returned an error. Surfaced once at finalize — the
+    /// post's emit API is infallible and defers the first write error to
+    /// `finish_stream` (see [`crate::gcode::sink`]).
+    #[error("g-code write failed: {0}")]
+    Write(#[from] std::io::Error),
+    /// The requested post can't stream. HPGL re-derives its whole program
+    /// from the buffer at `finish()`, so it has no write-through mode.
+    #[error("post-processor {0:?} does not support streaming")]
+    Unsupported(PostProcessorKind),
+}
+
+/// Stream a project's g-code straight to `writer`, never materializing the
+/// whole program in memory: peak memory is O(largest single op) instead of
+/// O(total program) (`ivac-3j1p`). This is the headless "just write the
+/// .gcode" path — it deliberately skips the preview toolpath, the time
+/// estimate, and the toolpath-derived warnings (`out_of_work_area` /
+/// `out_of_stock`), all of which need a second pass over the assembled
+/// program the streaming mode never holds. For the interactive path that
+/// wants those (the frontend g-code panel + 3D preview), use [`run_pipeline`],
+/// which buffers.
+///
+/// `writer` should be buffered by the caller (e.g. a [`std::io::BufWriter`]):
+/// the streaming sink issues one write per emitted line. The op-result cache
+/// is still consulted — replaying a cached body through the stream is
+/// byte-identical to a fresh emit (see [`crate::gcode::sink`]).
+///
+/// # Errors
+///
+/// [`StreamGcodeError::Unsupported`] for HPGL (no write-through mode);
+/// [`StreamGcodeError::Pipeline`] for the same planning failures
+/// [`run_pipeline`] raises; [`StreamGcodeError::Write`] when the sink errors.
+pub fn stream_gcode_to_writer(
+    request: PipelineRequest,
+    writer: Box<dyn std::io::Write + Send>,
+) -> Result<StreamGcodeOutcome, StreamGcodeError> {
+    let mut project = request.project;
+    let post_kind = request.post_processor.unwrap_or_default();
+    // Reject non-streamable posts before any work — HPGL has no write-through
+    // mode (its finish() re-splits the whole buffer on `;`).
+    if post_kind == PostProcessorKind::Hpgl {
+        return Err(StreamGcodeError::Unsupported(post_kind));
+    }
+
+    // Render text layers to segments (additive), exactly as run_pipeline, so
+    // ops targeting text emit identically.
+    if !project.text_layers.is_empty() {
+        for layer in &project.text_layers {
+            match crate::input::text::render_text_layer(layer) {
+                Ok(mut segs) => project.segments.append(&mut segs),
+                Err(e) => {
+                    return Err(PipelineError::TextRender(format!(
+                        "text layer {} (\"{}\"): {}",
+                        layer.id, layer.name, e
+                    ))
+                    .into());
+                }
+            }
+        }
+    }
+
+    let mut objects = segments_to_objects(&project.segments);
+    classify_containment(&mut objects);
+
+    let header_setup = header_setup_for(&project);
+    let stats_collector = std::cell::RefCell::new((0usize, 0usize, 0usize));
+    let n_ops = project
+        .operations
+        .iter()
+        .filter(|o| o.enabled)
+        .count()
+        .max(1);
+    let mut warnings: Vec<PipelineWarning> = Vec::new();
+    push_pre_emit_warnings(&project, post_kind, &mut warnings);
+    let post_tag = post_kind.cache_tag();
+
+    let progress = |_: &str, _: f64, _: &str| {};
+    let mut no_events = |_e: PipelineEvent| {};
+
+    // Emit straight through a streaming post, then finalize it: the trailing
+    // newline + flush + surfacing the first deferred write error all happen
+    // in finish_stream. run_per_op is the SAME emit loop the buffered path
+    // uses — only the post's finalization differs.
+    macro_rules! stream_with_post {
+        ($post:expr) => {{
+            let mut p = $post;
+            run_per_op(
+                &project,
+                &objects,
+                &header_setup,
+                &mut p,
+                &stats_collector,
+                &progress,
+                n_ops,
+                &mut warnings,
+                &mut no_events,
+                None,
+                Some(global_cache()),
+                post_tag,
+            )?;
+            p.finish_stream()?;
+        }};
+    }
+    match post_kind {
+        PostProcessorKind::Linuxcnc => stream_with_post!(linuxcnc::Post::streaming(writer)),
+        PostProcessorKind::Grbl => stream_with_post!(grbl::Post::streaming(writer)),
+        // Rejected at entry; the arm keeps the match total.
+        PostProcessorKind::Hpgl => return Err(StreamGcodeError::Unsupported(post_kind)),
+    }
+
+    let (total_closed, total_offsets, _) = *stats_collector.borrow();
+    Ok(StreamGcodeOutcome {
+        stats: PipelineStats {
+            object_count: objects.len(),
+            closed_object_count: total_closed,
+            offset_count: total_offsets,
+        },
+        warnings,
+    })
+}
+
+/// Warnings derivable from the project alone — no assembled toolpath needed.
+/// Shared by [`run_pipeline`] (which appends toolpath-derived warnings after
+/// emit) and [`stream_gcode_to_writer`] (which can't hold the toolpath, and
+/// documents that omission). Order and content match the historical inline
+/// block so the buffered path's warning set is byte-for-byte unchanged.
+fn push_pre_emit_warnings(
+    project: &Project,
+    post_kind: PostProcessorKind,
+    warnings: &mut Vec<PipelineWarning>,
+) {
+    // Scan the op sequence for obviously wrong orderings (Profile that cuts
+    // the part free preceding drill / finish on the same source). Warnings
+    // only — no auto-reorder, because the user may have a real reason for the
+    // declared order (jig, manual reset). The safety gate downgrades the
+    // program when an `op_order_suspect` surfaces. Check the EFFECTIVE order
+    // (post tool-grouping) so the warnings reflect what actually ships —
+    // grouping can itself reorder these.
+    let enabled_for_order: Vec<&Op> = project.operations.iter().filter(|o| o.enabled).collect();
+    let effective_order = order_ops_by_tool(&enabled_for_order, project.group_ops_by_tool);
+    warnings::push_op_order_warnings(&effective_order, project, warnings);
+    // Nudge users to rough the bulk before a ball-nose relief finish.
+    warnings::push_relief_roughing_warnings(project, warnings);
+    // Warn when geometry bbox doesn't contain (0,0) — the silent-misalignment
+    // case (part-center DXF + corner-zero G54).
+    warnings::push_wcs_origin_warning(project, warnings);
+    // Flag the manual-intervention requirement when a multi-tool program runs
+    // on a machine without an automatic tool changer.
+    warnings::push_manual_toolchange_warning(project, warnings);
+    // Block the GRBL + ATC no-template footgun where post.tool() would
+    // silently emit no swap and the next op cuts with the wrong tool.
+    warnings::push_grbl_atc_footgun_warning(project, post_kind, warnings);
+    // Block the GRBL + FixedSensor footgun where the emitted G38.2 probe is
+    // never followed by an applied tool-length offset.
+    warnings::push_grbl_fixed_sensor_warning(project, post_kind, warnings);
+    // Block the FixedSensor reference-ordering footgun: tools changed before
+    // the reference tool's baseline probe would difference an unset parameter.
+    warnings::push_fixed_sensor_reference_order_warning(project, warnings);
 }
 
 #[inline]
@@ -1356,6 +1510,13 @@ fn emit_program_only_op<P: PostProcessor>(
 // The op-emit driver threads cache/progress/warning bookkeeping around the
 // per-op dispatch in one place; the linear body runs past 100 lines but
 // reads top-to-bottom as a single pass.
+//
+// Emits the whole program into `post` but does NOT finalize it — the caller
+// pulls the result out in the way its post's mode demands: a buffered post
+// via `finish() -> String` (the interactive path, which then previews +
+// times the program), a streaming post via `finish_stream()` (the write-
+// through path, which has nothing left to hand back). Keeping finalization
+// with the caller is what lets one emit loop serve both modes (ivac-3j1p).
 #[allow(clippy::too_many_lines)]
 fn run_per_op<P, F>(
     project: &Project,
@@ -1370,7 +1531,7 @@ fn run_per_op<P, F>(
     cancel: Option<&CancelToken>,
     cache: Option<&PipelineCache>,
     post_tag: u8,
-) -> Result<String, PipelineError>
+) -> Result<(), PipelineError>
 where
     P: PostProcessor,
     F: Fn(&str, f64, &str),
@@ -1498,6 +1659,12 @@ where
                 prev_tool_id,
             );
         }
+        // Mark the op boundary for a streaming post: drop the previous op's
+        // teed lines (already written through) so its bounded tee holds only
+        // this op's body — the one range store_op_cache clones below via
+        // out_lines_clone_from(body_marker). A no-op for a buffered post, so
+        // the buffered program stays byte-identical (ivac-3j1p).
+        post.checkpoint();
         let body_marker = post.out_lines_count();
 
         // Program-only ops (Pause / Homing / Probe / CycleMarker /
@@ -1621,7 +1788,7 @@ where
         });
     }
     emit_program_end(header_setup, post);
-    Ok(post.finish())
+    Ok(())
 }
 
 /// The geometry op kinds that have a dedicated driver emitting XYZ blocks

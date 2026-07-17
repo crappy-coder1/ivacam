@@ -802,6 +802,9 @@ impl PostProcessor for Post {
     fn out_extend_lines(&mut self, lines: &[String]) {
         self.sink.extend_from_slice(lines);
     }
+    fn checkpoint(&mut self) {
+        self.sink.checkpoint();
+    }
     fn reset_state(&mut self) {
         self.state.last_x = None;
         self.state.last_y = None;
