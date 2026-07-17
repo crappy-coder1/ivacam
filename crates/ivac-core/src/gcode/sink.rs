@@ -604,7 +604,7 @@ mod tests {
     impl Write for FailAfter {
         fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
             if self.writes_left == 0 {
-                return Err(io::Error::new(io::ErrorKind::Other, "boom"));
+                return Err(io::Error::other("boom"));
             }
             self.writes_left -= 1;
             Ok(buf.len())

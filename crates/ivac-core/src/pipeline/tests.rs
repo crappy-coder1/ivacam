@@ -72,6 +72,7 @@ fn pipeline_relief_mill_emits_varying_z_ballnose_surface() {
         params: OpParams::mill_default(),
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     let project = Project {
         segments: Vec::new(),
@@ -206,6 +207,7 @@ fn pipeline_relief_mill_heightgrid_cuts_real_z_without_depth_range() {
         params: OpParams::mill_default(),
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     let project = Project {
         segments: Vec::new(),
@@ -303,6 +305,7 @@ fn pipeline_waterline_rough_emits_level_chains_over_stl_basin() {
         params: OpParams::mill_default(),
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     let project = Project {
         segments: Vec::new(),
@@ -402,6 +405,7 @@ fn pipeline_waterline_rough_rejects_grayscale_source() {
         params: OpParams::mill_default(),
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     let project = Project {
         segments: Vec::new(),
@@ -457,6 +461,7 @@ fn pipeline_renders_text_layers_and_routes_via_synthetic_layer() {
         params: OpParams::mill_default(),
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     let text_layer = TextLayer {
         id: 1,
@@ -950,6 +955,7 @@ fn plot_mode_emits_only_two_z_values() {
             params,
             group: None,
             pin_order: false,
+            side: crate::project::WorkpieceSide::Front,
         }],
         fixtures: Vec::default(),
         text_layers: Vec::default(),
@@ -1046,6 +1052,7 @@ fn laser_op_emits_pierce_dwell_before_cut() {
             params: OpParams::mill_default(),
             group: None,
             pin_order: false,
+            side: crate::project::WorkpieceSide::Front,
         }],
         fixtures: Vec::default(),
         text_layers: Vec::default(),
@@ -1161,6 +1168,7 @@ fn raster_engrave_emits_power_modulated_scanlines() {
             params: OpParams::mill_default(),
             group: None,
             pin_order: false,
+            side: crate::project::WorkpieceSide::Front,
         }],
         fixtures: Vec::default(),
         text_layers: Vec::default(),
@@ -1226,6 +1234,7 @@ fn raster_scan_direction_sets_scanline_count() {
                 params: OpParams::mill_default(),
                 group: None,
                 pin_order: false,
+                side: crate::project::WorkpieceSide::Front,
             }],
             fixtures: Vec::default(),
             text_layers: Vec::default(),
@@ -1494,6 +1503,7 @@ fn chamfer_op_emits_constant_z_pass_at_computed_depth() {
             params: OpParams::mill_default(),
             group: None,
             pin_order: false,
+            side: crate::project::WorkpieceSide::Front,
         }],
         fixtures: Vec::default(),
         text_layers: Vec::default(),
@@ -1557,6 +1567,7 @@ fn chamfer_after_deep_profile_keeps_own_depth() {
                 params: profile_params,
                 group: None,
                 pin_order: false,
+                side: crate::project::WorkpieceSide::Front,
             },
             Op {
                 id: 2,
@@ -1572,6 +1583,7 @@ fn chamfer_after_deep_profile_keeps_own_depth() {
                 params: OpParams::mill_default(),
                 group: None,
                 pin_order: false,
+                side: crate::project::WorkpieceSide::Front,
             },
         ],
         fixtures: Vec::default(),
@@ -1657,6 +1669,7 @@ fn chamfer_finish_pass_emits_second_pass_at_finish_feed() {
             params: OpParams::mill_default(),
             group: None,
             pin_order: false,
+            side: crate::project::WorkpieceSide::Front,
         }],
         fixtures: Vec::default(),
         text_layers: Vec::default(),
@@ -1699,6 +1712,7 @@ fn chamfer_with_non_vbit_warns() {
             params: OpParams::mill_default(),
             group: None,
             pin_order: false,
+            side: crate::project::WorkpieceSide::Front,
         }],
         fixtures: Vec::default(),
         text_layers: Vec::default(),
@@ -1746,6 +1760,7 @@ fn chamfer_deep_chamfer_uses_multi_pass_stepdown() {
             params: OpParams::mill_default(),
             group: None,
             pin_order: false,
+            side: crate::project::WorkpieceSide::Front,
         }],
         fixtures: Vec::default(),
         text_layers: Vec::default(),
@@ -1813,6 +1828,7 @@ fn chamfer_step_larger_than_depth_clamps_to_chamfer_z() {
             params,
             group: None,
             pin_order: false,
+            side: crate::project::WorkpieceSide::Front,
         }],
         fixtures: Vec::default(),
         text_layers: Vec::default(),
@@ -1880,6 +1896,7 @@ fn chamfer_oversize_width_clamped_to_tool_reach() {
             params: OpParams::mill_default(),
             group: None,
             pin_order: false,
+            side: crate::project::WorkpieceSide::Front,
         }],
         fixtures: Vec::default(),
         text_layers: Vec::default(),
@@ -2126,6 +2143,7 @@ fn generate_streaming_cancellation() {
             },
             group: None,
             pin_order: false,
+            side: crate::project::WorkpieceSide::Front,
         }],
         fixtures: Vec::default(),
         text_layers: Vec::default(),
@@ -2213,6 +2231,7 @@ fn regenerate_with_no_edits_hits_cache() {
             params: OpParams::mill_default(),
             group: None,
             pin_order: false,
+            side: crate::project::WorkpieceSide::Front,
         }],
         fixtures: Vec::default(),
         text_layers: Vec::default(),
@@ -2252,6 +2271,7 @@ fn edit_one_op_misses_only_that() {
             params: OpParams::mill_default(),
             group: None,
             pin_order: false,
+            side: crate::project::WorkpieceSide::Front,
         })
         .collect();
     let mut project = Project {
@@ -2306,6 +2326,7 @@ fn cache_hit_produces_identical_response() {
             params: OpParams::mill_default(),
             group: None,
             pin_order: false,
+            side: crate::project::WorkpieceSide::Front,
         }],
         fixtures: Vec::default(),
         text_layers: Vec::default(),
@@ -2431,6 +2452,7 @@ fn pipeline_emits_m0_for_pause_op() {
         params: OpParams::mill_default(),
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     // Real op in front of the Pause so the pipeline header machinery
     // resolves correctly (it picks the first enabled op's tool for
@@ -2456,6 +2478,7 @@ fn pipeline_emits_m0_for_pause_op() {
         },
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     let project = crate::project::Project {
         segments: vec![Segment::line(
@@ -2532,6 +2555,7 @@ fn pause_op_skips_tool_validation() {
         params: OpParams::mill_default(),
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     let project = crate::project::Project {
         segments: Vec::new(),
@@ -2621,6 +2645,7 @@ fn pipeline_emits_g28_for_homing_op() {
         },
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     let profile = Op {
         id: 2,
@@ -2643,6 +2668,7 @@ fn pipeline_emits_g28_for_homing_op() {
         },
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     let project = crate::project::Project {
         segments: vec![Segment::line(
@@ -2700,6 +2726,7 @@ fn pipeline_homing_without_retract_skips_safe_z_move() {
         params: OpParams::mill_default(),
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     let profile = Op {
         id: 2,
@@ -2722,6 +2749,7 @@ fn pipeline_homing_without_retract_skips_safe_z_move() {
         },
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     let project = crate::project::Project {
         segments: vec![Segment::line(
@@ -2792,6 +2820,7 @@ fn pipeline_emits_g38_2_for_probe_op() {
         params: OpParams::mill_default(),
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     let profile = Op {
         id: 2,
@@ -2814,6 +2843,7 @@ fn pipeline_emits_g38_2_for_probe_op() {
         },
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     let project = crate::project::Project {
         segments: vec![Segment::line(
@@ -2868,6 +2898,7 @@ fn pipeline_emits_comment_only_for_cycle_marker_op() {
         params: OpParams::mill_default(),
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     let profile = Op {
         id: 2,
@@ -2890,6 +2921,7 @@ fn pipeline_emits_comment_only_for_cycle_marker_op() {
         },
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     let project = crate::project::Project {
         segments: vec![Segment::line(
@@ -3012,6 +3044,7 @@ fn pipeline_emits_gcode_include_with_variable_expansion() {
         },
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     let include = Op {
         id: 2,
@@ -3031,6 +3064,7 @@ fn pipeline_emits_gcode_include_with_variable_expansion() {
         },
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     let project = crate::project::Project {
         segments: vec![Segment::line(
@@ -3132,6 +3166,7 @@ fn gcode_include_unknown_variable_warns_and_passes_through() {
         params: OpParams::mill_default(),
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     let profile = Op {
         id: 2,
@@ -3154,6 +3189,7 @@ fn gcode_include_unknown_variable_warns_and_passes_through() {
         },
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     let project = crate::project::Project {
         segments: vec![Segment::line(
@@ -3217,6 +3253,7 @@ fn gcode_include_empty_content_warns() {
         params: OpParams::mill_default(),
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     let profile = Op {
         id: 2,
@@ -3239,6 +3276,7 @@ fn gcode_include_empty_content_warns() {
         },
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     let project = crate::project::Project {
         segments: vec![Segment::line(
@@ -3297,6 +3335,7 @@ fn gcode_include_mixed_body_emits_counted_skipped_summary() {
         params: OpParams::mill_default(),
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     let profile = Op {
         id: 2,
@@ -3319,6 +3358,7 @@ fn gcode_include_mixed_body_emits_counted_skipped_summary() {
         },
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     let project = crate::project::Project {
         segments: vec![Segment::line(
@@ -3405,6 +3445,7 @@ fn gcode_include_multi_axis_line_classified_unsimulated() {
         params: OpParams::mill_default(),
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     let profile = Op {
         id: 2,
@@ -3427,6 +3468,7 @@ fn gcode_include_multi_axis_line_classified_unsimulated() {
         },
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     let project = crate::project::Project {
         segments: vec![Segment::line(
@@ -3487,6 +3529,7 @@ fn gcode_include_comment_only_body_emits_no_classification_warning() {
         params: OpParams::mill_default(),
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     let profile = Op {
         id: 2,
@@ -3509,6 +3552,7 @@ fn gcode_include_comment_only_body_emits_no_classification_warning() {
         },
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     let project = crate::project::Project {
         segments: vec![Segment::line(
@@ -3568,6 +3612,7 @@ fn gcode_include_verbose_mode_fans_out_per_line_warnings() {
         params: OpParams::mill_default(),
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     let profile = Op {
         id: 2,
@@ -3590,6 +3635,7 @@ fn gcode_include_verbose_mode_fans_out_per_line_warnings() {
         },
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     let project = crate::project::Project {
         segments: vec![Segment::line(
@@ -3693,6 +3739,7 @@ fn pipeline_emits_group_boundary_markers() {
         },
         group: group.map(str::to_string),
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     // rough, rough, finish, (no group), finish
     let project = crate::project::Project {
@@ -3900,6 +3947,7 @@ fn project_with_pause_between_cuts_decodes_and_runs() {
         },
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     let pause = Op {
         id: 2,
@@ -3914,6 +3962,7 @@ fn project_with_pause_between_cuts_decodes_and_runs() {
         params: OpParams::mill_default(),
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     let project = crate::project::Project {
         segments: vec![Segment::line(
@@ -3994,6 +4043,7 @@ fn pause_op_round_trips_through_serde() {
         params: OpParams::mill_default(),
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     let json = serde_json::to_string(&pause).expect("serialize");
     assert!(json.contains("\"pause\""), "expected pause tag in {json}");
@@ -4177,6 +4227,7 @@ fn rectangle_tab_drop_uses_plunge_feedrate() {
         params,
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     let project = Project {
         segments: closed_square_offset(40.0, 0.0, 0.0),
@@ -4276,6 +4327,7 @@ fn laser_pierce_dwells_at_cut_z() {
             params: OpParams::mill_default(),
             group: None,
             pin_order: false,
+            side: crate::project::WorkpieceSide::Front,
         }],
         fixtures: Vec::default(),
         text_layers: Vec::default(),
@@ -4403,6 +4455,7 @@ fn dual_tool_internal_change_uses_full_envelope() {
             params: OpParams::mill_default(),
             group: None,
             pin_order: false,
+            side: crate::project::WorkpieceSide::Front,
         }],
         fixtures: Vec::default(),
         text_layers: Vec::default(),
@@ -4489,6 +4542,7 @@ fn drill_stufenfase_change_uses_full_envelope() {
             params,
             group: None,
             pin_order: false,
+            side: crate::project::WorkpieceSide::Front,
         }],
         fixtures: Vec::default(),
         text_layers: Vec::default(),
@@ -5645,6 +5699,7 @@ fn prev_tool_id_stays_unchanged_when_dual_tool_skips_finish() {
         params: OpParams::mill_default(),
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     // Second op on the same rough tool 1. The bug: it would skip
     // its M6 envelope because prev_tool_id was biased to 2.
@@ -5769,6 +5824,7 @@ fn prev_tool_id_unchanged_after_drill_skips_chamfer_swap() {
         },
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     let follow_up = profile_op(2, 1, ToolOffset::Outside);
     let project = crate::project::Project {
@@ -5855,6 +5911,7 @@ fn pause_op_does_not_lock_spindle_direction() {
         params: OpParams::mill_default(),
         group: None,
         pin_order: false,
+        side: crate::project::WorkpieceSide::Front,
     };
     let profile_after = profile_op(3, 1, ToolOffset::Outside);
     let project = crate::project::Project {
@@ -6177,6 +6234,7 @@ fn tslot_project(tool: ToolEntry, depth: f64) -> Project {
             params,
             group: None,
             pin_order: false,
+            side: crate::project::WorkpieceSide::Front,
         }],
         fixtures: Vec::default(),
         text_layers: Vec::default(),
@@ -6376,6 +6434,7 @@ fn dovetail_project(tool: ToolEntry, depth: f64) -> Project {
             params,
             group: None,
             pin_order: false,
+            side: crate::project::WorkpieceSide::Front,
         }],
         fixtures: Vec::default(),
         text_layers: Vec::default(),
@@ -6529,6 +6588,7 @@ fn tessellated_circle_profile_project(arcs: bool) -> Project {
             params,
             group: None,
             pin_order: false,
+            side: crate::project::WorkpieceSide::Front,
         }],
         fixtures: Vec::default(),
         text_layers: Vec::default(),
@@ -6955,10 +7015,10 @@ mod streaming_gcode {
         struct AlwaysFails;
         impl std::io::Write for AlwaysFails {
             fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
-                Err(std::io::Error::new(std::io::ErrorKind::Other, "disk full"))
+                Err(std::io::Error::other("disk full"))
             }
             fn flush(&mut self) -> std::io::Result<()> {
-                Err(std::io::Error::new(std::io::ErrorKind::Other, "disk full"))
+                Err(std::io::Error::other("disk full"))
             }
         }
         let err = stream_gcode_to_writer(

@@ -2576,6 +2576,7 @@ mod count_tool_changes_tests {
             params: OpParams::mill_default(),
             group: None,
             pin_order: false,
+            side: crate::project::WorkpieceSide::Front,
         }
     }
 

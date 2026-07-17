@@ -84,6 +84,7 @@ fn gcode_include_g1_slot_volume_matches_closed_form() {
         params: OpParams::mill_default(),
         group: None,
         pin_order: false,
+        side: ivac_core::project::WorkpieceSide::Front,
     };
 
     let project = Project {

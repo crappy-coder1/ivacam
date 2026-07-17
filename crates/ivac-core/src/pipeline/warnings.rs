@@ -1493,6 +1493,7 @@ mod tests {
             height_mm: 80.0,
             thickness_mm: 10.0,
             top_z_mm: 10.0, // body now spans z ∈ [0, 10]
+            flip: None,
         };
         let seg = |z: f64, kind, line| ToolpathSegment {
             from: Pose3 {
@@ -1969,6 +1970,7 @@ mod tests {
             params: OpParams::mill_default(),
             group: None,
             pin_order: false,
+            side: crate::project::WorkpieceSide::Front,
         };
         let tools = vec![endmill(1, 6.0)];
 

@@ -150,6 +150,7 @@ fn waterline_rough_then_relief_finish_no_gouge_bounded_envelope() {
         params: OpParams::mill_default(),
         group: None,
         pin_order: false,
+        side: ivac_core::project::WorkpieceSide::Front,
     };
     let finish = Op {
         id: 2,
@@ -171,6 +172,7 @@ fn waterline_rough_then_relief_finish_no_gouge_bounded_envelope() {
         params: OpParams::mill_default(),
         group: None,
         pin_order: false,
+        side: ivac_core::project::WorkpieceSide::Front,
     };
 
     let project = Project {

@@ -316,6 +316,26 @@ export interface components {
          * @enum {string}
          */
         CutDirection: "conventional" | "climb";
+        /** @description Auto-placed dowel-pin registration for a two-sided job. The front program drills `count` holes of `diameter_mm`, inset `margin_mm` from the stock edge and placed symmetrically about the flip axis so the same holes line up once the stock is flipped. Exact positions are derived in a later phase; this struct is only the operator-facing knobs. */
+        DowelPinConfig: {
+            /**
+             * Format: uint32
+             * @description Number of registration holes. Two is the minimum for an unambiguous flip alignment (one leaves the part free to pivot).
+             * @default 2
+             */
+            count: number;
+            /**
+             * Format: double
+             * @description Dowel hole diameter (mm) — matches the physical dowel pin.
+             */
+            diameter_mm: number;
+            /**
+             * Format: double
+             * @description Inset (mm) from the stock edge to the hole centres, keeping the holes in waste stock clear of the part envelope.
+             * @default 0
+             */
+            margin_mm: number;
+        };
         /** @description Drill-cycle picker for [`OpKind::Drill`]. Mirrors the canned cycles G81 / G83 / G73 from the `LinuxCNC` / Fanuc dialect plus the dwell-at-bottom parameter `PyCAM`'s `Drilling.py` exposes. Posts that don't support canned cycles fall back to a manual G0/G1 expansion of the same cycle (see `PostProcessor::drill_*` defaults). */
         DrillCycle: {
             /**
@@ -404,6 +424,22 @@ export interface components {
                 number,
                 number
             ][];
+        };
+        /**
+         * @description Which axis the stock is flipped about between the two sides of a two-sided job. Named for the axis the flip line runs **parallel to**:
+         *
+         *     - `X` — turn the stock about a line parallel to the X-axis (like flipping a page whose spine runs left–right). X is preserved, Y mirrors about the stock's Y centre-line, Z inverts. On a 50 mm-tall stock a point `(10, 5)` lands at `(10, 45)`. - `Y` — turn about a line parallel to the Y-axis (spine runs front–back). Y is preserved, X mirrors about the stock's X centre-line, Z inverts.
+         */
+        FlipAxis: "x" | "y";
+        /** @description Two-sided machining registration: how the stock is turned over between the front and back programs. See [`StockConfig::flip`]. */
+        FlipRegistration: {
+            /**
+             * @description The axis the physical stock is rotated 180° about to expose the back face. See [`FlipAxis`] for the exact XY/Z consequence — getting this wrong is the classic two-sided error, so the UI must show it unmistakably.
+             * @default x
+             */
+            axis: components["schemas"]["FlipAxis"];
+            /** @description Optional dowel-pin registration. `None` ⇒ the operator aligns the flip by fence/eye. `Some` ⇒ the front program drills dowel holes and the back program references their mirrored positions, so the flip is repeatable to the pin fit. Hole positions are auto-derived in a later phase; this carries only the operator-facing knobs. */
+            dowels?: components["schemas"]["DowelPinConfig"] | null;
         };
         /** @description One cross-section sample of a form / profile cutter outline, measured up from the cutting tip. The cutter is treated as cylindrically symmetric, so a sorted list of these describes the full profile (cove / ogee / dovetail / custom). See [`ToolEntry::form_profile_mm`]. */
         FormProfileSample: {
@@ -761,6 +797,8 @@ export interface components {
             params: components["schemas"]["OpParamsCommon"];
             /** @description Pin this op's position when the program-level [`Project::group_ops_by_tool`] reorder is on. A pinned op — like any program-only op (Pause / Homing / …) — is a fixed barrier: it keeps its declared slot and the tool-grouping pass never moves another op across it. Use it to lock a stability-critical cut order (tabs, thin walls) while still grouping the rest of the program. Ignored when grouping is off. Defaults to `false` (unpinned). */
             pin_order?: boolean;
+            /** @description Which stock face this op cuts in a two-sided (flip-stock) job. See [`WorkpieceSide`]. Defaults to `Front`; a `Back` op's geometry is mirrored and its Z re-anchored for the flipped stock by [`crate::cam::flip`] at pipeline time (that wiring is Phase 2 — today the field only rides along and round-trips). Omitted from the wire when `Front`, so existing single-sided projects serialize byte-for-byte unchanged. */
+            side?: components["schemas"]["WorkpieceSide"];
             source: components["schemas"]["OpSource"];
             /**
              * Format: uint32
@@ -1881,6 +1919,8 @@ export interface components {
         };
         /** @description Resolved stock box. See [`Project::stock`]. Kept deliberately thin — the auto/manual/margin derivation lives frontend-side (it's a UI convenience for sizing the box to imported geometry); the core only needs the final axis-aligned envelope for the `out_of_stock` scan (and, in future, stock-aware sim / rapid / holder checks). */
         StockConfig: {
+            /** @description Two-sided (flip-stock) registration. `None` (the default) ⇒ a single-sided job — no flip axis, no dowel pins, and the field is omitted from the wire so existing projects are untouched. `Some` enables the two-sided workflow: the axis the stock is turned about between the front and back programs, plus optional dowel-pin registration. The flip transform ([`crate::cam::flip`]) reads the axis; auto-placement of the dowel holes is a later phase. */
+            flip?: components["schemas"]["FlipRegistration"] | null;
             /**
              * Format: double
              * @description Y extent of the stock box (mm).
@@ -2556,6 +2596,8 @@ export interface components {
              */
             z_mm?: number;
         };
+        /** @description Which face of the stock an operation cuts in a two-sided (flip-stock) job. `Front` (the default) cuts the top as authored. `Back` cuts the opposite face after the stock is physically turned over about the [`StockConfig`](crate::project::StockConfig) flip axis; its geometry is mirrored and its Z re-anchored by [`crate::cam::flip`]. Serialized lowercase (`"front"` / `"back"`) and omitted entirely when `Front`. */
+        WorkpieceSide: "front" | "back";
     };
     responses: {
         /** @description Malformed input */

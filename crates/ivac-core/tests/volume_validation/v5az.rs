@@ -139,6 +139,7 @@ fn chamfer_after_pocket_does_not_dip_below_pocket_floor() {
         },
         group: None,
         pin_order: false,
+        side: ivac_core::project::WorkpieceSide::Front,
     };
 
     let project = Project {

@@ -402,6 +402,7 @@ mod tests {
             },
             group: None,
             pin_order: false,
+            side: crate::project::WorkpieceSide::Front,
         };
         let project = Project {
             segments: vec![
@@ -468,6 +469,7 @@ mod tests {
             },
             group: None,
             pin_order: false,
+            side: crate::project::WorkpieceSide::Front,
         };
         // A single LINE segment doesn't form a closed contour. No
         // region → expect the warning.
@@ -535,6 +537,7 @@ mod tests {
             },
             group: None,
             pin_order: false,
+            side: crate::project::WorkpieceSide::Front,
         };
         // 30x30 closed square — incircle radius 15mm.
         let project = Project {
@@ -604,6 +607,7 @@ mod tests {
             },
             group: None,
             pin_order: false,
+            side: crate::project::WorkpieceSide::Front,
         };
         // 30x30 closed square — incircle radius 15mm. Boundary inset by
         // R = 3.175 mm (vbit tool reach) → expect a ~23.65×23.65 square
@@ -692,6 +696,7 @@ mod tests {
             },
             group: None,
             pin_order: false,
+            side: crate::project::WorkpieceSide::Front,
         };
         let square = vec![
             Segment::line(Point2::new(0.0, 0.0), Point2::new(30.0, 0.0), "0", 7),
@@ -785,6 +790,7 @@ mod tests {
             },
             group: None,
             pin_order: false,
+            side: crate::project::WorkpieceSide::Front,
         };
         let project = Project {
             segments: vec![
@@ -856,6 +862,7 @@ mod tests {
             },
             group: None,
             pin_order: false,
+            side: crate::project::WorkpieceSide::Front,
         };
         let json = serde_json::to_string(&op).expect("serialize");
         let back: Op = serde_json::from_str(&json).expect("deserialize");

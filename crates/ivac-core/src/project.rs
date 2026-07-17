@@ -226,6 +226,77 @@ pub struct StockConfig {
     /// stock material relative to that origin.
     #[serde(default, skip_serializing_if = "is_zero_f64")]
     pub top_z_mm: f64,
+    /// Two-sided (flip-stock) registration. `None` (the default) ⇒ a
+    /// single-sided job — no flip axis, no dowel pins, and the field is
+    /// omitted from the wire so existing projects are untouched. `Some`
+    /// enables the two-sided workflow: the axis the stock is turned about
+    /// between the front and back programs, plus optional dowel-pin
+    /// registration. The flip transform ([`crate::cam::flip`]) reads the
+    /// axis; auto-placement of the dowel holes is a later phase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flip: Option<FlipRegistration>,
+}
+
+/// Two-sided machining registration: how the stock is turned over between
+/// the front and back programs. See [`StockConfig::flip`].
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct FlipRegistration {
+    /// The axis the physical stock is rotated 180° about to expose the back
+    /// face. See [`FlipAxis`] for the exact XY/Z consequence — getting this
+    /// wrong is the classic two-sided error, so the UI must show it
+    /// unmistakably.
+    #[serde(default)]
+    pub axis: FlipAxis,
+    /// Optional dowel-pin registration. `None` ⇒ the operator aligns the
+    /// flip by fence/eye. `Some` ⇒ the front program drills dowel holes and
+    /// the back program references their mirrored positions, so the flip is
+    /// repeatable to the pin fit. Hole positions are auto-derived in a
+    /// later phase; this carries only the operator-facing knobs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dowels: Option<DowelPinConfig>,
+}
+
+/// Which axis the stock is flipped about between the two sides of a
+/// two-sided job. Named for the axis the flip line runs **parallel to**:
+///
+/// - `X` — turn the stock about a line parallel to the X-axis (like
+///   flipping a page whose spine runs left–right). X is preserved, Y
+///   mirrors about the stock's Y centre-line, Z inverts. On a 50 mm-tall
+///   stock a point `(10, 5)` lands at `(10, 45)`.
+/// - `Y` — turn about a line parallel to the Y-axis (spine runs
+///   front–back). Y is preserved, X mirrors about the stock's X
+///   centre-line, Z inverts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum FlipAxis {
+    /// Flip about a line parallel to X — mirrors Y, preserves X.
+    #[default]
+    X,
+    /// Flip about a line parallel to Y — mirrors X, preserves Y.
+    Y,
+}
+
+/// Auto-placed dowel-pin registration for a two-sided job. The front
+/// program drills `count` holes of `diameter_mm`, inset `margin_mm` from
+/// the stock edge and placed symmetrically about the flip axis so the same
+/// holes line up once the stock is flipped. Exact positions are derived in
+/// a later phase; this struct is only the operator-facing knobs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct DowelPinConfig {
+    /// Dowel hole diameter (mm) — matches the physical dowel pin.
+    pub diameter_mm: f64,
+    /// Number of registration holes. Two is the minimum for an
+    /// unambiguous flip alignment (one leaves the part free to pivot).
+    #[serde(default = "default_dowel_count")]
+    pub count: u32,
+    /// Inset (mm) from the stock edge to the hole centres, keeping the
+    /// holes in waste stock clear of the part envelope.
+    #[serde(default)]
+    pub margin_mm: f64,
+}
+
+fn default_dowel_count() -> u32 {
+    2
 }
 
 /// Program-level work-coordinate offset. Defaults to all

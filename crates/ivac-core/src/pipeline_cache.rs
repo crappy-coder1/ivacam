@@ -583,6 +583,7 @@ mod tests {
             params: OpParams::mill_default(),
             group: None,
             pin_order: false,
+            side: crate::project::WorkpieceSide::Front,
         }
     }
 
@@ -1200,6 +1201,7 @@ mod tests {
             params: OpParams::mill_default(),
             group: None,
             pin_order: false,
+            side: crate::project::WorkpieceSide::Front,
         };
         let k1 = op_cache_key(&thread(1, 0.0), &tool, &machine, &segs, &[], 0);
         let k2 = op_cache_key(&thread(3, 0.0), &tool, &machine, &segs, &[], 0);
@@ -1231,6 +1233,7 @@ mod tests {
             params: OpParams::mill_default(),
             group: None,
             pin_order: false,
+            side: crate::project::WorkpieceSide::Front,
         };
         let k1 = op_cache_key(&thread(0.0), &tool, &machine, &segs, &[], 0);
         let k2 = op_cache_key(&thread(1.0), &tool, &machine, &segs, &[], 0);

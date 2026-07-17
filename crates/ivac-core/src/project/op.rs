@@ -54,6 +54,41 @@ pub struct Op {
     /// (unpinned).
     #[serde(default, skip_serializing_if = "is_false")]
     pub pin_order: bool,
+    /// Which stock face this op cuts in a two-sided (flip-stock) job. See
+    /// [`WorkpieceSide`]. Defaults to `Front`; a `Back` op's geometry is
+    /// mirrored and its Z re-anchored for the flipped stock by
+    /// [`crate::cam::flip`] at pipeline time (that wiring is Phase 2 —
+    /// today the field only rides along and round-trips). Omitted from the
+    /// wire when `Front`, so existing single-sided projects serialize
+    /// byte-for-byte unchanged.
+    #[serde(default, skip_serializing_if = "WorkpieceSide::is_front")]
+    pub side: WorkpieceSide,
+}
+
+/// Which face of the stock an operation cuts in a two-sided (flip-stock)
+/// job. `Front` (the default) cuts the top as authored. `Back` cuts the
+/// opposite face after the stock is physically turned over about the
+/// [`StockConfig`](crate::project::StockConfig) flip axis; its geometry is
+/// mirrored and its Z re-anchored by [`crate::cam::flip`]. Serialized
+/// lowercase (`"front"` / `"back"`) and omitted entirely when `Front`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkpieceSide {
+    /// Cut the top face as authored (no flip). The default.
+    #[default]
+    Front,
+    /// Cut the opposite face after the stock is flipped about the stock's
+    /// flip axis. Geometry is mirrored + Z-re-anchored before emit.
+    Back,
+}
+
+impl WorkpieceSide {
+    /// True for the default `Front` side. Used as the `skip_serializing_if`
+    /// predicate so a `Front` op omits the field on the wire.
+    #[must_use]
+    pub fn is_front(&self) -> bool {
+        matches!(self, Self::Front)
+    }
 }
 
 impl Op {
@@ -209,6 +244,7 @@ impl Default for Op {
             params: OpParams::default(),
             group: None,
             pin_order: false,
+            side: crate::project::WorkpieceSide::Front,
         }
     }
 }
