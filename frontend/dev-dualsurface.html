@@ -1,0 +1,27 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>dual-surface spike</title>
+<style>
+  html,
+  body {
+    margin: 0;
+    height: 100%;
+    background: #0e1116;
+  }
+  #hud {
+    position: fixed;
+    left: 10px;
+    top: 10px;
+    z-index: 10;
+    font:
+      12px/1.5 ui-monospace,
+      monospace;
+    color: #9fb0c3;
+    pointer-events: none;
+  }
+</style>
+<div id="dualsurface-spike" style="position: fixed; inset: 0"></div>
+<div id="hud">
+  dual-surface spike · keys: 1 top · 2 bottom · 3 iso · 4 side(seam) · o opacity · space orbit
+</div>
+<script type="module" src="/src/dev/dualsurface_spike.ts"></script>
