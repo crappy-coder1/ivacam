@@ -370,6 +370,18 @@ pub trait PostProcessor {
 
     fn finish(&self) -> String;
 
+    /// Finalize a **streaming** post: flush its write-through sink and
+    /// surface any deferred write error. Buffered posts (the default) retain
+    /// their whole program and hand it back via [`finish`](Self::finish), so
+    /// they have nothing to flush — the default is a no-op returning `Ok`,
+    /// letting a caller invoke it unconditionally. Streaming-backed posts
+    /// (`linuxcnc` / `grbl` constructed via `Post::streaming`) override to
+    /// emit the trailing newline + flush their writer. Part of the
+    /// streaming-gcode evolution (`ivac-3j1p`).
+    fn finish_stream(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+
     /// Number of buffered output lines so far. Used by the per-op
     /// pipeline cache to slice each operation's contribution.
     fn out_lines_count(&self) -> usize {

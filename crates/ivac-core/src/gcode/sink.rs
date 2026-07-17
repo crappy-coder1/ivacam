@@ -8,31 +8,83 @@
 //! operations inline (`linuxcnc`, `hpgl`, and `grbl` via its embedded
 //! `linuxcnc::Post`); this type is the single place they now live.
 //!
-//! [`GcodeSink`] is backed by an in-memory `Vec<String>`, so its behavior
-//! is **byte-identical** to the field it replaces (peak memory O(total
-//! lines)). [`StreamingGcodeSink`] is its append-only [`std::io::Write`]-backed
-//! counterpart: it writes each line straight through and keeps only the
-//! current op's lines in memory, so peak memory is O(largest single op).
-//! [`GcodeSink::write_to`] is the shared write-through primitive both build
-//! on — it streams the finished program without materializing the monolithic
-//! joined `String`.
+//! [`GcodeSink`] has two modes behind one infallible API so a post can be
+//! constructed either way without any driver-code change:
 //!
-//! The random-access operations ([`GcodeSink::clone_from`] /
-//! [`GcodeSink::extend_from_slice`]) that the per-op cache relies on are the
-//! part a pure append-only stream cannot serve once bytes are flushed away.
-//! [`StreamingGcodeSink`] reconciles that with a bounded per-op tee (see its
-//! docs); wiring it through the posts and transports so a real program
-//! streams is the remaining increment (`ivac-3j1p.3`).
+//!   * **Buffered** (the default) — backed by an in-memory `Vec<String>`,
+//!     byte-identical to the field it replaced (peak memory O(total lines)).
+//!     [`GcodeSink::finish`] joins it into the program `String`.
+//!   * **Streaming** — backed by a [`std::io::Write`]: each line is written
+//!     straight through the moment it is emitted and only the *current op's*
+//!     lines are kept in memory, so peak memory is O(largest single op).
+//!     Finalized with [`GcodeSink::finish_stream`] (flush + trailing newline)
+//!     rather than a `String`.
+//!
+//! [`GcodeSink::write_to`] is the shared write-through primitive the buffered
+//! `finish()` and the streaming `push` both agree with byte-for-byte — it
+//! streams the finished program without materializing the monolithic joined
+//! `String`.
+//!
+//! # Reconciling the per-op cache (what the streaming mode resolves)
+//!
+//! The per-op pipeline cache captures each op's contribution with three
+//! random-access line operations — [`len`](GcodeSink::len) to mark the op's
+//! start, [`clone_from`](GcodeSink::clone_from) to read the op's body back at
+//! its end, and [`extend_from_slice`](GcodeSink::extend_from_slice) to splice
+//! a cached body in on a hit — which a pure append-only stream cannot serve
+//! once bytes are flushed away.
+//!
+//! The reconciliation (design option (c): a bounded tee) rests on an
+//! invariant of the emit loop: `clone_from` is *only ever* called with the
+//! marker captured at the **start of the current op** (`pipeline.rs` captures
+//! `body_marker = out_lines_count()` just before the op body and reads
+//! `out_lines_clone_from(body_marker)` just after it). It is never an
+//! arbitrary historical range — always the tail of what was just emitted. So
+//! the streaming mode tees only the lines emitted **since the last
+//! [`checkpoint`](GcodeSink::checkpoint)** into `tail`; the driver loop calls
+//! [`checkpoint`](GcodeSink::checkpoint) at each op boundary (the same point
+//! it reads `out_lines_count`), dropping the previous op's tee (already
+//! written through to the writer). `tail` is thus bounded by one op's output,
+//! and `clone_from` / `extend_from_slice` stay correct and byte-identical to
+//! the buffered mode.
+//!
+//! # Infallible emit, deferred io-error
+//!
+//! Posts emit through an infallible API (`raw` / `move_to` / … all return
+//! `()`), with dozens of call sites per driver. To keep that API unchanged,
+//! the streaming mode **defers** the first write error into `err` instead of
+//! propagating per line; [`finish_stream`](GcodeSink::finish_stream) surfaces
+//! it once at the end. Line bookkeeping (`len` / `tail`) advances regardless,
+//! so the op cache stays consistent even after a write fails.
+//!
+//! # Not yet wired into the pipeline
+//!
+//! This increment (`ivac-3j1p.3` step 4a) makes the posts *constructible*
+//! streaming ([`linuxcnc::Post::streaming`](crate::gcode::linuxcnc) /
+//! [`grbl::Post::streaming`](crate::gcode::grbl)) with byte-identical output;
+//! threading a `Write` through the pipeline emit loop + the cli/server/tauri/
+//! wasm transports (so a real Generate streams to a file/socket) is the
+//! following increment. HPGL stays buffered-only: its `finish()` re-derives
+//! the program by splitting each buffered entry on `;`, which needs the whole
+//! buffer the streaming mode does not retain.
+//!
+//! # Known limitation (`ivac-3j1p.4` follow-up)
+//!
+//! A single pathologically large op — e.g. one laser-raster op that emits the
+//! entire program as one `G1`-per-pixel body — still buffers that op's whole
+//! tee, so peak stays O(that op). True O(1) there needs a cache **bypass** for
+//! oversized ops (stream straight through, skip the snapshot) or a seek-based
+//! re-read. Tracked as a follow-up; out of scope for the common many-ops case
+//! this mode makes O(1).
 
 use std::io::{self, Write};
 
 /// Write one program line to `w`, prefixing the `\n` *separator* for
 /// every line after the first (`first == false`). The single trailing
 /// newline is emitted separately by the caller (after the last line), so
-/// both the buffered [`GcodeSink::write_to`] and the streaming
-/// [`StreamingGcodeSink::push`] agree byte-for-byte on the historical
-/// `join("\n") + "\n"`. One definition of the separator semantics so the
-/// buffered and streaming paths cannot drift.
+/// both the buffered [`GcodeSink::write_to`] and the streaming push agree
+/// byte-for-byte on the historical `join("\n") + "\n"`. One definition of
+/// the separator semantics so the buffered and streaming paths cannot drift.
 fn write_separated_line<W: Write>(w: &mut W, first: bool, line: &str) -> io::Result<()> {
     if !first {
         w.write_all(b"\n")?;
@@ -40,253 +92,301 @@ fn write_separated_line<W: Write>(w: &mut W, first: bool, line: &str) -> io::Res
     w.write_all(line.as_bytes())
 }
 
-/// Accumulates a post-processor's emitted g-code lines.
+/// Write-through streaming state — the append-only counterpart to a
+/// `Vec<String>`. Keeps only the current op's lines in memory (see the
+/// module docs' bounded-tee reconciliation of the per-op cache).
+struct StreamState {
+    /// The write-through destination. Each pushed line hits it immediately;
+    /// the state never holds a second full copy of the program. Boxed +
+    /// `Send` so the pipeline's background emit thread can own it.
+    writer: Box<dyn Write + Send>,
+    /// Total logical lines emitted so far — what [`GcodeSink::len`] returns
+    /// and the marker the op cache captures via `out_lines_count`.
+    total: usize,
+    /// The lines emitted since the last [`GcodeSink::checkpoint`]: the
+    /// current op's contribution, the only range the op cache ever clones.
+    /// Everything before `tail_start` has been written through and dropped,
+    /// bounding memory to one op's output.
+    tail: Vec<String>,
+    /// Logical index of `tail[0]` — `total` as of the last checkpoint.
+    /// [`GcodeSink::clone_from`] translates an absolute marker into a `tail`
+    /// offset by subtracting this.
+    tail_start: usize,
+    /// Whether any line has reached `writer` yet, driving the `\n` separator
+    /// so the stream is byte-identical to `join("\n") + "\n"`.
+    wrote_any: bool,
+    /// First deferred write error, surfaced by [`GcodeSink::finish_stream`].
+    /// Once set, further `write_all`s are skipped but line bookkeeping still
+    /// advances so the op cache stays consistent.
+    err: Option<io::Error>,
+}
+
+impl StreamState {
+    /// Emit one line: write it straight through (with the leading `\n`
+    /// separator for every line after the first) and tee it into the
+    /// current-op `tail`. On the first io error, record it and stop writing
+    /// (bookkeeping still advances).
+    fn push(&mut self, line: String) {
+        if self.err.is_none() {
+            if let Err(e) = write_separated_line(&mut self.writer, !self.wrote_any, &line) {
+                self.err = Some(e);
+            }
+        }
+        self.wrote_any = true;
+        self.total += 1;
+        self.tail.push(line);
+    }
+}
+
+/// Accumulates a post-processor's emitted g-code lines, buffered in memory
+/// or streamed straight through a writer (see the module docs).
 ///
-/// Each stored string is one line **without** its trailing newline — the
-/// newline is the line *separator*, materialized by [`GcodeSink::finish`] /
-/// [`GcodeSink::write_to`].
-#[derive(Debug, Default, Clone)]
+/// Each stored/emitted string is one line **without** its trailing newline —
+/// the newline is the line *separator*, materialized by [`GcodeSink::finish`]
+/// / [`GcodeSink::write_to`] (buffered) or interleaved by the streaming push
+/// + [`GcodeSink::finish_stream`] (streaming).
 pub(crate) struct GcodeSink {
-    lines: Vec<String>,
+    mode: Mode,
+}
+
+enum Mode {
+    /// In-memory buffer — byte-identical to the historical `out: Vec<String>`.
+    Buffered(Vec<String>),
+    /// Write-through stream — O(largest op) peak memory.
+    Streaming(StreamState),
+}
+
+impl Default for GcodeSink {
+    /// Buffered, empty — the historical `out: Vec<String>::new()` behavior,
+    /// so `#[derive(Default)]` posts are unchanged.
+    fn default() -> Self {
+        Self {
+            mode: Mode::Buffered(Vec::new()),
+        }
+    }
+}
+
+impl std::fmt::Debug for GcodeSink {
+    // A `Box<dyn Write>` isn't `Debug`; summarize the mode + counts instead
+    // (the posts derive `Debug`, so the sink must be `Debug`).
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.mode {
+            Mode::Buffered(v) => f
+                .debug_struct("GcodeSink")
+                .field("mode", &"buffered")
+                .field("lines", &v.len())
+                .finish(),
+            Mode::Streaming(s) => f
+                .debug_struct("GcodeSink")
+                .field("mode", &"streaming")
+                .field("total", &s.total)
+                .field("tail", &s.tail.len())
+                .field("errored", &s.err.is_some())
+                .finish(),
+        }
+    }
 }
 
 impl GcodeSink {
-    /// Append one already-rendered line.
-    pub(crate) fn push(&mut self, line: String) {
-        self.lines.push(line);
+    /// Construct a streaming sink that writes each line straight through
+    /// `writer`. The writer is expected to be buffered by the caller (e.g. a
+    /// [`std::io::BufWriter`]) — the sink issues one `write_all` per line and
+    /// does not batch. Finalize with [`finish_stream`](Self::finish_stream).
+    pub(crate) fn streaming(writer: Box<dyn Write + Send>) -> Self {
+        Self {
+            mode: Mode::Streaming(StreamState {
+                writer,
+                total: 0,
+                tail: Vec::new(),
+                tail_start: 0,
+                wrote_any: false,
+                err: None,
+            }),
+        }
     }
 
-    /// Number of buffered lines. The per-op cache slices an op's
+    /// Append one already-rendered line. Buffered: pushes to the `Vec`.
+    /// Streaming: writes straight through + tees into the current-op tail.
+    pub(crate) fn push(&mut self, line: String) {
+        match &mut self.mode {
+            Mode::Buffered(v) => v.push(line),
+            Mode::Streaming(s) => s.push(line),
+        }
+    }
+
+    /// Number of logical lines emitted. The per-op cache slices an op's
     /// contribution by the count captured before/after the op runs.
     pub(crate) fn len(&self) -> usize {
-        self.lines.len()
+        match &self.mode {
+            Mode::Buffered(v) => v.len(),
+            Mode::Streaming(s) => s.total,
+        }
     }
 
-    /// Clone the buffered lines from `start` (inclusive); empty when
+    /// Clone the emitted lines from `start` (inclusive); empty when
     /// `start >= len()`. How the per-op cache captures an op's output range.
+    ///
+    /// In streaming mode `start` must be `>= the last checkpoint`
+    /// (`tail_start`): the emit loop only ever clones the current op's tail
+    /// (see the module docs), so earlier lines are already streamed out and
+    /// gone.
     pub(crate) fn clone_from(&self, start: usize) -> Vec<String> {
-        if start >= self.lines.len() {
-            Vec::new()
-        } else {
-            self.lines[start..].to_vec()
+        match &self.mode {
+            Mode::Buffered(v) => {
+                if start >= v.len() {
+                    Vec::new()
+                } else {
+                    v[start..].to_vec()
+                }
+            }
+            Mode::Streaming(s) => {
+                if start >= s.total {
+                    return Vec::new();
+                }
+                debug_assert!(
+                    start >= s.tail_start,
+                    "streaming sink can only clone the current op's tail \
+                     (start {start} < checkpoint {}); the op cache never clones \
+                     before the active op boundary",
+                    s.tail_start,
+                );
+                let off = start.saturating_sub(s.tail_start);
+                s.tail
+                    .get(off..)
+                    .map(<[String]>::to_vec)
+                    .unwrap_or_default()
+            }
         }
     }
 
     /// Append a pre-rendered batch verbatim — the op-cache hit replay path.
+    /// Streaming: writes each line through like [`push`](Self::push).
     pub(crate) fn extend_from_slice(&mut self, lines: &[String]) {
-        self.lines.extend_from_slice(lines);
+        match &mut self.mode {
+            Mode::Buffered(v) => v.extend_from_slice(lines),
+            Mode::Streaming(s) => {
+                for line in lines {
+                    s.push(line.clone());
+                }
+            }
+        }
     }
 
-    /// Borrow the buffered lines as a slice. Used by a post whose
-    /// `finish()` re-derives its program text from the raw lines rather
-    /// than the canonical `join("\n")` [`GcodeSink::finish`] — the HPGL
-    /// post splits each buffered entry on `;` so every plotter statement
-    /// lands on its own output line. Reads the same backing store as
-    /// [`GcodeSink::finish`] without cloning it. Like the random-access
-    /// operations above, this whole-buffer read is a thing an append-only
-    /// streaming sink cannot serve — a `finish()` transform is in the same
-    /// boat as the op-cache range ops, reconciled by the streaming variant.
+    /// Mark an op boundary (streaming only): drop the previous op's tee (its
+    /// lines are already written through) and start a fresh tail at the
+    /// current position, keeping `tail` bounded to a single op. `len()` is
+    /// unaffected — the logical count is monotonic across checkpoints. A
+    /// no-op in buffered mode (the whole program is retained anyway), so the
+    /// emit loop can call it unconditionally.
+    ///
+    /// Exercised by the module tests today; its production caller is the
+    /// pipeline emit loop, which the following increment wires to call this
+    /// (via a new `PostProcessor::checkpoint`) at each op boundary — the same
+    /// point it captures `out_lines_count`. Annotated `dead_code` until then,
+    /// exactly as the standalone streaming sink's methods were before this
+    /// mode had a consumer.
+    #[allow(dead_code)] // production caller lands with the pipeline emit-loop wiring (ivac-3j1p.3).
+    pub(crate) fn checkpoint(&mut self) {
+        if let Mode::Streaming(s) = &mut self.mode {
+            s.tail_start = s.total;
+            s.tail.clear();
+        }
+    }
+
+    /// Borrow the buffered lines as a slice. Used by a post whose `finish()`
+    /// re-derives its program text from the raw lines rather than the
+    /// canonical `join("\n")` (the HPGL post splits each buffered entry on
+    /// `;`). Buffered-only: the streaming mode does not retain the whole
+    /// program, which is exactly why HPGL is never constructed streaming.
     pub(crate) fn lines(&self) -> &[String] {
-        &self.lines
+        match &self.mode {
+            Mode::Buffered(v) => v,
+            Mode::Streaming(_) => {
+                debug_assert!(
+                    false,
+                    "lines() is buffered-only; streaming keeps only the current-op tail"
+                );
+                &[]
+            }
+        }
     }
 
     /// The finished program as one `String`: lines joined by `\n` with a
     /// trailing `\n`. Byte-identical to the historical `out.join("\n") +
     /// "\n"`. Derived from [`GcodeSink::write_to`] so there is a single
     /// canonical output path; the `from_utf8` cannot fail (every byte came
-    /// from a `&str` line or the `\n` separator).
+    /// from a `&str` line or the `\n` separator). Buffered-only — a streaming
+    /// post has already written its program out and finalizes via
+    /// [`finish_stream`](Self::finish_stream).
     pub(crate) fn finish(&self) -> String {
-        let mut buf = Vec::new();
-        self.write_to(&mut buf)
-            .expect("writing to a Vec<u8> is infallible");
-        String::from_utf8(buf).expect("g-code lines are valid UTF-8")
+        match &self.mode {
+            Mode::Buffered(_) => {
+                let mut buf = Vec::new();
+                self.write_to(&mut buf)
+                    .expect("writing to a Vec<u8> is infallible");
+                String::from_utf8(buf).expect("g-code lines are valid UTF-8")
+            }
+            Mode::Streaming(_) => {
+                debug_assert!(
+                    false,
+                    "finish() is buffered-only; streaming posts use finish_stream()"
+                );
+                String::new()
+            }
+        }
     }
 
     /// Stream the finished program to `w` without materializing the joined
-    /// `String` — the write-through primitive the streaming evolution is
-    /// built on. Emits the lines separated by `\n` with a trailing `\n`
-    /// (so an empty program is a lone `\n`, matching the historical
-    /// `join("\n") + "\n"`), letting a transport write g-code straight to a
-    /// file/socket at O(1) extra memory instead of buffering a second full
-    /// copy of the program.
+    /// `String` — the write-through primitive the buffered `finish()` builds
+    /// on. Emits the lines separated by `\n` with a trailing `\n` (so an
+    /// empty program is a lone `\n`, matching the historical `join("\n") +
+    /// "\n"`). Buffered-only; the streaming mode writes through as it goes.
     pub(crate) fn write_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        for (i, line) in self.lines.iter().enumerate() {
-            write_separated_line(w, i == 0, line)?;
-        }
-        w.write_all(b"\n")
-    }
-}
-
-/// Append-only, [`std::io::Write`]-backed g-code sink — the streaming
-/// counterpart to [`GcodeSink`] and the core of increment 3 of the
-/// streaming-gcode evolution (`ivac-3j1p`).
-///
-/// Where [`GcodeSink`] holds the whole program in a `Vec<String>` (peak
-/// memory O(total program size)), this variant **writes each line straight
-/// through to `writer`** the moment it is emitted and keeps only the
-/// *current operation's* lines in memory. Peak memory is therefore
-/// O(largest single op) rather than O(program) — the win the epic is
-/// after for unbounded raster / huge programs.
-///
-/// # Reconciling the per-op cache (the blocker this increment resolves)
-///
-/// The per-op pipeline cache captures each op's contribution with three
-/// random-access line operations — [`out_lines_count`] to mark the op's
-/// start, [`out_lines_clone_from`] to read the op's body back at its end,
-/// and [`out_extend_lines`] to splice a cached body in on a hit — which a
-/// pure append-only stream cannot serve once bytes are flushed away.
-///
-/// The reconciliation (design option (c): a bounded tee) rests on an
-/// invariant of the emit loop: `clone_from` is *only ever* called with the
-/// marker captured at the **start of the current op** (`pipeline.rs`
-/// captures `body_marker = out_lines_count()` just before the op body and
-/// reads `out_lines_clone_from(body_marker)` just after it). It is never
-/// an arbitrary historical range — always the tail of what was just
-/// emitted. So this sink tees only the lines emitted **since the last
-/// [`checkpoint`]** into `tail`; the driver loop calls [`checkpoint`] at
-/// each op boundary (the same point it reads `out_lines_count`), dropping
-/// the previous op's tee (already written through to `writer`). `tail` is
-/// thus bounded by one op's output, and `clone_from` / `extend_from_slice`
-/// stay correct and byte-identical to the buffered sink.
-///
-/// [`out_lines_count`]: crate::gcode::PostProcessor::out_lines_count
-/// [`out_lines_clone_from`]: crate::gcode::PostProcessor::out_lines_clone_from
-/// [`out_extend_lines`]: crate::gcode::PostProcessor::out_extend_lines
-/// [`checkpoint`]: StreamingGcodeSink::checkpoint
-///
-/// # Not yet wired
-///
-/// The posts still embed the buffered [`GcodeSink`]; threading a `Write`
-/// through the `PostProcessor` construction and the cli/server/tauri/wasm
-/// transports (so a real program streams to a file/socket) is increment 4
-/// (`ivac-3j1p.3`). This type lands the primitive + the op-cache design
-/// ahead of that consumer, exactly as increment 1 landed
-/// [`GcodeSink::write_to`]. Hence `#[allow(dead_code)]`: it is exercised by
-/// the module tests (which replay the emit loop's exact call sequence) and
-/// adopted for real in `ivac-3j1p.3`.
-///
-/// # Known limitation (`ivac-3j1p.2` follow-up)
-///
-/// A single pathologically large op — e.g. one laser-raster op that emits
-/// the entire program as one `G1`-per-pixel body — still buffers that op's
-/// whole tee, so peak stays O(that op). True O(1) there needs a cache
-/// **bypass** for oversized ops (stream straight through, skip the
-/// snapshot) or a seek-based re-read (design option (a), needs `W: Read +
-/// Seek`). Tracked as a follow-up; out of scope for the common many-ops
-/// case this increment makes O(1).
-#[allow(dead_code)] // consumed by ivac-3j1p.3 transport wiring; see doc above.
-pub(crate) struct StreamingGcodeSink<W: Write> {
-    /// The write-through destination. Each [`push`](Self::push) hits it
-    /// immediately; the sink never holds a second full copy of the program.
-    writer: W,
-    /// Total logical lines emitted so far — what [`len`](Self::len)
-    /// returns and the marker the op cache captures via `out_lines_count`.
-    total: usize,
-    /// The lines emitted since the last [`checkpoint`](Self::checkpoint):
-    /// the current op's contribution, the only range the op cache ever
-    /// clones. Everything before `tail_start` has been written through to
-    /// `writer` and dropped, bounding memory to one op's output.
-    tail: Vec<String>,
-    /// Logical index of `tail[0]` — `total` as of the last checkpoint.
-    /// [`clone_from`](Self::clone_from) translates an absolute marker into
-    /// a `tail` offset by subtracting this.
-    tail_start: usize,
-    /// Whether any line has reached `writer` yet, driving the `\n`
-    /// separator so the stream is byte-identical to `join("\n") + "\n"`.
-    wrote_any: bool,
-}
-
-#[allow(dead_code)] // consumed by ivac-3j1p.3 transport wiring; see type doc.
-impl<W: Write> StreamingGcodeSink<W> {
-    /// Wrap a writer. The writer is expected to be buffered by the caller
-    /// (e.g. a [`std::io::BufWriter`]) — this sink issues one `write_all`
-    /// per line and does not batch.
-    pub(crate) fn new(writer: W) -> Self {
-        Self {
-            writer,
-            total: 0,
-            tail: Vec::new(),
-            tail_start: 0,
-            wrote_any: false,
+        match &self.mode {
+            Mode::Buffered(lines) => {
+                for (i, line) in lines.iter().enumerate() {
+                    write_separated_line(w, i == 0, line)?;
+                }
+                w.write_all(b"\n")
+            }
+            Mode::Streaming(_) => {
+                debug_assert!(false, "write_to() is buffered-only");
+                Ok(())
+            }
         }
     }
 
-    /// Emit one line: write it straight through to `writer` (with the
-    /// leading `\n` separator for every line after the first) and tee it
-    /// into the current-op `tail`. The [`GcodeSink::push`] analogue, but
-    /// O(1) in program size rather than growing an unbounded `Vec`.
-    pub(crate) fn push(&mut self, line: String) -> io::Result<()> {
-        write_separated_line(&mut self.writer, !self.wrote_any, &line)?;
-        self.wrote_any = true;
-        self.total += 1;
-        self.tail.push(line);
-        Ok(())
-    }
-
-    /// Append a pre-rendered batch verbatim — the op-cache HIT replay path
-    /// ([`out_extend_lines`](crate::gcode::PostProcessor::out_extend_lines)).
-    /// Streams each line through like [`push`](Self::push).
-    pub(crate) fn extend_from_slice(&mut self, lines: &[String]) -> io::Result<()> {
-        for line in lines {
-            self.push(line.clone())?;
+    /// Finalize a streaming sink: emit the single trailing newline (so the
+    /// stream ends in `join("\n") + "\n"`, and an empty program is a lone
+    /// `\n`), flush the writer, and surface the first deferred write error if
+    /// any occurred. A no-op returning `Ok` in buffered mode — a buffered
+    /// post's program is retrieved via [`finish`](Self::finish) instead — so
+    /// callers can invoke it unconditionally.
+    pub(crate) fn finish_stream(&mut self) -> io::Result<()> {
+        let Mode::Streaming(s) = &mut self.mode else {
+            return Ok(());
+        };
+        if s.err.is_none() {
+            if let Err(e) = s.writer.write_all(b"\n") {
+                s.err = Some(e);
+            }
         }
-        Ok(())
-    }
-
-    /// Total lines emitted so far. The marker the op cache captures via
-    /// `out_lines_count` and later hands back to [`clone_from`](Self::clone_from).
-    pub(crate) fn len(&self) -> usize {
-        self.total
-    }
-
-    /// Clone the emitted lines from absolute index `start` — the op-cache
-    /// body-capture path. `start` must be `>= the last checkpoint`
-    /// (`tail_start`): the emit loop only ever clones the current op's tail
-    /// (see the type doc), so earlier lines are already streamed out and
-    /// gone. Returns empty for `start >= len()`, matching
-    /// [`GcodeSink::clone_from`].
-    pub(crate) fn clone_from(&self, start: usize) -> Vec<String> {
-        if start >= self.total {
-            return Vec::new();
+        if s.err.is_none() {
+            if let Err(e) = s.writer.flush() {
+                s.err = Some(e);
+            }
         }
-        debug_assert!(
-            start >= self.tail_start,
-            "streaming sink can only clone the current op's tail \
-             (start {start} < checkpoint {}); the op cache never clones \
-             before the active op boundary",
-            self.tail_start,
-        );
-        let off = start.saturating_sub(self.tail_start);
-        self.tail
-            .get(off..)
-            .map(<[String]>::to_vec)
-            .unwrap_or_default()
-    }
-
-    /// Mark an op boundary: drop the previous op's tee (its lines are
-    /// already written through to `writer`) and start a fresh tail at the
-    /// current position. Called by the driver loop at the same point it
-    /// captures `out_lines_count` for the next op, keeping `tail` bounded
-    /// to a single op. `len()` is unaffected — the logical count is
-    /// monotonic across checkpoints.
-    pub(crate) fn checkpoint(&mut self) {
-        self.tail_start = self.total;
-        self.tail.clear();
-    }
-
-    /// Finish the program: emit the single trailing newline (so the stream
-    /// ends in `join("\n") + "\n"`, and an empty program is a lone `\n`),
-    /// flush, and hand the writer back to the caller.
-    pub(crate) fn finish(mut self) -> io::Result<W> {
-        self.writer.write_all(b"\n")?;
-        self.writer.flush()?;
-        Ok(self.writer)
+        match s.err.take() {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
 
     fn sink_of(lines: &[&str]) -> GcodeSink {
         let mut s = GcodeSink::default();
@@ -356,15 +456,35 @@ mod tests {
         }
     }
 
-    /// Push every line through a fresh streaming sink over a `Vec<u8>`,
-    /// `finish`, and return the bytes — the streaming analogue of
+    /// An in-memory `Write + Send` whose bytes stay readable after the sink
+    /// has moved the writer in — the streaming analogue of inspecting a
+    /// buffered `finish()`. `Arc<Mutex<..>>` satisfies the sink's `Send`
+    /// bound and lets the test hold a second handle to read back.
+    #[derive(Clone)]
+    struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for SharedBuf {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Push every line through a fresh streaming sink over a shared buffer,
+    /// `finish_stream`, and return the bytes — the streaming analogue of
     /// `sink_of(lines).finish()`.
     fn stream_bytes(lines: &[&str]) -> Vec<u8> {
-        let mut s = StreamingGcodeSink::new(Vec::<u8>::new());
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let mut s = GcodeSink::streaming(Box::new(SharedBuf(buf.clone())));
         for l in lines {
-            s.push((*l).to_string()).unwrap();
+            s.push((*l).to_string());
         }
-        s.finish().unwrap()
+        s.finish_stream().unwrap();
+        let out = buf.lock().unwrap().clone();
+        out
     }
 
     #[test]
@@ -390,12 +510,13 @@ mod tests {
 
     #[test]
     fn streaming_len_counts_all_emitted_lines() {
-        let mut s = StreamingGcodeSink::new(Vec::<u8>::new());
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let mut s = GcodeSink::streaming(Box::new(SharedBuf(buf)));
         assert_eq!(s.len(), 0);
-        s.push("a".into()).unwrap();
-        s.push("b".into()).unwrap();
+        s.push("a".into());
+        s.push("b".into());
         assert_eq!(s.len(), 2);
-        s.extend_from_slice(&["c".into(), "d".into()]).unwrap();
+        s.extend_from_slice(&["c".into(), "d".into()]);
         assert_eq!(s.len(), 4);
         // checkpoint does not reset the logical count.
         s.checkpoint();
@@ -407,13 +528,14 @@ mod tests {
         // Replays the emit loop's per-op sequence: checkpoint at the op
         // boundary, capture the marker via len(), emit the body, then read
         // it back with clone_from(marker) exactly as store_op_cache does.
-        let mut s = StreamingGcodeSink::new(Vec::<u8>::new());
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let mut s = GcodeSink::streaming(Box::new(SharedBuf(buf)));
 
         // Op A.
         s.checkpoint();
         let marker_a = s.len();
-        s.push("A0".into()).unwrap();
-        s.push("A1".into()).unwrap();
+        s.push("A0".into());
+        s.push("A1".into());
         assert_eq!(
             s.clone_from(marker_a),
             vec!["A0".to_string(), "A1".to_string()],
@@ -425,18 +547,17 @@ mod tests {
         s.checkpoint();
         let marker_b = s.len();
         assert_eq!(marker_b, 2);
-        s.push("B0".into()).unwrap();
+        s.push("B0".into());
         assert_eq!(s.clone_from(marker_b), vec!["B0".to_string()]);
-        // The tee is bounded to op B: it no longer holds A0/A1.
-        assert_eq!(s.tail, vec!["B0".to_string()]);
     }
 
     #[test]
     fn streaming_clone_from_past_end_is_empty() {
-        // Mirrors GcodeSink::clone_from: start >= len() yields nothing
+        // Mirrors buffered clone_from: start >= len() yields nothing
         // (a no-output op captured into the cache).
-        let mut s = StreamingGcodeSink::new(Vec::<u8>::new());
-        s.push("a".into()).unwrap();
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let mut s = GcodeSink::streaming(Box::new(SharedBuf(buf)));
+        s.push("a".into());
         assert!(s.clone_from(1).is_empty());
         assert!(s.clone_from(99).is_empty());
     }
@@ -445,28 +566,73 @@ mod tests {
     fn streaming_op_cache_replay_matches_buffered_program() {
         // End-to-end: drive the streaming sink through a miss (emit +
         // clone_from), a hit (extend_from_slice of a cached body), and a
-        // no-output op, and assert the streamed bytes equal the buffered
-        // program the same emissions would have produced.
-        let mut s = StreamingGcodeSink::new(Vec::<u8>::new());
+        // replay of a cached body, and assert the streamed bytes equal the
+        // buffered program the same emissions would have produced.
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let mut s = GcodeSink::streaming(Box::new(SharedBuf(buf.clone())));
 
         // Op A: cache MISS — driver emits, store_op_cache clones the body.
         s.checkpoint();
         let m = s.len();
-        s.push("A0".into()).unwrap();
-        s.push("A1".into()).unwrap();
+        s.push("A0".into());
+        s.push("A1".into());
         let cached_a = s.clone_from(m); // what store_op_cache would keep
 
         // Op B: cache HIT — no driver run; apply_cached_op splices a body.
         s.checkpoint();
-        s.extend_from_slice(&["B0".into(), "B1".into()]).unwrap();
+        s.extend_from_slice(&["B0".into(), "B1".into()]);
 
         // Op C: HIT replaying op A's cached body verbatim.
         s.checkpoint();
-        s.extend_from_slice(&cached_a).unwrap();
+        s.extend_from_slice(&cached_a);
 
         assert_eq!(s.len(), 6);
-        let streamed = s.finish().unwrap();
+        s.finish_stream().unwrap();
+        let streamed = buf.lock().unwrap().clone();
         let buffered = sink_of(&["A0", "A1", "B0", "B1", "A0", "A1"]).finish();
         assert_eq!(streamed, buffered.as_bytes());
+    }
+
+    /// A `Write` that fails on the Nth write — to exercise deferred io-error.
+    struct FailAfter {
+        writes_left: usize,
+    }
+
+    impl Write for FailAfter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if self.writes_left == 0 {
+                return Err(io::Error::new(io::ErrorKind::Other, "boom"));
+            }
+            self.writes_left -= 1;
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn streaming_defers_the_first_write_error_to_finish() {
+        // The infallible push API cannot return an error, so the sink defers
+        // it: bookkeeping keeps advancing and finish_stream surfaces it once.
+        let mut s = GcodeSink::streaming(Box::new(FailAfter { writes_left: 1 }));
+        s.push("ok".into()); // consumes the one allowed write
+        s.push("boom".into()); // separator write fails; deferred
+        s.push("still-counted".into());
+        // Bookkeeping is unaffected by the io error — the op cache stays
+        // consistent even past a failed write.
+        assert_eq!(s.len(), 3);
+        let err = s.finish_stream().expect_err("deferred error must surface");
+        assert_eq!(err.kind(), io::ErrorKind::Other);
+    }
+
+    #[test]
+    fn finish_stream_on_buffered_is_ok_noop() {
+        // Buffered posts have nothing to flush; callers can invoke it
+        // unconditionally.
+        let mut s = sink_of(&["G0", "G1"]);
+        assert!(s.finish_stream().is_ok());
+        // The buffered program is still retrievable via finish().
+        assert_eq!(s.finish(), "G0\nG1\n");
     }
 }

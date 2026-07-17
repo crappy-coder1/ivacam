@@ -34,6 +34,23 @@ impl Post {
         Self::default()
     }
 
+    /// Construct a post that **streams** its g-code straight through
+    /// `writer` (one `write_all` per line) instead of buffering the whole
+    /// program in memory — peak memory O(largest single op) rather than
+    /// O(program). Output is byte-identical to a buffered [`Post::new`]; the
+    /// difference is only where the lines land. Finalize with
+    /// [`PostProcessor::finish_stream`] (flush + trailing newline + deferred
+    /// io-error) rather than [`PostProcessor::finish`]. The write-through
+    /// seam for the streaming-gcode evolution (`ivac-3j1p`); wrap `writer` in
+    /// a [`std::io::BufWriter`] since this issues one write per line.
+    #[must_use]
+    pub fn streaming(writer: Box<dyn std::io::Write + Send>) -> Self {
+        Self {
+            sink: GcodeSink::streaming(writer),
+            ..Self::default()
+        }
+    }
+
     fn write(&mut self, line: impl Into<String>) {
         let raw: String = line.into();
         let prefix = line_number_prefix(&mut self.state);
@@ -773,6 +790,9 @@ impl PostProcessor for Post {
     fn finish(&self) -> String {
         self.sink.finish()
     }
+    fn finish_stream(&mut self) -> std::io::Result<()> {
+        self.sink.finish_stream()
+    }
     fn out_lines_count(&self) -> usize {
         self.sink.len()
     }
@@ -968,5 +988,99 @@ mod tests {
             out.contains(" II0.500"),
             "explicit I rename should win — expected `II0.500`, got: {out}",
         );
+    }
+
+    /// An in-memory `Write + Send` whose bytes stay readable after the
+    /// streaming post has moved the writer in.
+    #[derive(Clone)]
+    struct SharedBuf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for SharedBuf {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Emit a representative program (rapid → plunge → feed → arc → traverse
+    /// → end) so every emit path funnels through the sink. The exact bytes
+    /// don't matter — the test asserts the buffered and streaming posts agree.
+    fn emit_demo_program(post: &mut dyn PostProcessor) {
+        post.unit(UnitSystem::Mm);
+        post.program_start();
+        post.feedrate(600);
+        post.move_to(Some(0.0), Some(0.0), Some(5.0));
+        post.linear(Some(0.0), Some(0.0), Some(-1.0));
+        post.linear(Some(10.0), Some(0.0), Some(-1.0));
+        post.arc_ccw(Some(20.0), Some(0.0), Some(-1.0), Some(5.0), Some(0.0));
+        post.move_to(None, None, Some(5.0));
+        post.program_end();
+    }
+
+    #[test]
+    fn streaming_post_is_byte_identical_to_buffered() {
+        // The 4a win: a Post::streaming writes the SAME bytes a buffered
+        // Post::new would `finish()` into — only where the lines land differs.
+        let mut buffered = Post::new();
+        emit_demo_program(&mut buffered);
+        let expected = buffered.finish();
+
+        let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut streaming = Post::streaming(Box::new(SharedBuf(buf.clone())));
+        emit_demo_program(&mut streaming);
+        streaming
+            .finish_stream()
+            .expect("streaming finalize must succeed");
+        let streamed = buf.lock().unwrap().clone();
+
+        assert_eq!(
+            streamed,
+            expected.as_bytes(),
+            "streaming post output must match buffered:\n--- streamed ---\n{}\n--- buffered ---\n{expected}",
+            String::from_utf8_lossy(&streamed),
+        );
+    }
+
+    #[test]
+    fn streaming_post_replays_op_cache_bodies_byte_identically() {
+        // The op cache clones each op's body (out_lines_clone_from) on a miss
+        // and splices it back (out_extend_lines) on a hit. Drive that exact
+        // sequence against a streaming post — checkpoint at the op boundary,
+        // capture the marker, emit, clone — then replay the cached body and
+        // assert the stream matches a buffered post fed the same emissions.
+        let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut streaming = Post::streaming(Box::new(SharedBuf(buf.clone())));
+
+        // Op A (cache MISS): emit a small body and capture it as the cache
+        // would. `finish_stream` for the sink checkpoint is exercised by the
+        // sink unit tests; here we drive through the PostProcessor API.
+        streaming.unit(UnitSystem::Mm);
+        streaming.program_start();
+        let marker = streaming.out_lines_count();
+        streaming.move_to(Some(1.0), Some(2.0), Some(3.0));
+        streaming.linear(Some(4.0), Some(5.0), Some(6.0));
+        let cached_body = streaming.out_lines_clone_from(marker);
+        // Op B (cache HIT): splice the captured body back verbatim.
+        streaming.out_extend_lines(&cached_body);
+        streaming.program_end();
+        streaming.finish_stream().expect("finalize");
+        let streamed = buf.lock().unwrap().clone();
+
+        // A buffered post fed the identical emit + replay sequence.
+        let mut buffered = Post::new();
+        buffered.unit(UnitSystem::Mm);
+        buffered.program_start();
+        let bmarker = buffered.out_lines_count();
+        buffered.move_to(Some(1.0), Some(2.0), Some(3.0));
+        buffered.linear(Some(4.0), Some(5.0), Some(6.0));
+        let bbody = buffered.out_lines_clone_from(bmarker);
+        buffered.out_extend_lines(&bbody);
+        buffered.program_end();
+        let expected = buffered.finish();
+
+        assert_eq!(streamed, expected.as_bytes());
     }
 }

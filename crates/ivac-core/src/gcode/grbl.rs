@@ -101,6 +101,19 @@ impl Post {
         p.inner.state.laser_dynamic = dynamic;
         p
     }
+
+    /// Construct a GRBL post that **streams** its g-code straight through
+    /// `writer` instead of buffering the whole program (peak memory
+    /// O(largest single op)). Byte-identical to a buffered [`Post::new`];
+    /// finalize with [`PostProcessor::finish_stream`]. Delegates to the inner
+    /// [`linuxcnc::Post::streaming`] — GRBL emits through it, so the streaming
+    /// sink is shared. Part of the streaming-gcode evolution (`ivac-3j1p`).
+    #[must_use]
+    pub fn streaming(writer: Box<dyn std::io::Write + Send>) -> Self {
+        Self {
+            inner: linuxcnc::Post::streaming(writer),
+        }
+    }
 }
 
 impl PostProcessor for Post {
@@ -308,6 +321,9 @@ impl PostProcessor for Post {
     }
     fn finish(&self) -> String {
         self.inner.finish()
+    }
+    fn finish_stream(&mut self) -> std::io::Result<()> {
+        self.inner.finish_stream()
     }
     fn out_lines_count(&self) -> usize {
         self.inner.out_lines_count()
@@ -560,5 +576,41 @@ mod tests {
         // Still drops the beam with M5 between cuts.
         post.laser_off();
         assert!(post.finish().contains("M5"));
+    }
+
+    #[test]
+    fn streaming_post_is_byte_identical_to_buffered() {
+        // GRBL streams by delegating to the inner linuxcnc post's streaming
+        // sink; prove the constructor + finish_stream delegation produce the
+        // same bytes a buffered GRBL post would `finish()`.
+        #[derive(Clone)]
+        struct SharedBuf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for SharedBuf {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        fn emit(post: &mut dyn PostProcessor) {
+            post.unit(UnitSystem::Mm);
+            post.program_start();
+            post.feedrate(600);
+            post.move_to(Some(0.0), Some(0.0), Some(5.0));
+            post.linear(Some(10.0), Some(0.0), Some(-1.0));
+            post.program_end();
+        }
+
+        let mut buffered = Post::new();
+        emit(&mut buffered);
+        let expected = buffered.finish();
+
+        let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut streaming = Post::streaming(Box::new(SharedBuf(buf.clone())));
+        emit(&mut streaming);
+        streaming.finish_stream().expect("finalize");
+        assert_eq!(buf.lock().unwrap().clone(), expected.as_bytes());
     }
 }
