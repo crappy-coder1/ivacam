@@ -1249,6 +1249,8 @@
   "app.save.project": "Save project",
   "app.save.gcode": "Save G-code (.{ext})",
   "app.save.carved_stl": "Save carved STL",
+  "app.save.carved_stl_solid": "Save carved STL (watertight solid)",
+  "app.save.carved_stl_solid.title": "Voxelized watertight solid — stair-stepped but hole-free, for slicers, boolean tools, and undercut jobs. The plain carved STL is smoother but may be non-manifold through undercut voids.",
   "app.report.aria": "Project report",
   "app.report.tip": "Project report — printable job summary (ops, tools, times) to hand to the shop floor",
   "app.sheet.stock_layers": "Stock & Layers",

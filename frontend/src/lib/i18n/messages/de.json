@@ -1249,6 +1249,8 @@
   "app.save.project": "Projekt speichern",
   "app.save.gcode": "G-Code speichern (.{ext})",
   "app.save.carved_stl": "Gefrästes STL speichern",
+  "app.save.carved_stl_solid": "Gefrästes STL speichern (wasserdichtes Solid)",
+  "app.save.carved_stl_solid.title": "Voxelisiertes wasserdichtes Solid — treppenförmig, aber lückenlos; für Slicer, Boolesche Werkzeuge und Hinterschnitt-Aufträge. Das einfache gefräste STL ist glatter, kann aber durch Hinterschnitt-Hohlräume nicht-mannigfaltig sein.",
   "app.report.aria": "Projektbericht",
   "app.report.tip": "Projektbericht — druckbare Auftragsübersicht (Bearbeitungen, Werkzeuge, Zeiten) für die Werkstatt",
   "app.sheet.stock_layers": "Rohmaterial & Layer",

@@ -945,6 +945,19 @@
                 >
                   {t('app.save.carved_stl')}
                 </button>
+                <button
+                  type="button"
+                  class="save-item"
+                  role="menuitem"
+                  disabled={!project.gen.generated}
+                  title={t('app.save.carved_stl_solid.title')}
+                  onclick={() => {
+                    closeSaveMenu();
+                    void exportSimulatedStockStl('solid');
+                  }}
+                >
+                  {t('app.save.carved_stl_solid')}
+                </button>
               </div>
             {/if}
           </div>

@@ -40,6 +40,8 @@ export type MsgKey =
   | "app.report.aria"
   | "app.report.tip"
   | "app.save.carved_stl"
+  | "app.save.carved_stl_solid"
+  | "app.save.carved_stl_solid.title"
   | "app.save.close_menu"
   | "app.save.gcode"
   | "app.save.options"
@@ -1638,6 +1640,8 @@ export const MSG_KEYS: readonly MsgKey[] = [
   "app.report.aria",
   "app.report.tip",
   "app.save.carved_stl",
+  "app.save.carved_stl_solid",
+  "app.save.carved_stl_solid.title",
   "app.save.close_menu",
   "app.save.gcode",
   "app.save.options",

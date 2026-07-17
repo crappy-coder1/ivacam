@@ -105,6 +105,11 @@ interface SimulatorWasm {
   /// mesh drops to `stock_bottom_z` at every perimeter sample so the result
   /// is watertight. (Undercut voids below the top aren't meshed here yet.)
   export_stl(stock_bottom_z: number): Uint8Array;
+  /// Serialize the carved stock as a watertight voxel-solid binary STL (Path
+  /// A) — stair-stepped top, but hole-free through undercut voids, for
+  /// slicer / boolean consumers. No `stock_bottom_z`: the solid's floor is
+  /// intrinsic to the field's spans.
+  export_stl_solid(): Uint8Array;
   /// Cache the target relief surface(s) for the red/green deviation overlay:
   /// an array of serialized SurfaceField (one per enabled relief op, unioned
   /// deepest-cut-wins), the world Z their `z = 0` datum maps to (the stock
@@ -967,6 +972,14 @@ export class HeightfieldDriver {
   /// perimeter sample for a watertight mesh.
   exportStl(stockBottomZ: number): Uint8Array | null {
     return this.sim ? this.sim.export_stl(stockBottomZ) : null;
+  }
+
+  /// Serialize the carved stock as a watertight voxel-solid binary STL
+  /// (stair-stepped top, but hole-free through undercut voids — for slicer /
+  /// boolean consumers). Returns `null` when there is no live simulator. The
+  /// solid's floor is intrinsic to the field, so no `stockBottomZ` is needed.
+  exportStlSolid(): Uint8Array | null {
+    return this.sim ? this.sim.export_stl_solid() : null;
   }
 
   dispose() {

@@ -513,6 +513,23 @@ impl Simulator {
         ivac_core::sim::stl::dexel_to_stl_binary(&self.field, stock_bottom_z)
     }
 
+    /// Serialize the carved stock as a **watertight voxel-solid** binary STL
+    /// (Path A) — an opt-in alternative to [`Self::export_stl`]. The top is
+    /// stair-stepped (flat per cell) rather than smooth, but the mesh encloses
+    /// the exact carved volume — undercut voids included — with no
+    /// interpenetrating seam, so it is hole-free and safe for the boolean /
+    /// slicer / generic-viewer consumers that choke on the smooth export's
+    /// non-manifold ramp-through-void.
+    ///
+    /// Takes **no** `stock_bottom_z`: the solid's floor is intrinsic — each
+    /// column's lowest span already bottoms at `DexelField::stock_bottom_z` —
+    /// so no skirt-floor parameter is needed and no material is invented under
+    /// a from-below floating slab.
+    #[must_use]
+    pub fn export_stl_solid(&self) -> Vec<u8> {
+        ivac_core::sim::stl::dexel_to_stl_solid_binary(&self.field)
+    }
+
     /// Pointer to the dense top-surface f32 buffer. JS wraps it as
     /// `new Float32Array(wasm.memory.buffer, sim.data_ptr(),
     /// sim.cols() * sim.rows())`.

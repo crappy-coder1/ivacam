@@ -653,26 +653,41 @@ export async function exportGeneratedGcode(
 
 /// Export the live simulated stock as a binary STL — exactly the
 /// carved heightfield the 3D scene is rendering, serialized to a mesh
-/// you can open in any STL viewer or diff against a reference. Walls
-/// drop to the stock's underside (top minus thickness) for a watertight
-/// mesh. No-op when there's no live sim (Generate hasn't run yet).
-export async function exportSimulatedStockStl(): Promise<void> {
+/// you can open in any STL viewer or diff against a reference.
+///
+/// `variant` picks the mesh:
+///  - `'smooth'` (default): the dense top surface with a perimeter skirt
+///    dropping to the stock underside (top minus thickness). Smoother, but
+///    can be non-manifold where it ramps through an undercut void.
+///  - `'solid'`: the watertight voxel-solid (Path A) — stair-stepped top,
+///    but hole-free through undercut voids, for slicer / boolean consumers.
+///    Its floor is intrinsic to the field, so no underside plane is passed.
+///
+/// No-op when there's no live sim (Generate hasn't run yet).
+export async function exportSimulatedStockStl(
+  variant: 'smooth' | 'solid' = 'smooth',
+): Promise<void> {
   const { getCurrentDriver } = await import('../sim/driver');
   const driver = getCurrentDriver();
   if (!driver) {
     project.setError(t('dialog.export_stl.no_stock'));
     return;
   }
-  const stock = project.data.stock;
-  const topZ = 0; // stock top sits at WCS Z=0 by the project convention
-  const stockBottomZ = topZ - Math.max(stock.thickness, 0);
-  const bytes = driver.exportStl(stockBottomZ);
+  let bytes: Uint8Array | null;
+  if (variant === 'solid') {
+    bytes = driver.exportStlSolid();
+  } else {
+    const stock = project.data.stock;
+    const topZ = 0; // stock top sits at WCS Z=0 by the project convention
+    const stockBottomZ = topZ - Math.max(stock.thickness, 0);
+    bytes = driver.exportStl(stockBottomZ);
+  }
   if (!bytes) {
     project.setError(t('dialog.export_stl.no_stock'));
     return;
   }
   const base = project.transformedImport?.filename?.replace(/\.[^.]+$/, '') ?? 'stock';
-  const filename = `${base}.stl`;
+  const filename = variant === 'solid' ? `${base}-solid.stl` : `${base}.stl`;
   if (isTauri()) {
     const { save } = await import('@tauri-apps/plugin-dialog');
     const { writeFile } = await import('@tauri-apps/plugin-fs');
