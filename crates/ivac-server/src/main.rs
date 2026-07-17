@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
+use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
 use axum::http::StatusCode;
 use axum::http::{HeaderValue, Method};
@@ -30,8 +31,8 @@ use ivac_core::input::text::{
     RenderTextResponse,
 };
 use ivac_core::pipeline::{
-    generate_streaming, run_pipeline, CancelToken, PipelineError, PipelineEvent, PipelineRequest,
-    PipelineResponse,
+    generate_streaming, run_pipeline, stream_gcode_to_writer, CancelToken, PipelineError,
+    PipelineEvent, PipelineRequest, PipelineResponse, PostProcessorKind, StreamGcodeError,
 };
 use ivac_core::project::TextLayer;
 use ivac_core::{compute_helix_radius, HelixRadiusRequest, HelixRadiusResponse};
@@ -59,6 +60,7 @@ async fn main() -> Result<()> {
         .route("/import", post(import))
         .route("/generate", post(generate))
         .route("/generate/stream", post(generate_stream))
+        .route("/generate/gcode", post(generate_gcode_stream))
         .route("/generate/cancel/:token_id", post(generate_cancel))
         .route("/text", post(render_text_handler))
         .route("/text/layer", post(render_text_layer_handler))
@@ -194,6 +196,7 @@ async fn version() -> Json<VersionResponse> {
         capabilities: vec![
             "import-dxf",
             "generate-gcode",
+            "stream-gcode",
             "post-linuxcnc",
             "post-grbl",
             "post-hpgl",
@@ -257,6 +260,86 @@ async fn generate(
     run_pipeline(req, |_phase, _fraction, _msg| {})
         .map(Json)
         .map_err(AppError::from)
+}
+
+/// A `std::io::Write` that forwards each buffered chunk to an async response
+/// stream over a bounded channel. `blocking_send` applies backpressure — a
+/// slow client parks the blocking pipeline thread here instead of letting the
+/// program buffer unboundedly, and a disconnected client (receiver dropped)
+/// surfaces as a `BrokenPipe`, which aborts the emit loop early.
+struct ChannelWriter {
+    tx: tokio::sync::mpsc::Sender<Result<Bytes, std::io::Error>>,
+}
+
+impl std::io::Write for ChannelWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.tx
+            .blocking_send(Ok(Bytes::copy_from_slice(buf)))
+            .map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::BrokenPipe, "response stream closed")
+            })?;
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Streaming g-code-body variant of `/generate`: emits the raw post-processed
+/// program as a `text/plain` chunked response via
+/// [`stream_gcode_to_writer`], so the server never materializes the whole
+/// program in memory (peak O(largest single op); `ivac-3j1p`). Unlike
+/// `/generate` this returns ONLY g-code — no preview toolpath, time estimate,
+/// or JSON envelope — for headless consumers that just want the file, and
+/// unlike `/generate/stream` (SSE progress events, still buffers the full
+/// `PipelineResponse`) it streams the program bytes themselves.
+///
+/// Error semantics differ from the JSON routes, because a chunked body commits
+/// `200 OK` the moment the first frame is sent:
+///   * HPGL (no write-through mode) is rejected synchronously with a
+///     structured `400` BEFORE any streaming begins.
+///   * A planning failure that surfaces mid-emit — after the header has
+///     already streamed — can only ABORT the response body (the client
+///     observes a truncated transfer / broken stream). Such failures are
+///     logged server-side; there is no way to retroactively change the status.
+async fn generate_gcode_stream(
+    State(_state): State<Arc<AppState>>,
+    Json(req): Json<GenerateRequest>,
+) -> Result<Response, AppError> {
+    // Reject the one deterministic, cheap-to-detect failure up front so the
+    // caller gets a real 4xx instead of an aborted stream.
+    if req.post_processor.unwrap_or_default() == PostProcessorKind::Hpgl {
+        return Err(AppError::from(StreamGcodeError::Unsupported(
+            PostProcessorKind::Hpgl,
+        )));
+    }
+
+    // Bounded channel bridges the synchronous streaming writer (on a blocking
+    // thread) to the async response body. Small buffer + blocking_send =
+    // backpressure, so a slow reader never lets the program pile up in memory.
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(16);
+    tokio::task::spawn_blocking(move || {
+        // BufWriter coalesces the sink's line-at-a-time writes into larger
+        // channel frames; its final flush (in finish_stream) drains it.
+        let writer = std::io::BufWriter::new(ChannelWriter { tx: tx.clone() });
+        if let Err(e) = stream_gcode_to_writer(req, Box::new(writer)) {
+            tracing::warn!("streaming g-code aborted mid-emit: {e}");
+            // Terminal error frame: ends the body stream in an error so the
+            // client sees an aborted transfer rather than a clean-but-truncated
+            // one. Best-effort — the receiver may already be gone.
+            let _ = tx.blocking_send(Err(std::io::Error::other(e.to_string())));
+        }
+    });
+
+    let body = Body::from_stream(ReceiverStream::new(rx));
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; charset=utf-8",
+        )
+        .body(body)
+        .expect("static content-type header is valid"))
 }
 
 /// Render a TTF font + string → segments. Cross-transport entry point used
@@ -514,6 +597,25 @@ impl From<std::io::Error> for AppError {
     }
 }
 
+impl From<StreamGcodeError> for AppError {
+    fn from(e: StreamGcodeError) -> Self {
+        match e {
+            // Reuse the JSON routes' planning-error mapping (recovery hints +
+            // auto-fix survive into the body).
+            StreamGcodeError::Pipeline(pe) => Self::from(pe),
+            StreamGcodeError::Write(io) => Self::from(io),
+            // A post that can't stream is a client-side request problem: 400
+            // with a hint pointing at the buffered route.
+            StreamGcodeError::Unsupported(kind) => Self::from_core(
+                ivac_core::Error::unsupported(format!(
+                    "post-processor {kind:?} has no streaming mode"
+                ))
+                .with_hint("Use POST /generate for this post-processor's output."),
+            ),
+        }
+    }
+}
+
 impl From<axum::extract::multipart::MultipartError> for AppError {
     fn from(e: axum::extract::multipart::MultipartError) -> Self {
         Self::bad_request(e.to_string())
@@ -720,5 +822,79 @@ mod tests {
         // from a well-formed-but-footprintless mesh (204).
         let resp = post_relief_stl("solid x vertex 1 2 notanumber endsolid x", "6").await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // ─── /generate/gcode streaming route (ivac-3j1p.3.2.1) ───────────────
+    //
+    // Drive the streaming handler through the router in-process. The bytes it
+    // streams must equal what the buffered `/generate` path emits (proving the
+    // channel bridge and BufWriter coalescing don't corrupt or reorder the
+    // program), and HPGL must be rejected before any streaming begins.
+
+    async fn post_generate_gcode(req: &PipelineRequest) -> Response {
+        let app = Router::new()
+            .route("/generate/gcode", post(generate_gcode_stream))
+            .with_state(Arc::new(AppState::default()));
+        let body = serde_json::to_vec(req).unwrap();
+        let http_req = Request::builder()
+            .method("POST")
+            .uri("/generate/gcode")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        app.oneshot(http_req).await.unwrap()
+    }
+
+    fn a_request(post: PostProcessorKind) -> PipelineRequest {
+        PipelineRequest {
+            project: ivac_core::project::Project::default(),
+            post_processor: Some(post),
+        }
+    }
+
+    #[tokio::test]
+    async fn generate_gcode_stream_matches_the_buffered_program() {
+        let req = a_request(PostProcessorKind::Linuxcnc);
+        // Oracle: the buffered route's `finish()` and the streaming sink's
+        // `finish_stream()` share the same `join("\n") + "\n"` output path, so
+        // the streamed body is byte-identical to `/generate`'s `.gcode`
+        // (proven in core; ivac-3j1p 4b). The HTTP transport must not perturb
+        // that.
+        let expected = run_pipeline(req.clone(), |_, _, _| {})
+            .expect("buffered pipeline runs")
+            .gcode;
+
+        let resp = post_generate_gcode(&req).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("text/plain; charset=utf-8"),
+        );
+        let bytes = to_bytes(resp.into_body(), 4 * 1024 * 1024).await.unwrap();
+        assert_eq!(String::from_utf8(bytes.to_vec()).unwrap(), expected);
+    }
+
+    #[tokio::test]
+    async fn generate_gcode_stream_serves_grbl_too() {
+        let req = a_request(PostProcessorKind::Grbl);
+        let expected = run_pipeline(req.clone(), |_, _, _| {}).unwrap().gcode;
+        let resp = post_generate_gcode(&req).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = to_bytes(resp.into_body(), 4 * 1024 * 1024).await.unwrap();
+        assert_eq!(String::from_utf8(bytes.to_vec()).unwrap(), expected);
+    }
+
+    #[tokio::test]
+    async fn generate_gcode_stream_rejects_hpgl_with_400() {
+        // HPGL has no write-through mode; the handler must reject it up front
+        // (structured 400) rather than commit a 200 and abort mid-stream.
+        let resp = post_generate_gcode(&a_request(PostProcessorKind::Hpgl)).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(resp).await;
+        let parsed: WiacError = serde_json::from_value(body).unwrap();
+        assert_eq!(parsed.kind, ErrorKind::Unsupported);
+        assert!(parsed.recovery_hint.is_some());
     }
 }
