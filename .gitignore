@@ -22,7 +22,24 @@ frontend/.vite
 
 # Tauri
 crates/ivac-tauri/target
-crates/ivac-tauri/gen
+
+# Tauri mobile: track the gen/android SOURCE tree so the Android build is
+# reproducible without re-running `cargo tauri android init` (a re-init
+# would also clobber the MainActivity onBackPressed/onActivityCreate fix).
+# The Tauri-generated gen/android/.gitignore + app/.gitignore (both tracked
+# as source) already exclude the build outputs; the lines below keep the
+# non-android generated dir out and are a belt-and-suspenders net for the
+# machine-specific / large-binary artifacts that must never be committed.
+crates/ivac-tauri/gen/schemas/
+crates/ivac-tauri/gen/android/.gradle/
+crates/ivac-tauri/gen/android/build/
+crates/ivac-tauri/gen/android/app/build/
+crates/ivac-tauri/gen/android/.tauri/
+crates/ivac-tauri/gen/android/tauri.settings.gradle
+crates/ivac-tauri/gen/android/local.properties
+crates/ivac-tauri/gen/android/app/tauri.properties
+crates/ivac-tauri/gen/android/app/src/main/jniLibs/**/*.so
+crates/ivac-tauri/gen/android/**/.kotlin/
 
 # WASM
 crates/ivac-wasm/pkg
