@@ -28,6 +28,7 @@
   import { seedInventoryFromProject, syncStockedFromInventory } from '../state/tool_inventory';
   import { isAutoToolName, suggestToolName } from '../state/tool_naming';
   import ToolFormProfileEditor from './ToolFormProfileEditor.svelte';
+  import ToolHolderEditor from './ToolHolderEditor.svelte';
   import {
     applyToolTableView,
     EMPTY_TOOL_VIEW,
@@ -431,51 +432,13 @@
     dd.draft = draft.map((t, i) => (i === idx ? { ...t, ...patch } : t));
   }
 
-  type HolderKind = HolderShape['kind'] | 'none';
-  function holderKind(t: ToolEntry): HolderKind {
-    return t.holder?.kind ?? 'none';
-  }
-
-  function setHolderKind(idx: number, kind: HolderKind) {
-    const cur = draft[idx];
-    let next: HolderShape | undefined;
-    switch (kind) {
-      case 'none':
-        next = undefined;
-        break;
-      case 'cylinder':
-        next =
-          cur.holder?.kind === 'cylinder'
-            ? cur.holder
-            : { kind: 'cylinder', diameter_mm: 20, length_mm: 30 };
-        break;
-      case 'cone':
-        next =
-          cur.holder?.kind === 'cone'
-            ? cur.holder
-            : { kind: 'cone', bottom_diameter_mm: 20, top_diameter_mm: 35, length_mm: 35 };
-        break;
-      case 'stepped':
-        next =
-          cur.holder?.kind === 'stepped'
-            ? cur.holder
-            : {
-                kind: 'stepped',
-                cylinder_diameter_mm: 20,
-                cylinder_length_mm: 12,
-                cone_top_diameter_mm: 35,
-                cone_length_mm: 25,
-              };
-        break;
-    }
-    dd.draft = draft.map((t, i) => (i === idx ? { ...t, holder: next } : t));
-  }
-
-  function updateHolderField(idx: number, key: string, value: number) {
-    const cur = draft[idx];
-    if (!cur.holder) return;
-    const updated = { ...cur.holder, [key]: value } as HolderShape;
-    dd.draft = draft.map((t, i) => (i === idx ? { ...t, holder: updated } : t));
+  /// Persist a holder-shape change from the ToolHolderEditor child. The
+  /// child owns the kind selector, per-kind default dimensions, and the
+  /// geometry inputs; the parent just writes the resulting shape onto the
+  /// row. Bypasses updateField's auto-naming (a holder edit never changes
+  /// the suggested name), matching the previous direct-map behavior.
+  function setHolder(idx: number, holder: HolderShape | undefined) {
+    dd.draft = draft.map((t, i) => (i === idx ? { ...t, holder } : t));
   }
 
   // Display labels for the kind dropdown live in tool_family.ts so the
@@ -489,13 +452,6 @@
   };
   const kindOptions = Object.keys(kindLabels) as ToolKind[];
   const coolantOptions = Object.keys(coolantLabels) as CoolantMode[];
-  const holderKindLabels: Record<HolderKind, () => string> = {
-    none: () => t('tools.holder.kind.none'),
-    cylinder: () => t('tools.holder.kind.cylinder'),
-    cone: () => t('tools.holder.kind.cone'),
-    stepped: () => t('tools.holder.kind.stepped'),
-  };
-  const holderKindOptions: HolderKind[] = ['none', 'cylinder', 'cone', 'stepped'];
 </script>
 
 {#snippet shell()}
@@ -975,166 +931,11 @@
                 </select>
               </label>
             </div>
-            <div class="holder-row">
-              <span class="holder-label">{t('tools.holder.label')}</span>
-              {#each holderKindOptions as k (k)}
-                <label class="radio">
-                  <input
-                    type="radio"
-                    name="holder-kind-{tool.id}"
-                    value={k}
-                    checked={holderKind(tool) === k}
-                    onchange={() => setHolderKind(i, k)}
-                  />
-                  <span>{holderKindLabels[k]()}</span>
-                </label>
-              {/each}
-            </div>
-            {#if tool.holder?.kind === 'cylinder'}
-              <div class="holder-row">
-                <label>
-                  <span>{t('tools.holder.cyl.diameter')}</span>
-                  <input
-                    type="number"
-                    step="0.5"
-                    min="0"
-                    value={tool.holder.diameter_mm}
-                    onchange={(e) =>
-                      updateHolderField(
-                        i,
-                        'diameter_mm',
-                        parseFloat((e.currentTarget as HTMLInputElement).value) || 0,
-                      )}
-                  />
-                </label>
-                <label>
-                  <span>{t('tools.holder.length')}</span>
-                  <input
-                    type="number"
-                    step="0.5"
-                    min="0"
-                    value={tool.holder.length_mm}
-                    onchange={(e) =>
-                      updateHolderField(
-                        i,
-                        'length_mm',
-                        parseFloat((e.currentTarget as HTMLInputElement).value) || 0,
-                      )}
-                  />
-                </label>
-              </div>
-            {:else if tool.holder?.kind === 'cone'}
-              <div class="holder-row">
-                <label>
-                  <span>{t('tools.holder.cone.bottom_diameter')}</span>
-                  <input
-                    type="number"
-                    step="0.5"
-                    min="0"
-                    value={tool.holder.bottom_diameter_mm}
-                    onchange={(e) =>
-                      updateHolderField(
-                        i,
-                        'bottom_diameter_mm',
-                        parseFloat((e.currentTarget as HTMLInputElement).value) || 0,
-                      )}
-                  />
-                </label>
-                <label>
-                  <span>{t('tools.holder.cone.top_diameter')}</span>
-                  <input
-                    type="number"
-                    step="0.5"
-                    min="0"
-                    value={tool.holder.top_diameter_mm}
-                    onchange={(e) =>
-                      updateHolderField(
-                        i,
-                        'top_diameter_mm',
-                        parseFloat((e.currentTarget as HTMLInputElement).value) || 0,
-                      )}
-                  />
-                </label>
-                <label>
-                  <span>{t('tools.holder.length')}</span>
-                  <input
-                    type="number"
-                    step="0.5"
-                    min="0"
-                    value={tool.holder.length_mm}
-                    onchange={(e) =>
-                      updateHolderField(
-                        i,
-                        'length_mm',
-                        parseFloat((e.currentTarget as HTMLInputElement).value) || 0,
-                      )}
-                  />
-                </label>
-              </div>
-            {:else if tool.holder?.kind === 'stepped'}
-              <div class="holder-row">
-                <label>
-                  <span>{t('tools.holder.stepped.cyl_diameter')}</span>
-                  <input
-                    type="number"
-                    step="0.5"
-                    min="0"
-                    value={tool.holder.cylinder_diameter_mm}
-                    onchange={(e) =>
-                      updateHolderField(
-                        i,
-                        'cylinder_diameter_mm',
-                        parseFloat((e.currentTarget as HTMLInputElement).value) || 0,
-                      )}
-                  />
-                </label>
-                <label>
-                  <span>{t('tools.holder.stepped.cyl_length')}</span>
-                  <input
-                    type="number"
-                    step="0.5"
-                    min="0"
-                    value={tool.holder.cylinder_length_mm}
-                    onchange={(e) =>
-                      updateHolderField(
-                        i,
-                        'cylinder_length_mm',
-                        parseFloat((e.currentTarget as HTMLInputElement).value) || 0,
-                      )}
-                  />
-                </label>
-                <label>
-                  <span>{t('tools.holder.stepped.cone_top_diameter')}</span>
-                  <input
-                    type="number"
-                    step="0.5"
-                    min="0"
-                    value={tool.holder.cone_top_diameter_mm}
-                    onchange={(e) =>
-                      updateHolderField(
-                        i,
-                        'cone_top_diameter_mm',
-                        parseFloat((e.currentTarget as HTMLInputElement).value) || 0,
-                      )}
-                  />
-                </label>
-                <label>
-                  <span>{t('tools.holder.stepped.cone_length')}</span>
-                  <input
-                    type="number"
-                    step="0.5"
-                    min="0"
-                    value={tool.holder.cone_length_mm}
-                    onchange={(e) =>
-                      updateHolderField(
-                        i,
-                        'cone_length_mm',
-                        parseFloat((e.currentTarget as HTMLInputElement).value) || 0,
-                      )}
-                  />
-                </label>
-              </div>
-            {/if}
+            <ToolHolderEditor
+              holder={tool.holder}
+              groupId={tool.id}
+              onChange={(h) => setHolder(i, h)}
+            />
             <div class="holder-row pass-overrides">
               <span class="holder-label" title={t('tools.pass_overrides.title')}
                 >{t('tools.pass_overrides')}</span
