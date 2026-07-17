@@ -62,6 +62,19 @@ impl GcodeSink {
         self.lines.extend_from_slice(lines);
     }
 
+    /// Borrow the buffered lines as a slice. Used by a post whose
+    /// `finish()` re-derives its program text from the raw lines rather
+    /// than the canonical `join("\n")` [`GcodeSink::finish`] — the HPGL
+    /// post splits each buffered entry on `;` so every plotter statement
+    /// lands on its own output line. Reads the same backing store as
+    /// [`GcodeSink::finish`] without cloning it. Like the random-access
+    /// operations above, this whole-buffer read is a thing an append-only
+    /// streaming sink cannot serve — a `finish()` transform is in the same
+    /// boat as the op-cache range ops, reconciled by the streaming variant.
+    pub(crate) fn lines(&self) -> &[String] {
+        &self.lines
+    }
+
     /// The finished program as one `String`: lines joined by `\n` with a
     /// trailing `\n`. Byte-identical to the historical `out.join("\n") +
     /// "\n"`. Derived from [`GcodeSink::write_to`] so there is a single
@@ -128,6 +141,16 @@ mod tests {
         assert_eq!(s.clone_from(1), vec!["b".to_string(), "c".to_string()]);
         assert_eq!(s.clone_from(3), Vec::<String>::new());
         assert_eq!(s.clone_from(99), Vec::<String>::new());
+    }
+
+    #[test]
+    fn lines_borrows_the_backing_buffer() {
+        // The read accessor HPGL's finish() reads to split each buffered
+        // entry on `;`. Borrows the same lines finish() would join —
+        // no clone, verbatim order.
+        let s = sink_of(&["IN;SP1;", "PA0,0;"]);
+        assert_eq!(s.lines(), &["IN;SP1;".to_string(), "PA0,0;".to_string()]);
+        assert!(sink_of(&[]).lines().is_empty());
     }
 
     #[test]

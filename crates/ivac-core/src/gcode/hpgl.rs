@@ -6,12 +6,19 @@
 // conversions are domain-bounded by the plotter's addressable plane.
 #![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 
+use crate::gcode::sink::GcodeSink;
 use crate::gcode::{CapturedPostState, PostProcessor};
 use crate::project::{ToolOffset, UnitSystem};
 
 #[derive(Debug, Default)]
 pub struct Post {
-    out: Vec<String>,
+    /// Emitted plotter statements. Routed through [`GcodeSink`] — the
+    /// write-through seam for the streaming-gcode evolution (`ivac-3j1p`) —
+    /// rather than a bare `Vec<String>`, so a future append-only sink can
+    /// stream without buffering the whole program. Behavior is unchanged:
+    /// HPGL's `finish` still reads the buffered lines back to split each
+    /// on `;`.
+    sink: GcodeSink,
     pen_down: bool,
     last_x: Option<i64>,
     last_y: Option<i64>,
@@ -32,7 +39,7 @@ impl Post {
     }
 
     fn write(&mut self, s: impl Into<String>) {
-        self.out.push(s.into());
+        self.sink.push(s.into());
     }
 
     /// Tessellate a G2/G3 arc into pen-down chord polyline at ~5° per
@@ -223,8 +230,8 @@ impl PostProcessor for Post {
         // multiple statements into one `write`; we split on `;` here
         // at finalisation so the line break lands AFTER every
         // semicolon regardless of where the boundary was.
-        let mut s = String::with_capacity(self.out.iter().map(|l| l.len() + 1).sum());
-        for line in &self.out {
+        let mut s = String::with_capacity(self.sink.lines().iter().map(|l| l.len() + 1).sum());
+        for line in self.sink.lines() {
             // Split each buffered entry on `;` and emit one statement
             // per output line. Empty trailing segments are dropped so
             // we don't emit a blank line after every terminating
@@ -249,17 +256,13 @@ impl PostProcessor for Post {
         s
     }
     fn out_lines_count(&self) -> usize {
-        self.out.len()
+        self.sink.len()
     }
     fn out_lines_clone_from(&self, start: usize) -> Vec<String> {
-        if start >= self.out.len() {
-            Vec::new()
-        } else {
-            self.out[start..].to_vec()
-        }
+        self.sink.clone_from(start)
     }
     fn out_extend_lines(&mut self, lines: &[String]) {
-        self.out.extend_from_slice(lines);
+        self.sink.extend_from_slice(lines);
     }
     fn reset_state(&mut self) {
         // HPGL pen-state can stay; the cache replays absolute PA moves
