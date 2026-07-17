@@ -19,6 +19,8 @@
     clippy::many_single_char_names
 )]
 
+use std::io::{self, Write};
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -159,342 +161,531 @@ pub fn interpret(gcode: &str) -> Vec<ToolpathSegment> {
 
 /// Same as [`interpret`] but also returns the line ↔ segment lookup.
 /// Frontend uses this to wire the gcode text panel to the 3D playhead.
-// gcode interpretation is a single linear state machine: parse a line →
-// update modal state → emit segments. The state shares between every
-// branch so splitting reintroduces it everywhere.
-#[allow(clippy::too_many_lines)]
+///
+/// A thin loop over [`Interpreter::feed_line`]. The incremental interpreter is
+/// what lets a *streaming* emit be previewed through a tee without ever
+/// materializing the joined program `String` (see [`InterpretingTee`],
+/// `ivac-3j1p`) — this batch entry stays byte-identical because it drives the
+/// exact same `feed_line`.
 #[must_use]
 pub fn interpret_with_index(gcode: &str) -> (Vec<ToolpathSegment>, GcodeIndex) {
-    let mut state = Pose3 {
-        x: 0.0,
-        y: 0.0,
-        z: 0.0,
-    };
-    let mut active_code = 0u8;
-    let mut active_op: u32 = 0;
-    let mut out = Vec::new();
-    let mut unit_scale = 1.0;
-    let mut lines_to_segment: Vec<u32> = Vec::new();
-    let mut segments_to_line: Vec<u32> = Vec::new();
+    let mut interp = Interpreter::default();
+    for raw in gcode.lines() {
+        interp.feed_line(raw);
+    }
+    interp.finish()
+}
 
-    for (idx0, raw) in gcode.lines().enumerate() {
-        // Push a placeholder for this line; we'll overwrite if it produces
-        // a segment.
-        lines_to_segment.push(NO_SEGMENT);
-        let line_no = (idx0 + 1) as u32;
+/// Incremental g-code interpreter: fed one already-split line at a time (in
+/// program order), it builds the same toolpath + line↔segment index a single
+/// pass over the joined program would. gcode interpretation is a single linear
+/// state machine (parse a line → update modal state → emit segments); holding
+/// that state in one struct lets both the batch [`interpret_with_index`] and
+/// the streaming tee drive it without duplicating the machine.
+struct Interpreter {
+    state: Pose3,
+    active_code: u8,
+    active_op: u32,
+    unit_scale: f64,
+    out: Vec<ToolpathSegment>,
+    lines_to_segment: Vec<u32>,
+    segments_to_line: Vec<u32>,
+}
 
-        // Inspect comments (raw, before stripping) for op markers.
-        if let Some(op_id) = parse_op_marker(raw) {
-            active_op = op_id;
-            continue;
+impl Default for Interpreter {
+    fn default() -> Self {
+        Self {
+            state: Pose3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            active_code: 0,
+            active_op: 0,
+            unit_scale: 1.0,
+            out: Vec::new(),
+            lines_to_segment: Vec::new(),
+            segments_to_line: Vec::new(),
         }
+    }
+}
 
-        let line = strip_comment(raw).trim().to_string();
-        if line.is_empty() {
-            continue;
-        }
-        let mut x = state.x;
-        let mut y = state.y;
-        let mut z = state.z;
-        let mut had_z = false;
-        // I / J / R for G2 / G3. I/J = center offset from arc start in
-        // X/Y; R = radius (alternative form). Without these the arc is
-        // implicitly treated as a chord — which the wireframe + sim
-        // would then carve as a straight line across the arc's
-        // diameter (the bug this tessellation guards against).
-        let mut i_off: Option<f64> = None;
-        let mut j_off: Option<f64> = None;
-        // R word: for G2/G3 it's a radius; for G81/G82/G83/G73 it's
-        // the retract plane (Z) the canned cycle returns to. We keep
-        // these in the same variable since they're mutually exclusive
-        // per line.
-        let mut r_val: Option<f64> = None;
-        // A non-cutting controller move the previewer can't
-        // place in the work frame —
-        //   * `G53` (machine-coords move): no WCS↔machine offset is
-        //     known here, so machine X/Y misread as WCS would draw to
-        //     the wrong spot.
-        //   * `G38.x` (probe): the head stops at an unknown trigger, not
-        //     at the commanded search distance, so drawing a segment to
-        //     that distance fabricates a deep phantom plunge.
-        // For either, flag the line and skip it below: emit no segment
-        // and DON'T advance `state`. The next absolute move re-establishes
-        // the WCS position (the post re-emits X/Y/Z after a G53 / G38).
-        let mut non_cutting_ctrl_move = false;
-        for tok in line.split_whitespace() {
-            let (head, val_str) = tok.split_at(1);
-            let val: f64 = val_str.parse().unwrap_or(0.0);
-            match head {
-                "G" | "g" => {
-                    if val_str == "53" || val_str.starts_with("38") {
-                        non_cutting_ctrl_move = true;
-                    } else if let Ok(n) = val_str.parse::<u8>() {
-                        if (0..=3).contains(&n) {
-                            active_code = n;
-                        } else if n == 20 {
-                            unit_scale = 25.4;
-                        } else if n == 21 {
-                            unit_scale = 1.0;
-                        } else if matches!(n, 73 | 81 | 82 | 83) {
-                            // Drill canned cycle. Recorded so the
-                            // expansion below knows to emit the
-                            // rapid + plunge + retract triplet
-                            // instead of a single diagonal "rapid"
-                            // (the pre-fix bug: G81 X10 Y10 Z-3 R2
-                            // after a G0 was treated as a G0 to
-                            // (10, 10, -3), drawing a diagonal
-                            // segment THROUGH the workpiece).
-                            active_code = n;
+impl Interpreter {
+    /// Feed one g-code line (no trailing newline) in program order, extending
+    /// the toolpath + index. Byte-identical to one iteration of the historical
+    /// `interpret_with_index` loop: the accumulators are swapped into locals so
+    /// the parse body reads verbatim, and each per-line early-exit `break 'line`
+    /// (the old loop `continue`) so the modal state still flushes back to
+    /// `self` afterward.
+    #[allow(clippy::too_many_lines)]
+    fn feed_line(&mut self, raw: &str) {
+        let mut state = self.state;
+        let mut active_code = self.active_code;
+        let mut active_op = self.active_op;
+        let mut unit_scale = self.unit_scale;
+        let mut out = std::mem::take(&mut self.out);
+        let mut lines_to_segment = std::mem::take(&mut self.lines_to_segment);
+        let mut segments_to_line = std::mem::take(&mut self.segments_to_line);
+        'line: {
+            // Push a placeholder for this line; we'll overwrite if it produces
+            // a segment.
+            lines_to_segment.push(NO_SEGMENT);
+            let line_no = lines_to_segment.len() as u32;
+
+            // Inspect comments (raw, before stripping) for op markers.
+            if let Some(op_id) = parse_op_marker(raw) {
+                active_op = op_id;
+                break 'line;
+            }
+
+            let line = strip_comment(raw).trim().to_string();
+            if line.is_empty() {
+                break 'line;
+            }
+            let mut x = state.x;
+            let mut y = state.y;
+            let mut z = state.z;
+            let mut had_z = false;
+            // I / J / R for G2 / G3. I/J = center offset from arc start in
+            // X/Y; R = radius (alternative form). Without these the arc is
+            // implicitly treated as a chord — which the wireframe + sim
+            // would then carve as a straight line across the arc's
+            // diameter (the bug this tessellation guards against).
+            let mut i_off: Option<f64> = None;
+            let mut j_off: Option<f64> = None;
+            // R word: for G2/G3 it's a radius; for G81/G82/G83/G73 it's
+            // the retract plane (Z) the canned cycle returns to. We keep
+            // these in the same variable since they're mutually exclusive
+            // per line.
+            let mut r_val: Option<f64> = None;
+            // A non-cutting controller move the previewer can't
+            // place in the work frame —
+            //   * `G53` (machine-coords move): no WCS↔machine offset is
+            //     known here, so machine X/Y misread as WCS would draw to
+            //     the wrong spot.
+            //   * `G38.x` (probe): the head stops at an unknown trigger, not
+            //     at the commanded search distance, so drawing a segment to
+            //     that distance fabricates a deep phantom plunge.
+            // For either, flag the line and skip it below: emit no segment
+            // and DON'T advance `state`. The next absolute move re-establishes
+            // the WCS position (the post re-emits X/Y/Z after a G53 / G38).
+            let mut non_cutting_ctrl_move = false;
+            for tok in line.split_whitespace() {
+                let (head, val_str) = tok.split_at(1);
+                let val: f64 = val_str.parse().unwrap_or(0.0);
+                match head {
+                    "G" | "g" => {
+                        if val_str == "53" || val_str.starts_with("38") {
+                            non_cutting_ctrl_move = true;
+                        } else if let Ok(n) = val_str.parse::<u8>() {
+                            if (0..=3).contains(&n) {
+                                active_code = n;
+                            } else if n == 20 {
+                                unit_scale = 25.4;
+                            } else if n == 21 {
+                                unit_scale = 1.0;
+                            } else if matches!(n, 73 | 81 | 82 | 83) {
+                                // Drill canned cycle. Recorded so the
+                                // expansion below knows to emit the
+                                // rapid + plunge + retract triplet
+                                // instead of a single diagonal "rapid"
+                                // (the pre-fix bug: G81 X10 Y10 Z-3 R2
+                                // after a G0 was treated as a G0 to
+                                // (10, 10, -3), drawing a diagonal
+                                // segment THROUGH the workpiece).
+                                active_code = n;
+                            }
                         }
                     }
+                    "X" | "x" => x = val * unit_scale,
+                    "Y" | "y" => y = val * unit_scale,
+                    "Z" | "z" => {
+                        z = val * unit_scale;
+                        had_z = true;
+                    }
+                    "I" | "i" => i_off = Some(val * unit_scale),
+                    "J" | "j" => j_off = Some(val * unit_scale),
+                    "R" | "r" => r_val = Some(val * unit_scale),
+                    _ => {}
                 }
-                "X" | "x" => x = val * unit_scale,
-                "Y" | "y" => y = val * unit_scale,
-                "Z" | "z" => {
-                    z = val * unit_scale;
-                    had_z = true;
-                }
-                "I" | "i" => i_off = Some(val * unit_scale),
-                "J" | "j" => j_off = Some(val * unit_scale),
-                "R" | "r" => r_val = Some(val * unit_scale),
-                _ => {}
             }
-        }
-        // Non-cutting controller move (G53 machine-coords
-        // or G38.x probe) — skip without touching the work-frame `state`
-        // or emitting a segment. See the flag's declaration above for
-        // why. Also resets `active_code` so a bare following motion
-        // isn't misclassified by this line's G word.
-        if non_cutting_ctrl_move {
-            active_code = 0;
-            continue;
-        }
-        // Drill canned cycle expansion. The post emits one G81/G82/G83/G73
-        // line per hole with the target X/Y/Z and the retract R. Expand
-        // it into three preview segments:
-        //   1. Horizontal rapid from current pos to (X, Y, current_z)
-        //   2. Vertical plunge to (X, Y, Z) at feed (Plunge kind)
-        //   3. Vertical retract to (X, Y, R) at rapid (Retract kind)
-        // After the cycle, the cutter is at (X, Y, R). The next iteration
-        // can rapid back up to fast_z via the post's emitted `G0 Z<fast_z>`
-        // before the following G81.
-        if matches!(active_code, 73 | 81 | 82 | 83) {
-            let r_z = r_val.unwrap_or(state.z);
-            let mid_xy = Pose3 { x, y, z: state.z };
-            let bottom = Pose3 { x, y, z };
-            let retracted = Pose3 { x, y, z: r_z };
+            // Non-cutting controller move (G53 machine-coords
+            // or G38.x probe) — skip without touching the work-frame `state`
+            // or emitting a segment. See the flag's declaration above for
+            // why. Also resets `active_code` so a bare following motion
+            // isn't misclassified by this line's G word.
+            if non_cutting_ctrl_move {
+                active_code = 0;
+                break 'line;
+            }
+            // Drill canned cycle expansion. The post emits one G81/G82/G83/G73
+            // line per hole with the target X/Y/Z and the retract R. Expand
+            // it into three preview segments:
+            //   1. Horizontal rapid from current pos to (X, Y, current_z)
+            //   2. Vertical plunge to (X, Y, Z) at feed (Plunge kind)
+            //   3. Vertical retract to (X, Y, R) at rapid (Retract kind)
+            // After the cycle, the cutter is at (X, Y, R). The next iteration
+            // can rapid back up to fast_z via the post's emitted `G0 Z<fast_z>`
+            // before the following G81.
+            if matches!(active_code, 73 | 81 | 82 | 83) {
+                let r_z = r_val.unwrap_or(state.z);
+                let mid_xy = Pose3 { x, y, z: state.z };
+                let bottom = Pose3 { x, y, z };
+                let retracted = Pose3 { x, y, z: r_z };
+                let from = state;
+                let mut push = |from: Pose3, to: Pose3, kind: MoveKind| {
+                    if from == to {
+                        return;
+                    }
+                    let seg_idx = out.len() as u32;
+                    out.push(ToolpathSegment {
+                        from,
+                        to,
+                        kind,
+                        gcode_line: line_no,
+                        op_id: active_op,
+                        arc: None,
+                    });
+                    let last = lines_to_segment.len() - 1;
+                    if lines_to_segment[last] == NO_SEGMENT {
+                        lines_to_segment[last] = seg_idx;
+                    }
+                    segments_to_line.push(line_no);
+                };
+                push(from, mid_xy, MoveKind::Rapid);
+                push(mid_xy, bottom, MoveKind::Plunge);
+                push(bottom, retracted, MoveKind::Retract);
+                state = retracted;
+                // Reset active_code so a subsequent non-canned-cycle line
+                // (e.g. a plain `G0 Z10` between holes) isn't misclassified.
+                // The post explicitly re-emits the G code on every line, so
+                // we don't need to keep G81 modal in the interpreter.
+                active_code = 0;
+                break 'line;
+            }
             let from = state;
-            let mut push = |from: Pose3, to: Pose3, kind: MoveKind| {
-                if from == to {
-                    return;
-                }
-                let seg_idx = out.len() as u32;
-                out.push(ToolpathSegment {
-                    from,
-                    to,
-                    kind,
-                    gcode_line: line_no,
-                    op_id: active_op,
-                    arc: None,
-                });
-                let last = lines_to_segment.len() - 1;
-                if lines_to_segment[last] == NO_SEGMENT {
-                    lines_to_segment[last] = seg_idx;
-                }
-                segments_to_line.push(line_no);
-            };
-            push(from, mid_xy, MoveKind::Rapid);
-            push(mid_xy, bottom, MoveKind::Plunge);
-            push(bottom, retracted, MoveKind::Retract);
-            state = retracted;
-            // Reset active_code so a subsequent non-canned-cycle line
-            // (e.g. a plain `G0 Z10` between holes) isn't misclassified.
-            // The post explicitly re-emits the G code on every line, so
-            // we don't need to keep G81 modal in the interpreter.
-            active_code = 0;
-            continue;
-        }
-        let from = state;
-        let to = Pose3 { x, y, z };
-        if from == to {
-            continue;
-        }
-        let kind = match active_code {
-            0 => MoveKind::Rapid,
-            1 => {
-                #[allow(clippy::float_cmp)]
-                // x/y/z copied verbatim through gcode parse — exact equality is the right test.
-                let xy_match = had_z && from.x == to.x && from.y == to.y;
-                if xy_match {
-                    if to.z > from.z {
-                        MoveKind::Retract
+            let to = Pose3 { x, y, z };
+            if from == to {
+                break 'line;
+            }
+            let kind = match active_code {
+                0 => MoveKind::Rapid,
+                1 => {
+                    #[allow(clippy::float_cmp)]
+                    // x/y/z copied verbatim through gcode parse — exact equality is the right test.
+                    let xy_match = had_z && from.x == to.x && from.y == to.y;
+                    if xy_match {
+                        if to.z > from.z {
+                            MoveKind::Retract
+                        } else {
+                            MoveKind::Plunge
+                        }
                     } else {
-                        MoveKind::Plunge
+                        MoveKind::Cut
+                    }
+                }
+                2 | 3 => MoveKind::Arc,
+                _ => MoveKind::Cut,
+            };
+            if matches!(kind, MoveKind::Arc)
+                && (i_off.is_some() || j_off.is_some() || r_val.is_some())
+            {
+                const TAU: f64 = std::f64::consts::TAU;
+                // Tessellate G2/G3 into chord segments along the actual
+                // arc. Otherwise the previewer emits a single chord from
+                // start to end — a half-circle becomes a horizontal line
+                // across the diameter, which both the wireframe and the
+                // heightfield simulator render and carve along (visible
+                // bug: profile-Outside on a circle "looks like a cut on
+                // the source line").
+                //
+                // Center comes from the I/J offset form when present;
+                // otherwise reconstruct it from the radius form
+                // (`G2/G3 X Y R<r>`, no I/J). ivac's own emitters always
+                // use I/J, but raw `GcodeInclude` bodies may use R-form —
+                // without this they'd be drawn / carved as a straight chord.
+                let center = if i_off.is_some() || j_off.is_some() {
+                    Some((from.x + i_off.unwrap_or(0.0), from.y + j_off.unwrap_or(0.0)))
+                } else {
+                    r_val.and_then(|r_signed| {
+                        arc_center_from_radius(
+                            from.x,
+                            from.y,
+                            to.x,
+                            to.y,
+                            r_signed,
+                            active_code == 3,
+                        )
+                    })
+                };
+                let Some((cx, cy)) = center else {
+                    // R-form we couldn't resolve (full circle — undefined in
+                    // R-form — or chord longer than 2·R): fall back to a single
+                    // straight chord rather than fabricating a bogus arc.
+                    let seg_idx = out.len() as u32;
+                    out.push(ToolpathSegment {
+                        from,
+                        to,
+                        kind,
+                        gcode_line: line_no,
+                        op_id: active_op,
+                        // R-form we couldn't resolve to a center — fall back to a
+                        // straight chord (no analytic arc).
+                        arc: None,
+                    });
+                    let last = lines_to_segment.len() - 1;
+                    lines_to_segment[last] = seg_idx;
+                    segments_to_line.push(line_no);
+                    state = to;
+                    break 'line;
+                };
+                let r = ((from.x - cx).powi(2) + (from.y - cy).powi(2)).sqrt();
+                let theta_start = (from.y - cy).atan2(from.x - cx);
+                let theta_end = (to.y - cy).atan2(to.x - cx);
+                let mut sweep = theta_end - theta_start;
+                // G2 = CW, G3 = CCW. Bring sweep into the right half-plane
+                // for the requested direction; +0/-0 sweep with X/Y
+                // co-incident becomes a full revolution (G2/G3 X<same>
+                // Y<same> I... is a full circle in many dialects).
+                let coincident = (from.x - to.x).abs() < 1e-9 && (from.y - to.y).abs() < 1e-9;
+                if active_code == 3 {
+                    // CCW
+                    if coincident {
+                        sweep = TAU;
+                    } else if sweep <= 1e-9 {
+                        sweep += TAU;
                     }
                 } else {
-                    MoveKind::Cut
+                    // CW (G2)
+                    if coincident {
+                        sweep = -TAU;
+                    } else if sweep >= -1e-9 {
+                        sweep -= TAU;
+                    }
                 }
-            }
-            2 | 3 => MoveKind::Arc,
-            _ => MoveKind::Cut,
-        };
-        if matches!(kind, MoveKind::Arc) && (i_off.is_some() || j_off.is_some() || r_val.is_some())
-        {
-            const TAU: f64 = std::f64::consts::TAU;
-            // Tessellate G2/G3 into chord segments along the actual
-            // arc. Otherwise the previewer emits a single chord from
-            // start to end — a half-circle becomes a horizontal line
-            // across the diameter, which both the wireframe and the
-            // heightfield simulator render and carve along (visible
-            // bug: profile-Outside on a circle "looks like a cut on
-            // the source line").
-            //
-            // Center comes from the I/J offset form when present;
-            // otherwise reconstruct it from the radius form
-            // (`G2/G3 X Y R<r>`, no I/J). ivac's own emitters always
-            // use I/J, but raw `GcodeInclude` bodies may use R-form —
-            // without this they'd be drawn / carved as a straight chord.
-            let center = if i_off.is_some() || j_off.is_some() {
-                Some((from.x + i_off.unwrap_or(0.0), from.y + j_off.unwrap_or(0.0)))
-            } else {
-                r_val.and_then(|r_signed| {
-                    arc_center_from_radius(from.x, from.y, to.x, to.y, r_signed, active_code == 3)
-                })
-            };
-            let Some((cx, cy)) = center else {
-                // R-form we couldn't resolve (full circle — undefined in
-                // R-form — or chord longer than 2·R): fall back to a single
-                // straight chord rather than fabricating a bogus arc.
-                let seg_idx = out.len() as u32;
-                out.push(ToolpathSegment {
-                    from,
-                    to,
-                    kind,
-                    gcode_line: line_no,
-                    op_id: active_op,
-                    // R-form we couldn't resolve to a center — fall back to a
-                    // straight chord (no analytic arc).
-                    arc: None,
-                });
+                // Coarse chord tessellation. As of bd ivac-58nl.9 NONE of the
+                // dense-stream consumers depend on this density any more, so the
+                // step is set for a SMALL payload (fewer segments ⇒ smaller
+                // toolpath, faster preview / sim / serialize) rather than for
+                // smoothness:
+                //   * the SIM carves each chord as its exact analytic sub-arc —
+                //     every chord is tagged with its parent arc (`ArcXY`) below, so
+                //     the union is the true arc tube for any chord count
+                //     (bd ivac-58nl.4);
+                //   * the wireframe renderer re-tessellates arc-tagged chords on
+                //     read (`tessellateArc`), so a coarse stream still draws round;
+                //   * the envelope scans sample each chord's arc bulge extrema, not
+                //     just its endpoints (`arc_chord_extremes`), so a wide chord
+                //     that clears the work area / stock still warns.
+                // What the chord count still sets is the granularity of interactive
+                // per-segment scrubbing / picking (both stay smooth — the sim's
+                // partial-advance carves the analytic sub-arc window within a
+                // chord). 15° gives ~7.5× fewer arc segments than the old 2°; the
+                // 4-chord minimum keeps a small arc from degenerating to one or two
+                // chords, and every chord stays ≤ 15° — well under the 180° where a
+                // sub-arc's direction would be ambiguous.
+                const ARC_CHORD_STEP_DEG: f64 = 15.0;
+                let n = (sweep.abs() / ARC_CHORD_STEP_DEG.to_radians())
+                    .ceil()
+                    .max(4.0) as usize;
+                let dtheta = sweep / (n as f64);
+                let dz = to.z - from.z;
+                let mut prev = from;
+                let first_seg_idx = out.len() as u32;
+                for k in 1..=n {
+                    let theta = theta_start + dtheta * (k as f64);
+                    let nx = if k == n { to.x } else { cx + r * theta.cos() };
+                    let ny = if k == n { to.y } else { cy + r * theta.sin() };
+                    let nz = if k == n {
+                        to.z
+                    } else {
+                        from.z + dz * (k as f64) / (n as f64)
+                    };
+                    let chord_to = Pose3 {
+                        x: nx,
+                        y: ny,
+                        z: nz,
+                    };
+                    out.push(ToolpathSegment {
+                        from: prev,
+                        to: chord_to,
+                        kind: MoveKind::Arc,
+                        gcode_line: line_no,
+                        op_id: active_op,
+                        // Tag every chord of this arc with the shared center +
+                        // direction so the sim carves the analytic sub-arc.
+                        arc: Some(ArcXY {
+                            cx,
+                            cy,
+                            ccw: active_code == 3,
+                        }),
+                    });
+                    segments_to_line.push(line_no);
+                    prev = chord_to;
+                }
+                // lines_to_segment points at the first chord of this arc
+                // (jumpToLine seeks to the start of the arc).
                 let last = lines_to_segment.len() - 1;
-                lines_to_segment[last] = seg_idx;
-                segments_to_line.push(line_no);
+                lines_to_segment[last] = first_seg_idx;
                 state = to;
-                continue;
-            };
-            let r = ((from.x - cx).powi(2) + (from.y - cy).powi(2)).sqrt();
-            let theta_start = (from.y - cy).atan2(from.x - cx);
-            let theta_end = (to.y - cy).atan2(to.x - cx);
-            let mut sweep = theta_end - theta_start;
-            // G2 = CW, G3 = CCW. Bring sweep into the right half-plane
-            // for the requested direction; +0/-0 sweep with X/Y
-            // co-incident becomes a full revolution (G2/G3 X<same>
-            // Y<same> I... is a full circle in many dialects).
-            let coincident = (from.x - to.x).abs() < 1e-9 && (from.y - to.y).abs() < 1e-9;
-            if active_code == 3 {
-                // CCW
-                if coincident {
-                    sweep = TAU;
-                } else if sweep <= 1e-9 {
-                    sweep += TAU;
-                }
-            } else {
-                // CW (G2)
-                if coincident {
-                    sweep = -TAU;
-                } else if sweep >= -1e-9 {
-                    sweep -= TAU;
-                }
+                break 'line;
             }
-            // Coarse chord tessellation. As of bd ivac-58nl.9 NONE of the
-            // dense-stream consumers depend on this density any more, so the
-            // step is set for a SMALL payload (fewer segments ⇒ smaller
-            // toolpath, faster preview / sim / serialize) rather than for
-            // smoothness:
-            //   * the SIM carves each chord as its exact analytic sub-arc —
-            //     every chord is tagged with its parent arc (`ArcXY`) below, so
-            //     the union is the true arc tube for any chord count
-            //     (bd ivac-58nl.4);
-            //   * the wireframe renderer re-tessellates arc-tagged chords on
-            //     read (`tessellateArc`), so a coarse stream still draws round;
-            //   * the envelope scans sample each chord's arc bulge extrema, not
-            //     just its endpoints (`arc_chord_extremes`), so a wide chord
-            //     that clears the work area / stock still warns.
-            // What the chord count still sets is the granularity of interactive
-            // per-segment scrubbing / picking (both stay smooth — the sim's
-            // partial-advance carves the analytic sub-arc window within a
-            // chord). 15° gives ~7.5× fewer arc segments than the old 2°; the
-            // 4-chord minimum keeps a small arc from degenerating to one or two
-            // chords, and every chord stays ≤ 15° — well under the 180° where a
-            // sub-arc's direction would be ambiguous.
-            const ARC_CHORD_STEP_DEG: f64 = 15.0;
-            let n = (sweep.abs() / ARC_CHORD_STEP_DEG.to_radians())
-                .ceil()
-                .max(4.0) as usize;
-            let dtheta = sweep / (n as f64);
-            let dz = to.z - from.z;
-            let mut prev = from;
-            let first_seg_idx = out.len() as u32;
-            for k in 1..=n {
-                let theta = theta_start + dtheta * (k as f64);
-                let nx = if k == n { to.x } else { cx + r * theta.cos() };
-                let ny = if k == n { to.y } else { cy + r * theta.sin() };
-                let nz = if k == n {
-                    to.z
-                } else {
-                    from.z + dz * (k as f64) / (n as f64)
-                };
-                let chord_to = Pose3 {
-                    x: nx,
-                    y: ny,
-                    z: nz,
-                };
-                out.push(ToolpathSegment {
-                    from: prev,
-                    to: chord_to,
-                    kind: MoveKind::Arc,
-                    gcode_line: line_no,
-                    op_id: active_op,
-                    // Tag every chord of this arc with the shared center +
-                    // direction so the sim carves the analytic sub-arc.
-                    arc: Some(ArcXY {
-                        cx,
-                        cy,
-                        ccw: active_code == 3,
-                    }),
-                });
-                segments_to_line.push(line_no);
-                prev = chord_to;
-            }
-            // lines_to_segment points at the first chord of this arc
-            // (jumpToLine seeks to the start of the arc).
+            let seg_idx = out.len() as u32;
+            out.push(ToolpathSegment {
+                from,
+                to,
+                kind,
+                gcode_line: line_no,
+                op_id: active_op,
+                arc: None,
+            });
+            // Last entry placeholder is for *this* line — overwrite it.
             let last = lines_to_segment.len() - 1;
-            lines_to_segment[last] = first_seg_idx;
+            lines_to_segment[last] = seg_idx;
+            segments_to_line.push(line_no);
             state = to;
-            continue;
         }
-        let seg_idx = out.len() as u32;
-        out.push(ToolpathSegment {
-            from,
-            to,
-            kind,
-            gcode_line: line_no,
-            op_id: active_op,
-            arc: None,
-        });
-        // Last entry placeholder is for *this* line — overwrite it.
-        let last = lines_to_segment.len() - 1;
-        lines_to_segment[last] = seg_idx;
-        segments_to_line.push(line_no);
-        state = to;
+        self.state = state;
+        self.active_code = active_code;
+        self.active_op = active_op;
+        self.unit_scale = unit_scale;
+        self.out = out;
+        self.lines_to_segment = lines_to_segment;
+        self.segments_to_line = segments_to_line;
     }
-    (
-        out,
-        GcodeIndex {
-            lines_to_segment,
-            segments_to_line,
-        },
-    )
+
+    /// Consume the interpreter, yielding the accumulated toolpath and the
+    /// line ↔ segment index.
+    fn finish(self) -> (Vec<ToolpathSegment>, GcodeIndex) {
+        (
+            self.out,
+            GcodeIndex {
+                lines_to_segment: self.lines_to_segment,
+                segments_to_line: self.segments_to_line,
+            },
+        )
+    }
+}
+
+/// A [`Write`] that forwards every byte to `inner` unchanged **and** feeds each
+/// completed line to an [`Interpreter`], so a *streaming* g-code emit is
+/// previewed through a tee without ever holding the joined program `String`
+/// (`ivac-3j1p`). The streaming sink writes `line0\nline1\n…\nlineN\n` (its
+/// `join("\n") + "\n"`), so splitting on `\n` reproduces `str::lines()` — the
+/// resulting toolpath + index are byte-identical to [`interpret_with_index`]
+/// over the joined program.
+///
+/// Peak memory is O(toolpath) — the interpreter still accumulates every
+/// segment — plus one partial line in `pending`. That's strictly less than the
+/// buffered path's O(toolpath + joined String); the point is to drop the
+/// duplicate program text, not the toolpath (which a preview needs regardless).
+///
+/// A streaming post owns its writer (`Box<dyn Write + Send>`), so the tee can't
+/// be reclaimed to read the toolpath out of. Instead the interpreter lives
+/// behind a shared [`InterpretHandle`]: hand the tee to the post, and once the
+/// post (and the tee it owns) is dropped, [`InterpretHandle::take`] yields the
+/// accumulated toolpath.
+pub(crate) struct InterpretingTee<W: Write> {
+    inner: W,
+    interp: std::sync::Arc<std::sync::Mutex<Interpreter>>,
+    /// Bytes of the current, not-yet-terminated line, carried across `write`
+    /// calls. Bounded by one line's length — cleared at every `\n`.
+    pending: Vec<u8>,
+}
+
+/// Shared read-back handle for the toolpath an [`InterpretingTee`] builds.
+pub(crate) struct InterpretHandle(std::sync::Arc<std::sync::Mutex<Interpreter>>);
+
+impl InterpretHandle {
+    /// Consume the accumulated interpreter into `(toolpath, index)`. Returns
+    /// `None` if the tee is still alive (the streaming post holding it hasn't
+    /// been dropped yet) — call this only after the emit loop's post has gone
+    /// out of scope. The tee's `Drop` flushes any residual partial line first,
+    /// so the result matches `interpret_with_index` over the joined program
+    /// even if the stream didn't end in `\n`.
+    pub(crate) fn take(self) -> Option<(Vec<ToolpathSegment>, GcodeIndex)> {
+        std::sync::Arc::try_unwrap(self.0)
+            .ok()
+            .map(|m| {
+                m.into_inner()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+            })
+            .map(Interpreter::finish)
+    }
+}
+
+impl<W: Write> InterpretingTee<W> {
+    /// Wrap `inner`, returning the tee (hand it to the streaming post as its
+    /// writer) and a handle to read the toolpath back after emit.
+    pub(crate) fn new(inner: W) -> (Self, InterpretHandle) {
+        let interp = std::sync::Arc::new(std::sync::Mutex::new(Interpreter::default()));
+        (
+            Self {
+                inner,
+                interp: std::sync::Arc::clone(&interp),
+                pending: Vec::new(),
+            },
+            InterpretHandle(interp),
+        )
+    }
+
+    /// `&self` (not `&mut`): the interpreter lives behind the shared mutex, so
+    /// feeding needs only interior mutability — which lets the `write` loop
+    /// hold an immutable borrow of `self.pending` across the call.
+    fn feed(&self, line: &str) {
+        self.interp
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .feed_line(line);
+    }
+}
+
+impl<W: Write> Write for InterpretingTee<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        // Forward first so a write error propagates before we spend parse work
+        // (and the tee never claims to have consumed bytes the sink dropped).
+        self.inner.write_all(buf)?;
+        let mut start = 0;
+        for (i, &b) in buf.iter().enumerate() {
+            if b == b'\n' {
+                if self.pending.is_empty() {
+                    // Whole line lies within this buffer — feed it directly.
+                    let line = String::from_utf8_lossy(&buf[start..i]);
+                    self.feed(&line);
+                } else {
+                    // Line straddles a write boundary — complete it from
+                    // `pending`, then reset the carry.
+                    self.pending.extend_from_slice(&buf[start..i]);
+                    let line = String::from_utf8_lossy(&self.pending);
+                    self.feed(&line);
+                    self.pending.clear();
+                }
+                start = i + 1;
+            }
+        }
+        self.pending.extend_from_slice(&buf[start..]);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+impl<W: Write> Drop for InterpretingTee<W> {
+    fn drop(&mut self) {
+        // Flush a residual partial line (a stream not ending in `\n`) so the
+        // toolpath matches `str::lines()`. The streaming sink's `finish_stream`
+        // normally writes the trailing `\n` first, leaving nothing here.
+        if !self.pending.is_empty() {
+            let line = String::from_utf8_lossy(&self.pending);
+            self.interp
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .feed_line(&line);
+            self.pending.clear();
+        }
+    }
 }
 
 /// Extract the op id from a `; OP <n>` or `(OP <n>)` marker. Returns
@@ -895,5 +1086,96 @@ mod tests {
             .find(|s| matches!(s.kind, MoveKind::Rapid))
             .expect("the G0 emits a rapid");
         assert!(rapid.arc.is_none(), "a straight move carries no arc");
+    }
+
+    // ─── InterpretingTee (ivac-3j1p.3.2.2) ──────────────────────────────
+    //
+    // The tee must yield the SAME toolpath + index as interpret_with_index
+    // over the joined program, for ANY write chunking (the streaming sink
+    // buffers arbitrarily), and forward the exact bytes unchanged.
+
+    /// Feed `program`'s bytes through the tee in `chunk`-sized writes and
+    /// return the tee-built toolpath + index (the passthrough bytes go to a
+    /// throwaway `Vec` sink; `tee_forwards_bytes_unchanged` checks those).
+    fn tee_in_chunks(program: &str, chunk: usize) -> (Vec<ToolpathSegment>, GcodeIndex) {
+        let (mut tee, handle) = InterpretingTee::new(Vec::<u8>::new());
+        for slice in program.as_bytes().chunks(chunk.max(1)) {
+            tee.write_all(slice).unwrap();
+        }
+        // Drop the tee so `handle.take()` can unwrap the shared interpreter.
+        drop(tee);
+        handle.take().expect("tee dropped before take")
+    }
+
+    /// A representative program: units, rapids, a plunge, a cut, an op marker,
+    /// a comment, a blank line, and a tessellated arc.
+    const SAMPLE: &str = "; header\nG21\nG90\n; OP 1\nG0 X0 Y0 Z5\nG1 Z-1 F100\n\
+        G1 X10 Y0 F800\nG3 X0 Y0 I-5 J0\n\nG0 Z5\nM30\n";
+
+    #[test]
+    fn tee_toolpath_matches_batch_interpret_for_any_chunking() {
+        let (batch_tp, batch_idx) = interpret_with_index(SAMPLE);
+        // Try a spread of chunk sizes, incl. 1 (split every byte, so multi-byte
+        // lines straddle writes) and a size larger than the whole program.
+        for chunk in [1usize, 2, 3, 7, 13, SAMPLE.len(), SAMPLE.len() + 5] {
+            let (tp, idx) = tee_in_chunks(SAMPLE, chunk);
+            assert_eq!(
+                tp.len(),
+                batch_tp.len(),
+                "segment count mismatch at chunk={chunk}"
+            );
+            for (a, b) in tp.iter().zip(&batch_tp) {
+                assert_eq!(a.from, b.from, "chunk={chunk}");
+                assert_eq!(a.to, b.to, "chunk={chunk}");
+                assert_eq!(a.kind, b.kind, "chunk={chunk}");
+                assert_eq!(a.gcode_line, b.gcode_line, "chunk={chunk}");
+                assert_eq!(a.op_id, b.op_id, "chunk={chunk}");
+            }
+            assert_eq!(
+                idx.lines_to_segment, batch_idx.lines_to_segment,
+                "chunk={chunk}"
+            );
+            assert_eq!(
+                idx.segments_to_line, batch_idx.segments_to_line,
+                "chunk={chunk}"
+            );
+        }
+    }
+
+    #[test]
+    fn tee_forwards_bytes_unchanged() {
+        // The tee is a passthrough: the inner writer must receive exactly the
+        // bytes written, regardless of the parse.
+        let shared = std::rc::Rc::new(std::cell::RefCell::new(Vec::<u8>::new()));
+        struct Cap(std::rc::Rc<std::cell::RefCell<Vec<u8>>>);
+        impl Write for Cap {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.0.borrow_mut().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let (mut tee, handle) = InterpretingTee::new(Cap(shared.clone()));
+        for b in SAMPLE.as_bytes().chunks(4) {
+            tee.write_all(b).unwrap();
+        }
+        drop(tee);
+        let _ = handle.take();
+        assert_eq!(shared.borrow().as_slice(), SAMPLE.as_bytes());
+    }
+
+    #[test]
+    fn tee_flushes_a_stream_without_a_trailing_newline() {
+        // If the last line has no terminating `\n`, the tee's Drop must still
+        // feed it so the toolpath matches str::lines() (which yields the final
+        // partial line).
+        let no_trailing = "G21\nG0 X0 Y0\nG1 X5 Y0 F800"; // no final newline
+        let (batch_tp, batch_idx) = interpret_with_index(no_trailing);
+        let (tp, idx) = tee_in_chunks(no_trailing, 3);
+        assert_eq!(tp.len(), batch_tp.len());
+        assert_eq!(idx.lines_to_segment, batch_idx.lines_to_segment);
+        assert_eq!(idx.segments_to_line, batch_idx.segments_to_line);
     }
 }

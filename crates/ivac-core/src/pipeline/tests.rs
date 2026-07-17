@@ -6971,4 +6971,83 @@ mod streaming_gcode {
         .expect_err("write failure must surface");
         assert!(matches!(err, StreamGcodeError::Write(_)));
     }
+
+    // ─── stream_gcode_with_preview (ivac-3j1p.3.2.2) ─────────────────────
+    //
+    // The tee-fed preview path must produce the SAME g-code bytes as the
+    // bytes-only stream AND the same toolpath / index / warnings the buffered
+    // run_pipeline builds — all without ever materializing the joined String.
+
+    fn streamed_preview(kind: PostProcessorKind) -> (Vec<u8>, StreamPreviewOutcome) {
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let outcome = stream_gcode_with_preview(
+            PipelineRequest {
+                project: a_project(),
+                post_processor: Some(kind),
+            },
+            Box::new(SharedBuf(buf.clone())),
+        )
+        .expect("streaming preview runs");
+        let bytes = buf.lock().unwrap().clone();
+        (bytes, outcome)
+    }
+
+    fn assert_same_toolpath(
+        a: &[crate::gcode::preview::ToolpathSegment],
+        b: &[crate::gcode::preview::ToolpathSegment],
+    ) {
+        assert_eq!(a.len(), b.len(), "segment count");
+        for (x, y) in a.iter().zip(b) {
+            assert_eq!(x.from, y.from);
+            assert_eq!(x.to, y.to);
+            assert_eq!(x.kind, y.kind);
+            assert_eq!(x.gcode_line, y.gcode_line);
+            assert_eq!(x.op_id, y.op_id);
+            assert_eq!(x.arc, y.arc);
+        }
+    }
+
+    #[test]
+    fn stream_with_preview_matches_buffered_program_toolpath_and_warnings() {
+        let resp = run_pipeline(
+            PipelineRequest {
+                project: a_project(),
+                post_processor: Some(PostProcessorKind::Linuxcnc),
+            },
+            |_, _, _| {},
+        )
+        .expect("buffered pipeline runs");
+        let (bytes, outcome) = streamed_preview(PostProcessorKind::Linuxcnc);
+
+        // Bytes stream through the tee unchanged (same as the bytes-only path).
+        assert_eq!(String::from_utf8(bytes).unwrap(), resp.gcode);
+        // Toolpath + index are byte-identical to the buffered interpret — same
+        // interpreter, driven line-by-line through the tee instead of the join.
+        assert_same_toolpath(&outcome.toolpath, &resp.toolpath);
+        assert_eq!(
+            outcome.gcode_index.lines_to_segment,
+            resp.gcode_index.lines_to_segment
+        );
+        assert_eq!(
+            outcome.gcode_index.segments_to_line,
+            resp.gcode_index.segments_to_line
+        );
+        // The streaming-preview path now surfaces the SAME warning set the
+        // buffered path does (incl. any toolpath-derived out_of_work_area /
+        // out_of_stock) — the whole point of building the toolpath via the tee.
+        assert_eq!(
+            serde_json::to_value(&outcome.warnings).unwrap(),
+            serde_json::to_value(&resp.warnings).unwrap(),
+            "streaming-preview warnings must match run_pipeline's",
+        );
+    }
+
+    #[test]
+    fn stream_with_preview_bytes_equal_bytes_only_stream() {
+        // The preview variant and the O(largest-op) bytes-only variant emit the
+        // exact same program — the tee is a transparent passthrough.
+        let (with_preview, _) = streamed_preview(PostProcessorKind::Grbl);
+        let (bytes_only, _) = streamed_gcode(PostProcessorKind::Grbl);
+        assert_eq!(with_preview, bytes_only);
+    }
 }

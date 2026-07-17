@@ -673,6 +673,110 @@ pub fn stream_gcode_to_writer(
     request: PipelineRequest,
     writer: Box<dyn std::io::Write + Send>,
 ) -> Result<StreamGcodeOutcome, StreamGcodeError> {
+    let (prep, mut warnings) = prepare_stream(request)?;
+    let stats_collector = std::cell::RefCell::new((0usize, 0usize, 0usize));
+    run_stream_emit(&prep, &stats_collector, &mut warnings, writer)?;
+
+    let (total_closed, total_offsets, _) = *stats_collector.borrow();
+    Ok(StreamGcodeOutcome {
+        stats: PipelineStats {
+            object_count: prep.objects.len(),
+            closed_object_count: total_closed,
+            offset_count: total_offsets,
+        },
+        warnings,
+    })
+}
+
+/// A streaming Generate that ALSO built a preview. Like [`StreamGcodeOutcome`]
+/// but carries the toolpath + line↔segment index the tee interpreted from the
+/// emitted lines, plus the toolpath-derived warnings (`out_of_work_area` /
+/// `out_of_stock`) the bytes-only [`stream_gcode_to_writer`] omits.
+///
+/// Peak memory is O(toolpath) rather than O(largest op) — but still below the
+/// buffered [`run_pipeline`]'s O(toolpath + joined String), because the program
+/// text is streamed straight to `writer` and never held whole (`ivac-3j1p`).
+/// The time estimate is a follow-up (`ivac-3j1p.3.2.2` B2); a caller that needs
+/// it today must use [`run_pipeline`].
+#[derive(Debug, Clone)]
+pub struct StreamPreviewOutcome {
+    pub stats: PipelineStats,
+    pub warnings: Vec<PipelineWarning>,
+    pub toolpath: Vec<preview::ToolpathSegment>,
+    pub gcode_index: preview::GcodeIndex,
+}
+
+/// Stream a project's g-code to `writer` AND return the preview toolpath + line
+/// index, interpreting the emitted lines through a tee so the joined program
+/// `String` is never materialized (`ivac-3j1p`). Same output bytes as
+/// [`stream_gcode_to_writer`]; the difference is that this also builds the
+/// toolpath (peak O(toolpath)) and appends the toolpath-derived warnings.
+///
+/// Use this over [`run_pipeline`] when you want a preview of a program too
+/// large to hold as text but small enough in the toolpath — e.g. exporting a
+/// big job straight to a file while still surfacing work-area / stock hazards.
+/// Use [`stream_gcode_to_writer`] when you want O(largest op) and no preview.
+///
+/// # Errors
+///
+/// Same surface as [`stream_gcode_to_writer`]: [`StreamGcodeError::Unsupported`]
+/// (HPGL), [`StreamGcodeError::Pipeline`] (planning), [`StreamGcodeError::Write`]
+/// (sink).
+pub fn stream_gcode_with_preview(
+    request: PipelineRequest,
+    writer: Box<dyn std::io::Write + Send>,
+) -> Result<StreamPreviewOutcome, StreamGcodeError> {
+    let (prep, mut warnings) = prepare_stream(request)?;
+    let stats_collector = std::cell::RefCell::new((0usize, 0usize, 0usize));
+
+    // Tee the emitted lines into an incremental interpreter: the toolpath +
+    // index are built WITHOUT the joined program String. The post owns the
+    // boxed tee, so the toolpath comes back through `handle` once the emit
+    // scope drops it.
+    let (tee, handle) = preview::InterpretingTee::new(writer);
+    run_stream_emit(&prep, &stats_collector, &mut warnings, Box::new(tee))?;
+    let (toolpath, gcode_index) = handle
+        .take()
+        .expect("streaming post (and the tee it owns) dropped before read-back");
+
+    // Toolpath-derived warnings, exactly as run_pipeline's tail — now
+    // computable because the tee reconstructed the toolpath.
+    warnings::push_work_area_warning(&toolpath, &prep.project.machine, &mut warnings);
+    warnings::push_stock_warning(&toolpath, prep.project.stock.as_ref(), &mut warnings);
+
+    let (total_closed, total_offsets, _) = *stats_collector.borrow();
+    Ok(StreamPreviewOutcome {
+        stats: PipelineStats {
+            object_count: prep.objects.len(),
+            closed_object_count: total_closed,
+            offset_count: total_offsets,
+        },
+        warnings,
+        toolpath,
+        gcode_index,
+    })
+}
+
+/// Shared front-half of the streaming entries: reject non-streamable posts,
+/// render text layers (additive, exactly as `run_pipeline`), chain objects, and
+/// gather the project-only warnings. What differs between
+/// [`stream_gcode_to_writer`] and [`stream_gcode_with_preview`] is only what
+/// wraps the writer and whether a preview is built afterward, so everything up
+/// to the emit loop lives here.
+struct StreamPrep {
+    project: Project,
+    objects: Vec<VcObject>,
+    header_setup: Setup,
+    post_kind: PostProcessorKind,
+    n_ops: usize,
+}
+
+/// Returns the prep plus the project-only warnings separately (not folded into
+/// `StreamPrep`) so a caller can own+extend the `warnings` Vec while still
+/// borrowing `prep` for the emit loop.
+fn prepare_stream(
+    request: PipelineRequest,
+) -> Result<(StreamPrep, Vec<PipelineWarning>), StreamGcodeError> {
     let mut project = request.project;
     let post_kind = request.post_processor.unwrap_or_default();
     // Reject non-streamable posts before any work — HPGL has no write-through
@@ -681,8 +785,6 @@ pub fn stream_gcode_to_writer(
         return Err(StreamGcodeError::Unsupported(post_kind));
     }
 
-    // Render text layers to segments (additive), exactly as run_pipeline, so
-    // ops targeting text emit identically.
     if !project.text_layers.is_empty() {
         for layer in &project.text_layers {
             match crate::input::text::render_text_layer(layer) {
@@ -700,9 +802,7 @@ pub fn stream_gcode_to_writer(
 
     let mut objects = segments_to_objects(&project.segments);
     classify_containment(&mut objects);
-
     let header_setup = header_setup_for(&project);
-    let stats_collector = std::cell::RefCell::new((0usize, 0usize, 0usize));
     let n_ops = project
         .operations
         .iter()
@@ -711,27 +811,45 @@ pub fn stream_gcode_to_writer(
         .max(1);
     let mut warnings: Vec<PipelineWarning> = Vec::new();
     push_pre_emit_warnings(&project, post_kind, &mut warnings);
-    let post_tag = post_kind.cache_tag();
 
+    Ok((
+        StreamPrep {
+            project,
+            objects,
+            header_setup,
+            post_kind,
+            n_ops,
+        },
+        warnings,
+    ))
+}
+
+/// Run the streaming emit loop into `writer`, finalizing the post. `run_per_op`
+/// is the SAME emit loop the buffered path uses — only the post's finalization
+/// differs: the trailing newline + flush + surfacing the first deferred write
+/// error all happen in `finish_stream`. Shared by both streaming entries.
+fn run_stream_emit(
+    prep: &StreamPrep,
+    stats_collector: &std::cell::RefCell<(usize, usize, usize)>,
+    warnings: &mut Vec<PipelineWarning>,
+    writer: Box<dyn std::io::Write + Send>,
+) -> Result<(), StreamGcodeError> {
+    let post_tag = prep.post_kind.cache_tag();
     let progress = |_: &str, _: f64, _: &str| {};
     let mut no_events = |_e: PipelineEvent| {};
 
-    // Emit straight through a streaming post, then finalize it: the trailing
-    // newline + flush + surfacing the first deferred write error all happen
-    // in finish_stream. run_per_op is the SAME emit loop the buffered path
-    // uses — only the post's finalization differs.
     macro_rules! stream_with_post {
         ($post:expr) => {{
             let mut p = $post;
             run_per_op(
-                &project,
-                &objects,
-                &header_setup,
+                &prep.project,
+                &prep.objects,
+                &prep.header_setup,
                 &mut p,
-                &stats_collector,
+                stats_collector,
                 &progress,
-                n_ops,
-                &mut warnings,
+                prep.n_ops,
+                warnings,
                 &mut no_events,
                 None,
                 Some(global_cache()),
@@ -740,22 +858,13 @@ pub fn stream_gcode_to_writer(
             p.finish_stream()?;
         }};
     }
-    match post_kind {
+    match prep.post_kind {
         PostProcessorKind::Linuxcnc => stream_with_post!(linuxcnc::Post::streaming(writer)),
         PostProcessorKind::Grbl => stream_with_post!(grbl::Post::streaming(writer)),
-        // Rejected at entry; the arm keeps the match total.
-        PostProcessorKind::Hpgl => return Err(StreamGcodeError::Unsupported(post_kind)),
+        // Rejected in prepare_stream; the arm keeps the match total.
+        PostProcessorKind::Hpgl => return Err(StreamGcodeError::Unsupported(prep.post_kind)),
     }
-
-    let (total_closed, total_offsets, _) = *stats_collector.borrow();
-    Ok(StreamGcodeOutcome {
-        stats: PipelineStats {
-            object_count: objects.len(),
-            closed_object_count: total_closed,
-            offset_count: total_offsets,
-        },
-        warnings,
-    })
+    Ok(())
 }
 
 /// Warnings derivable from the project alone — no assembled toolpath needed.
