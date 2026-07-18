@@ -97,10 +97,7 @@ describe('deviationTargets', () => {
       heightgridSource(3, [-5]),
     ]);
     // Disabled op excluded; the two enabled ones kept in document order.
-    expect(targets.map((t) => t.z)).toEqual([
-      [-1, -2],
-      [-5],
-    ]);
+    expect(targets.map((t) => t.z)).toEqual([[-1, -2], [-5]]);
   });
 
   it('skips a relief op whose source is missing but keeps the resolvable ones', () => {

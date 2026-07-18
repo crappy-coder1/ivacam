@@ -894,9 +894,7 @@
     void project.data.operations;
     void project.data.reliefSources;
     if (!driver) return;
-    const targets = on
-      ? deviationTargets(project.data.operations, project.data.reliefSources)
-      : [];
+    const targets = on ? deviationTargets(project.data.operations, project.data.reliefSources) : [];
     driver.setDeviationTarget(targets, tol);
   });
 
