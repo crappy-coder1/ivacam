@@ -7206,7 +7206,10 @@ mod two_sided_guard {
             .find(|w| w.kind == "two_sided_overlap")
             .expect("expected a two_sided_overlap warning");
         assert_eq!(overlap.op_id, Some(2));
-        assert_eq!(overlap.params.get("front_op").map(String::as_str), Some("1"));
+        assert_eq!(
+            overlap.params.get("front_op").map(String::as_str),
+            Some("1")
+        );
         assert_eq!(overlap.params.get("back_op").map(String::as_str), Some("2"));
     }
 

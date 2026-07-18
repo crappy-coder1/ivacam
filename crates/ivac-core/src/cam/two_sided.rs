@@ -120,10 +120,7 @@ pub fn analyze(extents: &[SideExtent], thickness_mm: f64) -> Vec<Conflict> {
     //     flip. Certain (a single op cuts through its own footprint), so
     //     it's the hard-refuse case.
     for e in extents {
-        if e.side == WorkpieceSide::Front
-            && !e.tabbed
-            && e.removal_mm >= thickness_mm - EPS
-        {
+        if e.side == WorkpieceSide::Front && !e.tabbed && e.removal_mm >= thickness_mm - EPS {
             conflicts.push(Conflict::FrontSever {
                 op_id: e.op_id,
                 removal_mm: e.removal_mm,
