@@ -175,6 +175,13 @@
     statusShortcutHints as statusShortcutHintsFn,
     composeStatusBar,
   } from './lib/state/status-bar-text';
+  import {
+    SIDEBAR_DEFAULT,
+    clampSidebar,
+    clampGcode,
+    defaultGcodeHeight,
+    reclampPanels,
+  } from './lib/state/workspace-layout';
   import { resolveShortcut } from './lib/state/app-menu';
   import { swipeHorizontal } from './lib/actions/swipe-horizontal';
   import { layout } from './lib/state/layout.svelte';
@@ -623,31 +630,21 @@
   // survives restart. Window resize re-clamps both panels via the
   // listener below so a restored 720 px sidebar can't eat an 800 px-wide
   // viewport, and a 60 %-tall gcode panel can't run off a shrunk window.
-  const SIDEBAR_DEFAULT = 360;
   let sidebarWidth = $state<number>(SIDEBAR_DEFAULT);
   // Gcode panel height: default ~35 % of viewport. `$state` so the
   // default tracks resize until the user drags the splitter (after
-  // which the persisted value takes precedence via `clampGcode`).
-  let gcodeHeight = $state<number>(Math.round(window.innerHeight * 0.35));
+  // which the persisted value takes precedence via `clampGcode`). Clamp
+  // + default math lives in lib/state/workspace-layout.ts (pure + tested).
+  let gcodeHeight = $state<number>(defaultGcodeHeight(window.innerHeight));
 
   // Restore persisted sizes from the workspace store once it has loaded.
   $effect(() => {
     void workspace.version;
     const panels = workspace.get().panels;
-    if (panels.right_width > 0) sidebarWidth = clampSidebar(panels.right_width);
-    if (panels.bottom_height > 0) gcodeHeight = clampGcode(panels.bottom_height);
+    if (panels.right_width > 0) sidebarWidth = clampSidebar(panels.right_width, window.innerWidth);
+    if (panels.bottom_height > 0)
+      gcodeHeight = clampGcode(panels.bottom_height, window.innerHeight);
   });
-
-  function clampSidebar(v: number): number {
-    // Hard floor stays at 240 px (under that the OperationsList grid
-    // overlaps); ceiling tracks viewport so a too-wide persisted value
-    // can't crowd the canvas to zero on a smaller monitor.
-    const ceiling = Math.max(240, Math.min(720, Math.round(window.innerWidth * 0.6)));
-    return Math.max(240, Math.min(ceiling, v));
-  }
-  function clampGcode(v: number): number {
-    return Math.max(120, Math.min(Math.round(window.innerHeight * 0.7), v));
-  }
 
   function persistLayout() {
     try {
@@ -658,7 +655,8 @@
   }
 
   function onSidebarResize(delta: number) {
-    sidebarWidth = clampSidebar(sidebarWidth - delta); // splitter is LEFT of sidebar → drag-right shrinks sidebar
+    // splitter is LEFT of sidebar → drag-right shrinks sidebar
+    sidebarWidth = clampSidebar(sidebarWidth - delta, window.innerWidth);
     persistLayout();
   }
   function resetSidebar() {
@@ -666,11 +664,12 @@
     persistLayout();
   }
   function onGcodeResize(delta: number) {
-    gcodeHeight = clampGcode(gcodeHeight - delta); // splitter is ABOVE gcode → drag-down shrinks
+    // splitter is ABOVE gcode → drag-down shrinks
+    gcodeHeight = clampGcode(gcodeHeight - delta, window.innerHeight);
     persistLayout();
   }
   function resetGcode() {
-    gcodeHeight = Math.round(window.innerHeight * 0.35);
+    gcodeHeight = defaultGcodeHeight(window.innerHeight);
     persistLayout();
   }
 
@@ -681,13 +680,14 @@
   // down on destroy. The persist call is debounced via the workspace's
   // own write debounce — no rAF needed.
   function onWindowResize() {
-    const oldSide = sidebarWidth;
-    const oldGcode = gcodeHeight;
-    const newSide = clampSidebar(sidebarWidth);
-    const newGcode = clampGcode(gcodeHeight);
-    if (newSide !== oldSide) sidebarWidth = newSide;
-    if (newGcode !== oldGcode) gcodeHeight = newGcode;
-    if (newSide !== oldSide || newGcode !== oldGcode) persistLayout();
+    const next = reclampPanels(
+      { sidebarWidth, gcodeHeight },
+      { width: window.innerWidth, height: window.innerHeight },
+    );
+    if (!next.changed) return;
+    sidebarWidth = next.sidebarWidth;
+    gcodeHeight = next.gcodeHeight;
+    persistLayout();
   }
 
   /// Status bar text — three layers.
