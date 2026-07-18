@@ -167,6 +167,14 @@
   import { logErrorToStderr, isDebugSession } from './lib/state/desktop';
   import { computeFootprint } from './lib/sim/driver';
   import { togglePane, revealPane, type SidebarPane } from './lib/state/sidebar-pane';
+  import {
+    formatStockDims,
+    acceptsManualTabs,
+    modalStatusHint as modalStatusHintFn,
+    statusInfoText as statusInfoTextFn,
+    statusShortcutHints as statusShortcutHintsFn,
+    composeStatusBar,
+  } from './lib/state/status-bar-text';
   import { resolveShortcut } from './lib/state/app-menu';
   import { swipeHorizontal } from './lib/actions/swipe-horizontal';
   import { layout } from './lib/state/layout.svelte';
@@ -241,11 +249,7 @@
   const stockDimsLabel = $derived.by<string>(() => {
     const cfg = project.data.stock;
     const fp = computeFootprint(project.stockSizingImport, cfg, project.data.machine.workArea);
-    const x = Math.max(0, fp.maxX - fp.minX);
-    const y = Math.max(0, fp.maxY - fp.minY);
-    const z = Math.max(0, cfg.thickness);
-    const f = (n: number) => (Number.isFinite(n) ? n.toFixed(0) : '0');
-    return `${f(x)} × ${f(y)} × ${f(z)} mm`;
+    return formatStockDims(fp, cfg.thickness);
   });
 
   onMount(() => {
@@ -701,82 +705,25 @@
       ? null
       : (project.data.operations.find((o) => o.id === project.sel.selectedOpId) ?? null),
   );
-  const tabPlacementForHint = $derived(
-    !!selectedOpForHint &&
-      (selectedOpForHint.kind === 'profile' || selectedOpForHint.kind === 'pocket') &&
-      (selectedOpForHint.tabMode?.kind === 'manual' || selectedOpForHint.tabMode?.kind === 'mixed'),
+  const modalStatusHint = $derived(
+    modalStatusHintFn(
+      project.sel.pickMode,
+      project.sel.selectedOpId,
+      acceptsManualTabs(selectedOpForHint),
+      t,
+    ),
   );
-  const modalStatusHint = $derived.by<string | null>(() => {
-    if (
-      project.sel.pickMode?.kind === 'approach-point' &&
-      project.sel.pickMode.opId === project.sel.selectedOpId
-    ) {
-      return t('app.status.pick_approach');
-    }
-    if (tabPlacementForHint) {
-      return t('app.status.tab_placement');
-    }
-    return null;
-  });
   /// When the canvas selection is non-empty, the status bar shows the
   /// union bbox of selected objects as (center · L × W). Empty
   /// selection falls back to the import-wide bbox + segment count so
-  /// the user still sees the drawing's extent.
-  const statusInfoText = $derived.by<string>(() => {
-    const imp = project.transformedImport;
-    if (!imp) return t('app.status.ready');
-    const meta = imp.object_meta ?? [];
-    const sel = project.sel.selectedObjects;
-    if (sel.size > 0 && meta.length > 0) {
-      // Object ids are NOT a dense 1-based index into `meta` —
-      // combineImports namespaces later drawings' ids by an offset, so
-      // `meta[id - 1]` reads the wrong (or no) entry once a second drawing
-      // is added. Resolve by id, like seriesSelectTo does.
-      const byId = new Map<number, (typeof meta)[number]>();
-      for (const m of meta) byId.set(m.id, m);
-      let minX = Infinity;
-      let minY = Infinity;
-      let maxX = -Infinity;
-      let maxY = -Infinity;
-      let counted = 0;
-      for (const id of sel) {
-        const m = byId.get(id);
-        if (!m) continue;
-        if (m.bbox.min_x < minX) minX = m.bbox.min_x;
-        if (m.bbox.min_y < minY) minY = m.bbox.min_y;
-        if (m.bbox.max_x > maxX) maxX = m.bbox.max_x;
-        if (m.bbox.max_y > maxY) maxY = m.bbox.max_y;
-        counted += 1;
-      }
-      if (counted > 0) {
-        const cx = (minX + maxX) * 0.5;
-        const cy = (minY + maxY) * 0.5;
-        const w = Math.max(0, maxX - minX);
-        const h = Math.max(0, maxY - minY);
-        const tag =
-          counted === 1
-            ? t('app.status.object_one')
-            : t('app.status.object_many', { count: counted });
-        return `${tag} · center=(${cx.toFixed(2)}, ${cy.toFixed(2)}) · ${w.toFixed(2)} × ${h.toFixed(2)} mm`;
-      }
-    }
-    const minX = imp.bbox.min_x.toFixed(2);
-    const minY = imp.bbox.min_y.toFixed(2);
-    const maxX = imp.bbox.max_x.toFixed(2);
-    const maxY = imp.bbox.max_y.toFixed(2);
-    return `bbox=(${minX},${minY})–(${maxX},${maxY}) · ${imp.segments.length} segments · unit_scale=${imp.unit_scale}`;
-  });
-  const statusShortcutHints = $derived.by<string | null>(() => {
-    if (!project.transformedImport) return null;
-    if (project.sel.selectedEntities.size > 0) {
-      return t('app.status.hints_selection');
-    }
-    return t('app.status.hints_idle');
-  });
-  const statusBarText = $derived.by<string>(() => {
-    if (statusShortcutHints) return `${statusInfoText} · ${statusShortcutHints}`;
-    return statusInfoText;
-  });
+  /// the user still sees the drawing's extent. (Logic in status-bar-text.ts.)
+  const statusInfoText = $derived(
+    statusInfoTextFn(project.transformedImport, project.sel.selectedObjects, t),
+  );
+  const statusShortcutHints = $derived(
+    statusShortcutHintsFn(!!project.transformedImport, project.sel.selectedEntities.size > 0, t),
+  );
+  const statusBarText = $derived(composeStatusBar(statusInfoText, statusShortcutHints));
 </script>
 
 <svelte:window
