@@ -6,12 +6,16 @@ all-features = true
 
 [advisories]
 yanked = "deny"
-# Unmaintained advisories we accept transitively. None of these have
-# active vulnerabilities; they're flagged as "no longer maintained" by
-# their authors (gtk3-rs has migrated to gtk4, etc.). We can't drop them
-# without retiring Tauri's GTK webview / the icu pipeline / the older
-# proc-macro2 helpers, which is way out of scope.
+# Unmaintained advisories we accept. None of these have active
+# vulnerabilities; they're flagged as "no longer maintained" by their
+# authors (gtk3-rs has migrated to gtk4, etc.). The transitive ones can't
+# be dropped without retiring Tauri's GTK webview / the icu pipeline / the
+# older proc-macro2 helpers, which is way out of scope. ttf-parser is the
+# one *direct* dep here (font → geometry): 0.25.1 is its final release, it
+# has no known vuln (safe, no-unsafe, zero-alloc, Option/Result on bad
+# input), and migrating to a maintained parser is tracked in ivac-kz7r.
 ignore = [
+    "RUSTSEC-2026-0192",  # ttf-parser unmaintained (direct dep; migration → ivac-kz7r)
     "RUSTSEC-2024-0370",  # proc-macro-error unmaintained (transitive)
     "RUSTSEC-2024-0411",  # gtk3-rs unmaintained
     "RUSTSEC-2024-0412",  # gtk3-rs unmaintained
