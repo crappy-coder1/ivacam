@@ -47,6 +47,7 @@ pub(in crate::pipeline) fn waterline_would_emit(op: &Op, project: &Project) -> b
 /// at its world XY (`origin + index * cell`) and grid Z. Slicing this skin at a
 /// level reproduces the marching-squares iso-contour of the height field — the
 /// solid outline the waterline core then area-clears.
+#[allow(clippy::many_single_char_names)] // z/a/b/c/d are cell-quad corner values
 fn heightgrid_skin(source: &ReliefSource, z: &[f32]) -> Vec<[[f32; 3]; 3]> {
     let cols = source.cols;
     let rows = source.rows;
@@ -79,7 +80,7 @@ fn heightgrid_skin(source: &ReliefSource, z: &[f32]) -> Vec<[[f32; 3]; 3]> {
 /// Emit a waterline-roughing op. No-op (with a warning) when the source is
 /// missing, grayscale, or malformed; the `would_emit` gate normally screens
 /// those out before the M6 envelope.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub(in crate::pipeline) fn run_waterline_op<P: PostProcessor>(
     op: &Op,
     project: &Project,

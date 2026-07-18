@@ -562,6 +562,10 @@ impl DexelField {
 
 #[cfg(test)]
 mod tests {
+    // Tests compare voxel/heightmap values set from literals or copied
+    // bit-for-bit, so exact float equality is the correct assertion.
+    #![allow(clippy::float_cmp)]
+
     use super::*;
     use crate::sim::heightmap::Heightmap;
 

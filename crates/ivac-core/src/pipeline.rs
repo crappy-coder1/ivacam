@@ -753,6 +753,12 @@ pub struct StreamPreviewOutcome {
 /// Same surface as [`stream_gcode_to_writer`]: [`StreamGcodeError::Unsupported`]
 /// (HPGL), [`StreamGcodeError::Pipeline`] (planning), [`StreamGcodeError::Write`]
 /// (sink).
+///
+/// # Panics
+///
+/// Panics only if an internal invariant is violated — the streaming post (and
+/// the tee it owns) dropped before the toolpath is read back. That cannot
+/// happen for the emit scope constructed here.
 pub fn stream_gcode_with_preview(
     request: PipelineRequest,
     writer: Box<dyn std::io::Write + Send>,

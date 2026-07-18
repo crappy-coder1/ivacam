@@ -93,8 +93,7 @@ pub fn tr(locale: Locale, key: &str, params: &[(&str, &str)]) -> String {
     let template = catalog(locale)
         .get(key)
         .or_else(|| catalog(Locale::En).get(key))
-        .map(String::as_str)
-        .unwrap_or(key);
+        .map_or(key, String::as_str);
     let mut out = template.to_string();
     for (name, value) in params {
         out = out.replace(&format!("{{{name}}}"), value);

@@ -389,7 +389,7 @@ async fn helix_radius_handler(
 /// STL → relief height grid. Rasterizes an uploaded STL (multipart `file`
 /// field + optional `max_dim` cell-count cap) through the native core so
 /// the HTTP/Tauri frontends don't pull the wasm bundle in just for this.
-/// Mirrors the `rasterizeStl` WiacClient method (see ivac-fm06). Returns
+/// Mirrors the `rasterizeStl` `WiacClient` method (see ivac-fm06). Returns
 /// the serialized `SurfaceField`, or `204 No Content` when the mesh has no
 /// XY footprint to sample (a fully vertical model — nothing to surface).
 async fn relief_stl_handler(mut multipart: Multipart) -> Result<Response, AppError> {

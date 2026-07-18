@@ -245,6 +245,7 @@ impl SurfaceField {
                     // exactly on a shared edge claimed by at least one
                     // triangle, so there are no seam holes. Double-covering an
                     // edge cell is harmless under the Z-max reduction.
+                    #[allow(clippy::items_after_statements)] // defined at use, with its comment
                     const BARY_EPS: f64 = 1e-9;
                     if l1 < -BARY_EPS || l2 < -BARY_EPS || l3 < -BARY_EPS {
                         continue;
@@ -900,6 +901,7 @@ mod tests {
     /// A drop-cutter finishing pass over a `from_mesh` field never gouges:
     /// every emitted tip Z stays at or above the target surface it samples.
     #[test]
+    #[allow(clippy::many_single_char_names)] // a/b/c/d are triangle vertices
     fn surface_mill_over_from_mesh_is_gouge_free() {
         use crate::cam::surface_mill::{surface_mill, ScanDirection, SurfaceMillParams};
 

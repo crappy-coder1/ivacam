@@ -232,7 +232,7 @@ fn schema(check_only: bool) -> ExitCode {
 
 /// Fail if `tauri.conf.json`'s `version` has drifted from the workspace crate
 /// version. The version's single source of truth is `[workspace.package].version`
-/// in the root Cargo.toml (xtask inherits it, so CARGO_PKG_VERSION is that
+/// in the root Cargo.toml (xtask inherits it, so `CARGO_PKG_VERSION` is that
 /// value). Tauri can't resolve `version.workspace = true`, so its config must
 /// carry an explicit version — `scripts/bump-version.sh` writes it, and this
 /// guard makes a stale hand-edit a CI failure.

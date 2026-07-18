@@ -937,12 +937,12 @@ mod tests {
     /// differing only in one brightness cell must produce two keys.
     #[test]
     fn relief_source_change_changes_key() {
+        use crate::project::ReliefGrid;
         let segs = square(20.0);
         let op = profile_op();
         let tool = endmill();
         let machine = MachineConfig::default();
         let wo = WorkOffset::default();
-        use crate::project::ReliefGrid;
         let rs1 = ReliefSource {
             id: 1,
             name: "heightmap".into(),

@@ -33,7 +33,7 @@ pub(in crate::pipeline) fn relief_would_emit(op: &Op, project: &Project) -> bool
 
 /// Emit a relief-surfacing op. No-op (with a warning) when the source is
 /// missing or malformed; the `would_emit` gate normally screens those out.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub(in crate::pipeline) fn run_relief_op<P: PostProcessor>(
     op: &Op,
     project: &Project,

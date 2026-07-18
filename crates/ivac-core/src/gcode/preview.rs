@@ -484,6 +484,7 @@ impl Interpreter {
                 // 4-chord minimum keeps a small arc from degenerating to one or two
                 // chords, and every chord stays ≤ 15° — well under the 180° where a
                 // sub-arc's direction would be ambiguous.
+                #[allow(clippy::items_after_statements)] // defined at use, next to its rationale
                 const ARC_CHORD_STEP_DEG: f64 = 15.0;
                 let n = (sweep.abs() / ARC_CHORD_STEP_DEG.to_radians())
                     .ceil()
@@ -1143,6 +1144,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::items_after_statements)] // local Cap writer defined at point of use
     fn tee_forwards_bytes_unchanged() {
         // The tee is a passthrough: the inner writer must receive exactly the
         // bytes written, regardless of the parse.

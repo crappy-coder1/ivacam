@@ -425,6 +425,7 @@ mod tests {
     /// Emit the vertical side walls (no caps) of a polygon extruded from
     /// `z_lo` to `z_hi`, as two triangles per edge — enough for slicing, which
     /// only reads the walls a horizontal plane actually crosses.
+    #[allow(clippy::many_single_char_names)] // p/q/a/b/c/d are polygon-edge points
     fn prism_walls(poly: &[[f32; 2]], z_lo: f32, z_hi: f32) -> Vec<[[f32; 3]; 3]> {
         let mut tris = Vec::new();
         for i in 0..poly.len() {

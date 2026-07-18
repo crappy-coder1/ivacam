@@ -131,7 +131,7 @@ fn cmd_generate(args: impl Iterator<Item = String>) -> Result<()> {
                 diameter = iter
                     .next()
                     .with_context(needs_value("--diameter"))?
-                    .parse()?
+                    .parse()?;
             }
             "--depth" => depth = iter.next().with_context(needs_value("--depth"))?.parse()?,
             "--step" => step = iter.next().with_context(needs_value("--step"))?.parse()?,

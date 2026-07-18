@@ -720,6 +720,10 @@ impl ToolProfile {
 
 #[cfg(test)]
 mod tests {
+    // Tests assert exact interval/surface values set from literals, so strict
+    // float equality is the intended check.
+    #![allow(clippy::float_cmp)]
+
     use super::*;
     use crate::project::{Coolant, FormProfileSample, ToolEntry, ToolKind};
 

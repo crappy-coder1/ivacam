@@ -2669,6 +2669,7 @@ mod tests {
     /// sidecar — across every profile kind and move kind. This is the
     /// end-to-end proof that `DexelField` is a drop-in carve target.
     #[test]
+    #[allow(clippy::too_many_lines)] // table-driven end-to-end parity test
     fn dexel_full_carve_matches_heightmap_bitwise() {
         let cases: Vec<(&str, ToolProfile, ToolpathSegment)> = vec![
             (

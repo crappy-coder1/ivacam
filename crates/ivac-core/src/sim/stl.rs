@@ -499,6 +499,9 @@ fn push_solid_tris(tris: &mut Vec<[[f32; 3]; 3]>, field: &DexelField) {
 /// column (empty for an off-grid neighbour ⇒ the whole span walls). Splitting
 /// at the neighbour's span edges is what makes the wall share edges with the
 /// neighbour's own faces (no area gap on the shared plane).
+// `s` stays `&Span` (not by-value Copy) to read symmetrically with the
+// `neighbour: &[Span]` slice it is diffed against.
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn emit_solid_wall(
     tris: &mut Vec<[[f32; 3]; 3]>,
     neighbour: &[crate::sim::dexel::Span],
@@ -764,6 +767,10 @@ fn parse_ascii_stl(bytes: &[u8]) -> Result<Vec<StlTriangle>, StlError> {
 
 #[cfg(test)]
 mod tests {
+    // Mesh/voxel test fixtures cast freely between index and coordinate
+    // spaces; the precision loss is inherent to the geometry, not a bug.
+    #![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+
     use super::*;
     use crate::geometry::Point2;
     use crate::sim::dexel::Span;

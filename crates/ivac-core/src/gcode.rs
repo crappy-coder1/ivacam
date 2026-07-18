@@ -378,6 +378,11 @@ pub trait PostProcessor {
     /// (`linuxcnc` / `grbl` constructed via `Post::streaming`) override to
     /// emit the trailing newline + flush their writer. Part of the
     /// streaming-gcode evolution (`ivac-3j1p`).
+    ///
+    /// # Errors
+    ///
+    /// Returns any deferred I/O error from the underlying write-through sink.
+    /// Buffered posts never fail — they return `Ok`.
     fn finish_stream(&mut self) -> std::io::Result<()> {
         Ok(())
     }
