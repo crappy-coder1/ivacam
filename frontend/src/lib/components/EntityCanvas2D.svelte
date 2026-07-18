@@ -16,6 +16,7 @@
   import { projectGhostTab, type GhostTab } from '../canvas/ghost-tab';
   import { reduceCanvasClick } from '../canvas/entity-selection';
   import { reducePointerDown } from '../canvas/pointer-down';
+  import { reducePointerUp } from '../canvas/pointer-up';
   import {
     computeViewportTransform,
     placementsBBox,
@@ -915,106 +916,98 @@
 
   function onPointerUp(e: PointerEvent) {
     // Release touch tracking + end any active gesture. A quick
-    // down→up cancels the long-press (it was a tap, not a hold); a
-    // finger leaving a pinch ends the gesture and drops any armed
-    // box-select so the remaining finger's lift is a no-op.
+    // down→up cancels the long-press (it was a tap, not a hold).
     if (e.pointerType === 'touch') {
       activePointers.delete(e.pointerId);
     }
     cancelLongPress();
-    if (pinch && (e.pointerId === pinch.idA || e.pointerId === pinch.idB)) {
-      pinch = null;
-      boxSelect = null;
-      try {
-        canvas.releasePointerCapture(e.pointerId);
-      } catch {}
-      return;
-    }
-    // A parked stock-handle press that never became a drag is a TAP
-    // (ivac-0rbu): release it and, only when geometry sits under the press
-    // point, fall through to normal object selection there — so the object
-    // under the handle gets selected (and tap-cycling can step through a
-    // stack). When nothing is under it we leave the selection untouched
-    // (a handle tap over empty stock stays a no-op, as before — we don't
-    // want it clearing the user's selection). A plain tap, so no
-    // box-select arming (the pointer is already up).
-    if (pendingStockGrab && e.pointerId === pendingStockGrab.pointerId) {
-      const { cx0, cy0 } = pendingStockGrab;
-      pendingStockGrab = null;
-      canvas.style.cursor = 'default';
-      try {
-        canvas.releasePointerCapture(e.pointerId);
-      } catch {}
-      if (pixelHit(cx0, cy0) != null) {
-        commitEntityTapSelection(cx0, cy0, {
-          shiftKey: e.shiftKey,
-          ctrlKey: e.ctrlKey,
-          metaKey: e.metaKey,
-        });
+
+    // The priority order of "which gesture is ending" lives in the pure
+    // reducer (lib/canvas/pointer-up.ts); this handler resolves each
+    // drag-state → pointerId match to a boolean and performs the side
+    // effects the intent names. Pointer-capture release is common to
+    // every branch, so it runs once after the switch.
+    const intent = reducePointerUp({
+      pinchMatches: pinch != null && (e.pointerId === pinch.idA || e.pointerId === pinch.idB),
+      pendingStockMatches: pendingStockGrab != null && e.pointerId === pendingStockGrab.pointerId,
+      stockDragMatches: stockDrag != null && e.pointerId === stockDrag.pointerId,
+      approachDragMatches: approachDrag != null && e.pointerId === approachDrag.pointerId,
+      rasterDragMatches: rasterDrag != null && e.pointerId === rasterDrag.pointerId,
+      textDragMatches: textDrag != null && e.pointerId === textDrag.pointerId,
+      panMatches: panDrag != null && e.pointerId === panDrag.pointerId,
+      boxSelectCommittable: boxSelect != null && !boxSelect.armed,
+    });
+
+    switch (intent.kind) {
+      case 'end-pinch':
+        // A finger leaving a pinch ends the gesture and drops any armed
+        // box-select so the remaining finger's lift is a no-op.
+        pinch = null;
+        boxSelect = null;
+        break;
+      case 'stock-tap': {
+        // A parked stock-handle press that never became a drag is a TAP
+        // (ivac-0rbu): only when geometry sits under the press point, fall
+        // through to normal object selection there — so the object under
+        // the handle gets selected (and tap-cycling can step through a
+        // stack). When nothing is under it we leave the selection
+        // untouched (a handle tap over empty stock stays a no-op — we
+        // don't clear the user's selection). A plain tap, so no box-select
+        // arming (the pointer is already up).
+        const { cx0, cy0 } = pendingStockGrab!;
+        pendingStockGrab = null;
+        canvas.style.cursor = 'default';
+        if (pixelHit(cx0, cy0) != null) {
+          commitEntityTapSelection(cx0, cy0, {
+            shiftKey: e.shiftKey,
+            ctrlKey: e.ctrlKey,
+            metaKey: e.metaKey,
+          });
+        }
+        break;
       }
-      return;
+      case 'end-stock-drag':
+        stockDrag = null;
+        canvas.style.cursor = 'default';
+        break;
+      case 'end-approach-drag':
+        approachDrag = null;
+        canvas.style.cursor = 'default';
+        approachPreview = null;
+        break;
+      case 'end-raster-drag':
+        rasterDrag = null;
+        canvas.style.cursor = 'default';
+        break;
+      case 'end-text-drag':
+        textDrag = null;
+        canvas.style.cursor = 'default';
+        // The 3D scene doesn't track text origin per-frame (it would mean
+        // a GPU rebuild on every move); nudge it once so it picks up the
+        // final dragged position via the draw-time translation.
+        forceTextPreviewRefresh();
+        break;
+      case 'end-pan':
+        panDrag = null;
+        canvas.style.cursor = 'default';
+        break;
+      case 'commit-box': {
+        // Commit the rubber-band selection. (An armed box that never
+        // crossed the threshold collapses to a plain "click on empty",
+        // already handled in onPointerDown's empty-hit branch.)
+        const { startX, startY, curX, curY, mode } = boxSelect!;
+        const ids = objectsInBox(startX, startY, curX, curY);
+        project.selectObjects(ids, mode);
+        boxSelect = null;
+        canvas.style.cursor = tabPlacementActive ? 'crosshair' : 'default';
+        break;
+      }
+      case 'clear-box':
+        boxSelect = null;
+        canvas.style.cursor = tabPlacementActive ? 'crosshair' : 'default';
+        break;
     }
-    // End an active stock-gizmo drag.
-    if (stockDrag && e.pointerId === stockDrag.pointerId) {
-      stockDrag = null;
-      canvas.style.cursor = 'default';
-      try {
-        canvas.releasePointerCapture(e.pointerId);
-      } catch {}
-      return;
-    }
-    // End an active approach-marker drag.
-    if (approachDrag && e.pointerId === approachDrag.pointerId) {
-      approachDrag = null;
-      canvas.style.cursor = 'default';
-      approachPreview = null;
-      try {
-        canvas.releasePointerCapture(e.pointerId);
-      } catch {}
-      return;
-    }
-    // End an active raster placement drag.
-    if (rasterDrag && e.pointerId === rasterDrag.pointerId) {
-      rasterDrag = null;
-      canvas.style.cursor = 'default';
-      try {
-        canvas.releasePointerCapture(e.pointerId);
-      } catch {}
-      return;
-    }
-    // End an active text-layer drag.
-    if (textDrag && e.pointerId === textDrag.pointerId) {
-      textDrag = null;
-      canvas.style.cursor = 'default';
-      // The 3D scene doesn't track text origin per-frame (it would mean a
-      // GPU rebuild on every move); nudge it once so it picks up the final
-      // dragged position via the draw-time translation.
-      forceTextPreviewRefresh();
-      try {
-        canvas.releasePointerCapture(e.pointerId);
-      } catch {}
-      return;
-    }
-    // End any active pan drag.
-    if (panDrag && e.pointerId === panDrag.pointerId) {
-      panDrag = null;
-      canvas.style.cursor = 'default';
-      try {
-        canvas.releasePointerCapture(e.pointerId);
-      } catch {}
-      return;
-    }
-    // Commit any pending box-select. A box-select that never crossed
-    // the threshold collapses to a plain "click on empty" — handled
-    // already in onPointerDown's empty-hit branch — so here we only
-    // act when we've committed to a box drag.
-    if (boxSelect && !boxSelect.armed) {
-      const { startX, startY, curX, curY, mode } = boxSelect;
-      const ids = objectsInBox(startX, startY, curX, curY);
-      project.selectObjects(ids, mode);
-    }
-    boxSelect = null;
-    canvas.style.cursor = tabPlacementActive ? 'crosshair' : 'default';
+
     try {
       canvas.releasePointerCapture(e.pointerId);
     } catch {
