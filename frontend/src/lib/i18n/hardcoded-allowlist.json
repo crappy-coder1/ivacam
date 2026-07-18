@@ -1,6 +1,6 @@
 {
   "lib/components/AddTextDialog.svelte": ["mm"],
-  "lib/components/EntityCanvas2D.svelte": ["mm"],
+  "lib/components/EntityContextMenu.svelte": ["mm"],
   "lib/components/GcodePanel.svelte": ["probe"],
   "lib/components/LayerList.svelte": ["mm"],
   "lib/components/MachineDialog.svelte": ["LinuxCNC", "mm", "mm, WCS", "mm/min", "mm/s²", "mm/s³"],

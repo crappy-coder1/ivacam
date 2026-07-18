@@ -62,7 +62,8 @@
     type OSnapCandidate,
     type OSnapTargets,
   } from '../canvas/osnap';
-  import OpKindPicker, { pickerLabel, type PickerKind } from './OpKindPicker.svelte';
+  import { pickerLabel, type PickerKind } from './OpKindPicker.svelte';
+  import EntityContextMenu from './EntityContextMenu.svelte';
   import { createOpFromSelection } from '../state/op_creation';
   import { layout } from '../state/layout.svelte';
   import { t } from '../i18n';
@@ -93,7 +94,6 @@
   /// selection don't repaint the (often huge) imported geometry layer.
   let canvasOverlay: HTMLCanvasElement;
   let container: HTMLDivElement;
-  import { clampPopup } from '../canvas/clamp-popup';
 
   /// Cached resolved theme colors. A bare
   /// `getComputedStyle(container).getPropertyValue(name)` on every
@@ -2165,114 +2165,19 @@
       {/if}
     </div>
   {/if}
-  {#if tabPopover}
-    {@const op = project.data.operations.find((o) => o.id === tabPopover!.opId)}
-    {@const placement = op && isContourOp(op) ? op.tabPlacements?.[tabPopover!.placementIdx] : null}
-    {#if op && isContourOp(op) && placement}
-      <div
-        class="tab-popover"
-        style:left={`${tabPopover.x}px`}
-        style:top={`${tabPopover.y}px`}
-        role="dialog"
-        use:clampPopup={tabPopover}
-      >
-        <div class="tab-popover-header">{t('canvas.tab_popover.header', { id: op.id })}</div>
-        <label class="tab-popover-row">
-          <span>{t('canvas.tab_popover.width')}</span>
-          <input
-            type="number"
-            step="0.5"
-            min="0.1"
-            placeholder={String(op.tabWidth ?? 10)}
-            value={placement.widthOverrideMm ?? ''}
-            oninput={(e) => {
-              const raw = (e.target as HTMLInputElement).value;
-              const v = raw === '' ? undefined : parseFloat(raw);
-              patchTabOverride(tabPopover!.opId, tabPopover!.placementIdx, {
-                widthOverrideMm: v === undefined || isNaN(v) ? undefined : v,
-              });
-            }}
-          />
-          <span class="unit">mm</span>
-        </label>
-        <label class="tab-popover-row">
-          <span>{t('canvas.tab_popover.height')}</span>
-          <input
-            type="number"
-            step="0.1"
-            min="0.1"
-            placeholder={String(op.tabHeight ?? 1)}
-            value={placement.heightOverrideMm ?? ''}
-            oninput={(e) => {
-              const raw = (e.target as HTMLInputElement).value;
-              const v = raw === '' ? undefined : parseFloat(raw);
-              patchTabOverride(tabPopover!.opId, tabPopover!.placementIdx, {
-                heightOverrideMm: v === undefined || isNaN(v) ? undefined : v,
-              });
-            }}
-          />
-          <span class="unit">mm</span>
-        </label>
-        <button
-          type="button"
-          class="tab-popover-delete"
-          onclick={() => deleteTabPlacement(tabPopover!.opId, tabPopover!.placementIdx)}
-          >{t('canvas.tab_popover.delete')}</button
-        >
-        <button
-          type="button"
-          class="tab-popover-close"
-          aria-label={t('common.close')}
-          onclick={closeTabPopover}>×</button
-        >
-      </div>
-    {/if}
-  {/if}
-  {#if ctxMenu}
-    {@const hasTextSelected = project.sel.selectedTextLayerId != null}
-    {@const hasObjsSelected = project.sel.selectedObjects.size > 0}
-    {#if !hasTextSelected && !hasObjsSelected}
-      <div
-        class="ctx-menu empty"
-        style:left={`${ctxMenu.x}px`}
-        style:top={`${ctxMenu.y}px`}
-        role="menu"
-        use:clampPopup={ctxMenu}
-      >
-        <p class="ctx-hint">
-          {t('canvas.ctx.empty_hint')}
-        </p>
-        <button type="button" onclick={closeCtxMenu}>{t('canvas.ctx.dismiss')}</button>
-      </div>
-    {:else}
-      <div
-        class="ctx-menu"
-        style:left={`${ctxMenu.x}px`}
-        style:top={`${ctxMenu.y}px`}
-        role="menu"
-        use:clampPopup={ctxMenu}
-      >
-        {#if hasTextSelected}
-          <div class="ctx-header">{t('canvas.ctx.text_layer')}</div>
-          <button
-            type="button"
-            class="ctx-item"
-            onclick={setTextOriginHere}
-            title={t('canvas.ctx.set_text_origin.title')}
-          >
-            {t('canvas.ctx.set_text_origin')}
-          </button>
-          {#if hasObjsSelected}
-            <div class="ctx-divider"></div>
-          {/if}
-        {/if}
-        {#if hasObjsSelected}
-          <div class="ctx-header">{t('canvas.ctx.new_op_from_selection')}</div>
-          <OpKindPicker onPick={pickFromCtx} />
-        {/if}
-      </div>
-    {/if}
-  {/if}
+  <EntityContextMenu
+    {ctxMenu}
+    {tabPopover}
+    operations={project.data.operations}
+    hasTextSelected={project.sel.selectedTextLayerId != null}
+    hasObjsSelected={project.sel.selectedObjects.size > 0}
+    onPatchTab={patchTabOverride}
+    onDeleteTab={deleteTabPlacement}
+    onCloseTabPopover={closeTabPopover}
+    onSetTextOrigin={setTextOriginHere}
+    onCloseMenu={closeCtxMenu}
+    onPick={pickFromCtx}
+  />
   <!-- Fit-to-view affordance mirroring Scene3D's .fit-btn.
        Doubleclick on empty space already resets, but that's undocumented
        — adding the button gives an obvious affordance and matches the 3D
@@ -2424,128 +2329,6 @@
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.02em;
-  }
-  .ctx-menu {
-    position: absolute;
-    min-width: 16rem;
-    max-width: 22rem;
-    background: var(--bg-panel);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    box-shadow: 0 6px 18px var(--shadow-modal);
-    z-index: var(--z-floating);
-    padding: 0.25rem;
-  }
-  .tab-popover {
-    position: absolute;
-    min-width: 11rem;
-    max-width: 14rem;
-    background: var(--bg-panel);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    box-shadow: 0 6px 18px var(--shadow-modal);
-    z-index: var(--z-floating);
-    padding: 0.55rem 0.6rem 0.5rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.35rem;
-    font-size: 0.78rem;
-  }
-  .tab-popover-header {
-    font-size: 0.7rem;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    margin-bottom: 0.2rem;
-  }
-  .tab-popover-row {
-    display: grid;
-    grid-template-columns: 3.5rem 1fr auto;
-    gap: 0.35rem;
-    align-items: center;
-  }
-  .tab-popover-row input {
-    width: 100%;
-    padding: 0.15rem 0.3rem;
-  }
-  .tab-popover-row .unit {
-    color: var(--text-muted);
-    font-size: 0.7rem;
-  }
-  .tab-popover-delete {
-    margin-top: 0.3rem;
-    background: transparent;
-    color: var(--danger);
-    border: 1px solid var(--danger);
-    border-radius: 3px;
-    padding: 0.25rem 0.5rem;
-    font-size: 0.72rem;
-    cursor: pointer;
-  }
-  .tab-popover-delete:hover {
-    background: color-mix(in srgb, var(--danger) 15%, transparent);
-  }
-  .tab-popover-close {
-    position: absolute;
-    top: 0.25rem;
-    right: 0.3rem;
-    background: transparent;
-    color: var(--text-muted);
-    border: 0;
-    font-size: 1rem;
-    cursor: pointer;
-    line-height: 1;
-    padding: 0 0.3rem;
-  }
-  .ctx-header {
-    font-size: 0.68rem;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    padding: 0.25rem 0.45rem 0.3rem;
-  }
-  .ctx-item {
-    background: transparent;
-    color: var(--text);
-    border: 0;
-    padding: 0.3rem 0.55rem;
-    font-size: 0.78rem;
-    text-align: left;
-    cursor: pointer;
-    border-radius: 3px;
-    margin: 0 0.2rem;
-  }
-  .ctx-item:hover {
-    background: color-mix(in srgb, var(--accent) 16%, transparent);
-  }
-  .ctx-divider {
-    height: 1px;
-    background: var(--border);
-    margin: 0.2rem 0.1rem;
-  }
-  .ctx-menu.empty {
-    padding: 0.4rem 0.55rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.35rem;
-    min-width: 14rem;
-  }
-  .ctx-hint {
-    margin: 0;
-    font-size: 0.78rem;
-    color: var(--text-muted);
-  }
-  .ctx-menu.empty button {
-    align-self: flex-end;
-    background: var(--bg-elevated);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 3px;
-    padding: 0.15rem 0.6rem;
-    font-size: 0.74rem;
-    cursor: pointer;
   }
   /* Fit-to-view button — visual twin of Scene3D's .fit-btn, sits to
      the LEFT of the help-btn so both float in the same top-right
