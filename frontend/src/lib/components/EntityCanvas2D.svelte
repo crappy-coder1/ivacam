@@ -1166,14 +1166,10 @@
     // popover BEFORE falling through to the op-picker context menu.
     const hit = findTabAtPixel(cx, cy);
     if (hit) {
-      // Clamp the popover anchor so it stays inside the canvas
-      // even when the user right-clicks near the right / bottom
-      // edge. Popover footprint ≈ 200×160 px.
-      const cw = container?.clientWidth ?? 800;
-      const ch = container?.clientHeight ?? 600;
-      const px = Math.max(8, Math.min(cx, cw - 200));
-      const py = Math.max(8, Math.min(cy, ch - 160));
-      tabPopover = { x: px, y: py, opId: hit.opId, placementIdx: hit.placementIdx };
+      // Anchor at the cursor; the `use:clampPopup` action (measure-based)
+      // keeps the popover inside the canvas once it mounts — no hardcoded
+      // footprint estimate needed (matches how `ctxMenu` anchors below).
+      tabPopover = { x: cx, y: cy, opId: hit.opId, placementIdx: hit.placementIdx };
       ctxMenu = null;
       return;
     }
