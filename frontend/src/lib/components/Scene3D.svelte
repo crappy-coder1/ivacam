@@ -755,6 +755,9 @@
     // solid sim never built, leaving only the wireframe).
     const imported = project.stockSizingImport;
     const generated = project.gen.generated;
+    // The back program of a two-sided (flip-stock) run drives the reflected
+    // dual-surface preview; `null` for the common single-sided job.
+    const generatedBack = project.gen.generatedBack;
     const firstOp = project.data.operations[0];
     const tool =
       project.data.tools.find((t) => t.id === (firstOp?.toolId ?? 0)) ?? project.data.tools[0];
@@ -811,7 +814,12 @@
           driver.build({
             imported,
             generated,
+            generatedBack,
             tool,
+            // Per-op tool resolver for the back program's segments (a two-sided
+            // run only). Undefined when single-sided, so the driver skips the
+            // back surface.
+            toolForSegBack: generatedBack ? toolForSegment(generatedBack.toolpath) : undefined,
             stock: project.data.stock,
             settings,
             fixtures: project.data.fixtures,
