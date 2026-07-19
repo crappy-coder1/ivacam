@@ -44,6 +44,8 @@ export type MsgKey =
   | "app.save.carved_stl_solid.title"
   | "app.save.close_menu"
   | "app.save.gcode"
+  | "app.save.gcode_back"
+  | "app.save.gcode_front"
   | "app.save.options"
   | "app.save.project"
   | "app.screen.close_menu"
@@ -223,6 +225,8 @@ export type MsgKey =
   | "genbar.chip.idle"
   | "genbar.chip.stale"
   | "genbar.chip.warnings"
+  | "genbar.download.back"
+  | "genbar.download.front"
   | "genbar.download.ngc"
   | "genbar.download.plt"
   | "genbar.download.stl_title"
@@ -478,6 +482,8 @@ export type MsgKey =
   | "menu.redo"
   | "menu.report"
   | "menu.save_gcode"
+  | "menu.save_gcode_back"
+  | "menu.save_gcode_front"
   | "menu.save_project"
   | "menu.save_stl"
   | "menu.show_regions"
@@ -1673,6 +1679,8 @@ export const MSG_KEYS: readonly MsgKey[] = [
   "app.save.carved_stl_solid.title",
   "app.save.close_menu",
   "app.save.gcode",
+  "app.save.gcode_back",
+  "app.save.gcode_front",
   "app.save.options",
   "app.save.project",
   "app.screen.close_menu",
@@ -1852,6 +1860,8 @@ export const MSG_KEYS: readonly MsgKey[] = [
   "genbar.chip.idle",
   "genbar.chip.stale",
   "genbar.chip.warnings",
+  "genbar.download.back",
+  "genbar.download.front",
   "genbar.download.ngc",
   "genbar.download.plt",
   "genbar.download.stl_title",
@@ -2107,6 +2117,8 @@ export const MSG_KEYS: readonly MsgKey[] = [
   "menu.redo",
   "menu.report",
   "menu.save_gcode",
+  "menu.save_gcode_back",
+  "menu.save_gcode_front",
   "menu.save_project",
   "menu.save_stl",
   "menu.show_regions",

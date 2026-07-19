@@ -14,7 +14,11 @@
   import { generateBus } from '../state/generate-bus.svelte';
   import { exportGeneratedGcode, exportSimulatedStockStl } from '../services/file_ops';
   import type { SimWarning, TimeEstimate } from '../api/types';
-  import { pipelineWarningSeverity, type PipelineWarning } from '../api/pipeline-warnings';
+  import {
+    pipelineWarningSeverity,
+    countCriticalPipelineWarnings,
+    type PipelineWarning,
+  } from '../api/pipeline-warnings';
   import { summarizeWarnings } from '../state/warnings-summary';
   import GenerateProgress from './GenerateProgress.svelte';
   import FloatingPanel from './FloatingPanel.svelte';
@@ -219,6 +223,21 @@
   let criticalCount = $derived(warningSummary.critical);
   let totalWarningCount = $derived(warningSummary.total);
 
+  // Two-sided run: `generatedBack` holds the flipped-stock program and the
+  // toolbar grows a second Download button. The back program carries its
+  // OWN pipeline warnings (the Rust core runs the full pipeline per side),
+  // so its download gate keys off those — but there is no heightfield sim
+  // for the back toolpath yet (that's the dual-surface preview, tracked
+  // separately), so unlike the front gate the back gate is pipeline-only.
+  const twoSided = $derived(project.gen.generatedBack != null);
+  const backWarnings = $derived(
+    (project.gen.generatedBack as { warnings?: PipelineWarning[] } | null)?.warnings ?? [],
+  );
+  const backCriticalCount = $derived(countCriticalPipelineWarnings(backWarnings));
+  const backWorkAreaCount = $derived(
+    backWarnings.filter((w) => w.kind === 'out_of_work_area').length,
+  );
+
   async function run() {
     if (!project.geometryView) return;
     // NOTE: Generate is deliberately NOT gated on `criticalCount`. The
@@ -321,7 +340,7 @@
     if (seq > 0 && project.gen.pipelineState === 'idle') void run();
   });
 
-  async function downloadGcode() {
+  async function downloadGcode(side: 'front' | 'back' = 'front') {
     // If the program we'd ship has critical warnings and the user hasn't
     // disabled the safety gate, refuse to write the file — a broken /
     // unsafe .ngc on a machine is the failure we're guarding against.
@@ -332,19 +351,23 @@
     // collisions / rapid-through-material. `criticalCount` aggregates
     // both, and simDiagnostics is cleared on every Generate (see
     // setGenerated) so it always reflects the toolpath being exported.
-    if (project.data.settings.blockOnCriticalSimWarnings && criticalCount > 0) {
-      project.setError(t('genbar.error.block_critical', { count: criticalCount }));
+    // The back program has no sim yet, so its gate is pipeline-only
+    // (backCriticalCount / backWorkAreaCount) — see the twoSided note above.
+    const critical = side === 'back' ? backCriticalCount : criticalCount;
+    const workArea = side === 'back' ? backWorkAreaCount : workAreaViolationCount;
+    if (project.data.settings.blockOnCriticalSimWarnings && critical > 0) {
+      project.setError(t('genbar.error.block_critical', { count: critical }));
       return;
     }
     // Tier-4: opt-in hard gate on out-of-work-area moves. Blocks EXPORT
     // only (Generate/preview stay open so the operator can see + fix the
     // violation). The toolpath leaves the machine envelope — sending it
     // risks a soft-limit fault or a gantry crash.
-    if (project.data.settings.blockOnWorkAreaViolation && workAreaViolationCount > 0) {
-      project.setError(t('genbar.error.block_work_area', { count: workAreaViolationCount }));
+    if (project.data.settings.blockOnWorkAreaViolation && workArea > 0) {
+      project.setError(t('genbar.error.block_work_area', { count: workArea }));
       return;
     }
-    await exportGeneratedGcode(post);
+    await exportGeneratedGcode(post, side);
   }
 
   function flyToWarning(w: SimWarning) {
@@ -442,9 +465,30 @@
     </button>
   {/if}
   {#if project.gen.generated}
-    <button onclick={downloadGcode} class="download" title={t('genbar.download.title')}>
-      {post === 'hpgl' ? t('genbar.download.plt') : t('genbar.download.ngc')}
-    </button>
+    {#if twoSided}
+      <button
+        onclick={() => void downloadGcode('front')}
+        class="download"
+        title={t('genbar.download.title')}
+      >
+        {t('genbar.download.front', { ext: post === 'hpgl' ? 'plt' : 'ngc' })}
+      </button>
+      <button
+        onclick={() => void downloadGcode('back')}
+        class="download"
+        title={t('genbar.download.title')}
+      >
+        {t('genbar.download.back', { ext: post === 'hpgl' ? 'plt' : 'ngc' })}
+      </button>
+    {:else}
+      <button
+        onclick={() => void downloadGcode()}
+        class="download"
+        title={t('genbar.download.title')}
+      >
+        {post === 'hpgl' ? t('genbar.download.plt') : t('genbar.download.ngc')}
+      </button>
+    {/if}
     <button
       onclick={() => void exportSimulatedStockStl()}
       class="download"

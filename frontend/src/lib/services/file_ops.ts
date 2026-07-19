@@ -614,18 +614,31 @@ export async function loadSample(url: string) {
   }
 }
 
-/// Export the current `project.gen.generated.gcode` to disk. Mirrors
-/// `saveProject` — native save dialog on Tauri, anchor-tag download in
-/// the browser. Filename suffix is .plt for HPGL output, .ngc otherwise.
+/// Export a generated program's `gcode` to disk. Mirrors `saveProject` —
+/// native save dialog on Tauri, anchor-tag download in the browser.
+/// Filename suffix is .plt for HPGL output, .ngc otherwise.
 /// `postProcessor` controls the suffix only; the gcode buffer is
-/// already post-processed by the time it lands in `project.gen.generated`.
+/// already post-processed by the time it lands in `project.gen`.
+///
+/// `side` picks which program of a two-sided run to write:
+///  - `'front'` (default): `project.gen.generated` — also the single-sided
+///    program, so single-sided callers need not pass a side.
+///  - `'back'`: `project.gen.generatedBack` — the flipped-stock program
+///    (null on a single-sided run, in which case this is a no-op).
+///
+/// A two-sided run writes two files, so both get a `-front`/`-back`
+/// filename suffix to keep them apart; single-sided exports stay
+/// unsuffixed for back-compat.
 export async function exportGeneratedGcode(
   postProcessor: 'linuxcnc' | 'grbl' | 'hpgl',
+  side: 'front' | 'back' = 'front',
 ): Promise<void> {
-  if (!project.gen.generated) return;
+  const gen = side === 'back' ? project.gen.generatedBack : project.gen.generated;
+  if (!gen) return;
+  const twoSided = project.gen.generatedBack != null;
   const base = project.transformedImport?.filename?.replace(/\.[^.]+$/, '') ?? 'output';
   const ext = postProcessor === 'hpgl' ? 'plt' : 'ngc';
-  const filename = `${base}.${ext}`;
+  const filename = `${base}${twoSided ? `-${side}` : ''}.${ext}`;
   if (isTauri()) {
     const { save } = await import('@tauri-apps/plugin-dialog');
     const { writeTextFile } = await import('@tauri-apps/plugin-fs');
@@ -635,14 +648,14 @@ export async function exportGeneratedGcode(
     });
     if (typeof path === 'string') {
       try {
-        await writeTextFile(path, project.gen.generated.gcode);
+        await writeTextFile(path, gen.gcode);
       } catch (e) {
         project.setError(`save: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
     return;
   }
-  const blob = new Blob([project.gen.generated.gcode], { type: 'text/plain' });
+  const blob = new Blob([gen.gcode], { type: 'text/plain' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;

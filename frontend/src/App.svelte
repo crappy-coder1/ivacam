@@ -868,18 +868,43 @@
                 >
                   {t('app.save.project')}
                 </button>
-                <button
-                  type="button"
-                  class="save-item"
-                  role="menuitem"
-                  disabled={!project.gen.generated}
-                  onclick={() => {
-                    closeSaveMenu();
-                    void exportGeneratedGcode(gcodeDialect);
-                  }}
-                >
-                  {t('app.save.gcode', { ext: gcodeDialect === 'hpgl' ? 'plt' : 'ngc' })}
-                </button>
+                {#if project.gen.generatedBack}
+                  <button
+                    type="button"
+                    class="save-item"
+                    role="menuitem"
+                    onclick={() => {
+                      closeSaveMenu();
+                      void exportGeneratedGcode(gcodeDialect, 'front');
+                    }}
+                  >
+                    {t('app.save.gcode_front', { ext: gcodeDialect === 'hpgl' ? 'plt' : 'ngc' })}
+                  </button>
+                  <button
+                    type="button"
+                    class="save-item"
+                    role="menuitem"
+                    onclick={() => {
+                      closeSaveMenu();
+                      void exportGeneratedGcode(gcodeDialect, 'back');
+                    }}
+                  >
+                    {t('app.save.gcode_back', { ext: gcodeDialect === 'hpgl' ? 'plt' : 'ngc' })}
+                  </button>
+                {:else}
+                  <button
+                    type="button"
+                    class="save-item"
+                    role="menuitem"
+                    disabled={!project.gen.generated}
+                    onclick={() => {
+                      closeSaveMenu();
+                      void exportGeneratedGcode(gcodeDialect);
+                    }}
+                  >
+                    {t('app.save.gcode', { ext: gcodeDialect === 'hpgl' ? 'plt' : 'ngc' })}
+                  </button>
+                {/if}
                 <button
                   type="button"
                   class="save-item"
@@ -921,11 +946,12 @@
           onOpenRecent={(path) => void openRecentProject(path)}
           onOpen={() => openAny()}
           onSaveProject={() => void saveProject()}
-          onSaveGcode={() => void exportGeneratedGcode(gcodeDialect)}
+          onSaveGcode={(side) => void exportGeneratedGcode(gcodeDialect, side)}
           onSaveStl={() => void exportSimulatedStockStl()}
           onReport={() => (reportOpen = true)}
           canSave={!!project.transformedImport}
           hasProgram={!!project.gen.generated}
+          twoSided={!!project.gen.generatedBack}
           loading={project.loading}
           gcodeExt={gcodeDialect === 'hpgl' ? '.plt' : '.ngc'}
           onExit={() => void exitApp()}

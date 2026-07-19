@@ -21,13 +21,16 @@
     /// buttons are used and these stay hidden.
     onOpen: () => void;
     onSaveProject: () => void;
-    onSaveGcode: () => void;
+    onSaveGcode: (side: 'front' | 'back') => void;
     onSaveStl: () => void;
     onReport: () => void;
     /// A project is loaded → Save is enabled.
     canSave: boolean;
     /// A program has been generated → G-code / STL export enabled.
     hasProgram: boolean;
+    /// A two-sided run generated both a front AND a back program → the
+    /// single G-code item splits into per-side Save entries.
+    twoSided: boolean;
     /// A load is in flight → disable Open.
     loading: boolean;
     /// G-code extension for the menu label (.ngc vs .plt).
@@ -44,6 +47,7 @@
     onReport,
     canSave,
     hasProgram,
+    twoSided,
     loading,
     gcodeExt,
     onExit,
@@ -117,15 +121,36 @@
         >
           <span>{t('menu.save_project')}</span>
         </button>
-        <button
-          type="button"
-          class="menu-item"
-          role="menuitem"
-          disabled={!hasProgram}
-          onclick={() => run(onSaveGcode)}
-        >
-          <span>{t('menu.save_gcode', { ext: gcodeExt })}</span>
-        </button>
+        {#if twoSided}
+          <button
+            type="button"
+            class="menu-item"
+            role="menuitem"
+            disabled={!hasProgram}
+            onclick={() => run(() => onSaveGcode('front'))}
+          >
+            <span>{t('menu.save_gcode_front', { ext: gcodeExt })}</span>
+          </button>
+          <button
+            type="button"
+            class="menu-item"
+            role="menuitem"
+            disabled={!hasProgram}
+            onclick={() => run(() => onSaveGcode('back'))}
+          >
+            <span>{t('menu.save_gcode_back', { ext: gcodeExt })}</span>
+          </button>
+        {:else}
+          <button
+            type="button"
+            class="menu-item"
+            role="menuitem"
+            disabled={!hasProgram}
+            onclick={() => run(() => onSaveGcode('front'))}
+          >
+            <span>{t('menu.save_gcode', { ext: gcodeExt })}</span>
+          </button>
+        {/if}
         <button
           type="button"
           class="menu-item"
