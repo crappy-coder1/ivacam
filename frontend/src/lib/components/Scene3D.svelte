@@ -13,6 +13,8 @@
   import { TabsBuilder } from '../scene3d/tabs';
   import { ApproachBuilder } from '../scene3d/approach';
   import { WarningMarkersBuilder } from '../scene3d/warning_markers';
+  import { ConflictMarkersBuilder } from '../scene3d/conflict_markers';
+  import type { ConflictMarker } from '../sim/two_sided_conflict';
   import { FixturesBuilder } from '../scene3d/fixtures';
   import { ToolGlyphBuilder } from '../scene3d/tool_glyph';
   import { ImportedGeometryBuilder } from '../scene3d/imported_geometry';
@@ -192,6 +194,9 @@
   /// Cache the inputs that trigger a sim rebuild (footprint or grid
   /// resolution change) so we don't tear it down for cosmetic changes.
   let lastSimKey = '';
+  /// Two-sided conflict markers from the last sim build (`driver`-computed).
+  /// Empty for a single-sided job; drives the conflict-marker builder effect.
+  let conflictMarkers = $state<ConflictMarker[]>([]);
   // Click vs. drag: OrbitControls owns pointermove so we only treat a
   // pointerup as a click when the user barely moved the cursor between
   // down and up. 3px / 400ms is the same threshold the 2D pane uses.
@@ -315,6 +320,7 @@
     tabsBuilder = new TabsBuilder(builderCtx, css);
     approachBuilder = new ApproachBuilder(builderCtx, css);
     warningMarkersBuilder = new WarningMarkersBuilder(builderCtx, css);
+    conflictMarkersBuilder = new ConflictMarkersBuilder(builderCtx, css);
     fixturesBuilder = new FixturesBuilder(builderCtx, css);
 
     // Defer the resize-driven fit() to the next animation frame.
@@ -431,6 +437,7 @@
     tabsBuilder?.dispose();
     approachBuilder?.dispose();
     warningMarkersBuilder?.dispose();
+    conflictMarkersBuilder?.dispose();
     fixturesBuilder?.dispose();
     // renderer.dispose() frees the GL context but does NOT walk the
     // scene graph, so each builder frees its own group's geometry/material
@@ -763,6 +770,9 @@
       project.data.tools.find((t) => t.id === (firstOp?.toolId ?? 0)) ?? project.data.tools[0];
     if (!imported || !generated || !tool) {
       driver?.setVisible(false);
+      // Nothing generated → no two-sided solid → drop any stale conflict
+      // diamonds so they don't float over an empty scene.
+      if (conflictMarkers.length > 0) conflictMarkers = [];
       requestRender();
       return;
     }
@@ -816,6 +826,9 @@
             generated,
             generatedBack,
             tool,
+            // Per-op tool resolver for the FRONT program — used only by the
+            // two-sided conflict pass (throwaway front carve to completion).
+            toolForSeg: toolForSegment(generated.toolpath),
             // Per-op tool resolver for the back program's segments (a two-sided
             // run only). Undefined when single-sided, so the driver skips the
             // back surface.
@@ -845,6 +858,9 @@
           // distance once the new pyramid exists, so the first paint
           // uses the affordable level instead of L0.
           updateHeightfieldLod();
+          // Publish any two-sided conflict clusters (empty single-sided) so
+          // the conflict-marker effect repaints the red diamonds.
+          conflictMarkers = driver.getTwoSidedConflicts();
           requestRender();
         })
         .catch((e) => {
@@ -940,6 +956,7 @@
   let tabsBuilder: TabsBuilder | undefined;
   let approachBuilder: ApproachBuilder | undefined;
   let warningMarkersBuilder: WarningMarkersBuilder | undefined;
+  let conflictMarkersBuilder: ConflictMarkersBuilder | undefined;
   let fixturesBuilder: FixturesBuilder | undefined;
   let toolGlyphBuilder: ToolGlyphBuilder | undefined;
   let importedBuilder: ImportedGeometryBuilder | undefined;
@@ -952,6 +969,17 @@
       toolpath: project.gen.generated?.toolpath,
       sceneRadius,
     });
+    requestRender();
+  });
+
+  // Two-sided conflict markers: red diamonds where the finished front and
+  // back carves overlap / cut clean through. `conflictMarkers` is refreshed
+  // by the sim-build effect from `driver.getTwoSidedConflicts()` (empty for
+  // a single-sided job), so this rebuilds only when a two-sided Generate
+  // changes the set.
+  $effect(() => {
+    void conflictMarkers;
+    conflictMarkersBuilder?.build({ markers: conflictMarkers, sceneRadius });
     requestRender();
   });
 

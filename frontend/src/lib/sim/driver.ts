@@ -16,6 +16,7 @@ import * as THREE from 'three';
 import { HeightfieldMeshPyramid, pickMinLodLevelForBudget } from './heightfield_mesh';
 import { UndercutMeshBuilder } from './undercut_mesh';
 import { midPlaneZ, backReflectionOffsetZ } from './dual_surface';
+import { detectTwoSidedConflicts, type ConflictMarker } from './two_sided_conflict';
 import { planAdvance, playheadToSegment } from './playhead';
 import { computeFootprint } from './footprint';
 import { isWasmTransport } from '../api/transport-mode';
@@ -302,6 +303,36 @@ export function getCurrentDriver(): HeightfieldDriver | null {
   return currentDriver;
 }
 
+/// Carve an entire program into `sim`, one contiguous per-tool run at a
+/// time. Ops are contiguous in the toolpath, so a single `advance` per run
+/// lets each op carve with its own cutter cross-section (a multi-op program
+/// mixes tool diameters). `toolWire` maps a segment index to its serialized
+/// tool. Shared by the back-surface build and the two-sided conflict pass.
+function carveProgramToCompletion(
+  sim: SimulatorWasm,
+  total: number,
+  toolForSeg: (segIdx: number) => ToolEntry,
+): void {
+  const wireCache = new Map<number, Record<string, unknown>>();
+  const wireFor = (i: number): Record<string, unknown> => {
+    const t = toolForSeg(i);
+    let w = wireCache.get(t.id);
+    if (!w) {
+      w = toWireTool(t);
+      wireCache.set(t.id, w);
+    }
+    return w;
+  };
+  let runStart = 0;
+  while (runStart < total) {
+    const runToolId = toolForSeg(runStart).id;
+    let runEnd = runStart + 1;
+    while (runEnd < total && toolForSeg(runEnd).id === runToolId) runEnd++;
+    sim.advance(wireFor(runStart), runStart, runEnd);
+    runStart = runEnd;
+  }
+}
+
 /// The second carved surface for a two-sided (flip-stock) preview: a back-side
 /// `Simulator` + `HeightfieldMeshPyramid` rendered in a group REFLECTED about
 /// the stock mid-plane so the back cuts read as the part underside (see
@@ -317,8 +348,9 @@ export function getCurrentDriver(): HeightfieldDriver | null {
 /// established "preview follows front side" contract). It uses a CONSTANT floor
 /// at the mid-plane; a cut that crosses the mid-plane shows a flat seam there,
 /// resolved by the per-column-floor fast-follow. No deviation overlay, undercut
-/// voids, or diagnostics on the back yet (conflict-cell markers are a
-/// documented follow-up).
+/// voids, or per-frame deviation overlay on the back yet. Two-sided
+/// conflict cells ARE surfaced — see `HeightfieldDriver.getTwoSidedConflicts`,
+/// which pairs this surface's finished heightfield against the front's.
 class BackSurface {
   /// Reflected container under the driver's group. `scale.z = −1` plus
   /// `position.z = 2·midPlane` realizes `worldZ = 2·midPlane − localZ`.
@@ -364,28 +396,10 @@ class BackSurface {
     // don't apply to it — carve against a bare table.
     sim.set_fixtures([]);
     sim.set_toolpath(input.backGenerated.toolpath);
-    // Carve the whole program in per-tool runs (ops are contiguous in the
-    // toolpath) so each segment carves with its own cutter — same split as the
-    // front driver's bulk advance.
-    const total = input.backGenerated.toolpath.length;
-    const wireCache = new Map<number, Record<string, unknown>>();
-    const wireFor = (i: number): Record<string, unknown> => {
-      const t = input.toolForSeg(i);
-      let w = wireCache.get(t.id);
-      if (!w) {
-        w = toWireTool(t);
-        wireCache.set(t.id, w);
-      }
-      return w;
-    };
-    let runStart = 0;
-    while (runStart < total) {
-      const runToolId = input.toolForSeg(runStart).id;
-      let runEnd = runStart + 1;
-      while (runEnd < total && input.toolForSeg(runEnd).id === runToolId) runEnd++;
-      sim.advance(wireFor(runStart), runStart, runEnd);
-      runStart = runEnd;
-    }
+    // Carve the whole program to completion in per-tool runs (same split as
+    // the front driver's bulk advance) — the back is a static "finished
+    // underside".
+    carveProgramToCompletion(sim, input.backGenerated.toolpath.length, input.toolForSeg);
 
     const simCols = sim.cols();
     const simRows = sim.rows();
@@ -420,6 +434,19 @@ class BackSurface {
     this.sim = sim;
     this.mesh = mesh;
     this.requestRender();
+  }
+
+  /// Snapshot of the fully-carved back heightfield as a JS-owned COPY (so
+  /// it survives WASM memory growth or this surface's teardown), plus its
+  /// grid dims. Same grid as the front build — the driver's two-sided
+  /// conflict pass pairs it against the finished front depths. Null before
+  /// `build()` / after `dispose()`.
+  finalHeights(): { heights: Float32Array; cols: number; rows: number } | null {
+    if (!this.sim) return null;
+    const cols = this.sim.cols();
+    const rows = this.sim.rows();
+    const live = new Float32Array(this.wasm.memory.buffer, this.sim.data_ptr(), cols * rows);
+    return { heights: live.slice(), cols, rows };
   }
 
   /// Keep the back mesh's LOD in step with the front's active level.
@@ -478,6 +505,10 @@ export class HeightfieldDriver {
   /// program rendered reflected as the part underside. `null` for the common
   /// single-sided job; created in `build()` when a back program is present.
   private back: BackSurface | null = null;
+  /// Two-sided conflict markers for the current build — columns where the
+  /// finished front and back carves overlap or cut clean through. Empty for
+  /// a single-sided job or before the first build. Recomputed by `build()`.
+  private conflicts: ConflictMarker[] = [];
   private wasm: WasmHandle | null = null;
   /// Physical stock floor (`topZ − thickness`) captured at build() — the
   /// implicit `lo` of an uncut column, needed to resolve non-undercut
@@ -584,6 +615,12 @@ export class HeightfieldDriver {
     /// mid-plane and a reflected back surface fills the bottom half.
     generatedBack?: GenerateResponse | null;
     tool: ToolEntry | null;
+    /// Resolves the cutting tool for each FRONT toolpath segment (by op).
+    /// Only consulted by the two-sided conflict pass (which carves a throwaway
+    /// front sim to completion); the playhead-driven front carve gets its own
+    /// resolver via `advanceTo`. Falls back to `tool` for every segment when
+    /// omitted (fine for a single-op front).
+    toolForSeg?: (segIdx: number) => ToolEntry;
     /// Resolves the cutting tool for each BACK toolpath segment (by op). Only
     /// consulted when `generatedBack` is present.
     toolForSegBack?: (segIdx: number) => ToolEntry;
@@ -708,6 +745,9 @@ export class HeightfieldDriver {
     this.partialT = 0;
     this.diagnostics = { warnings: [] };
     this.notifyDiagnostics();
+    // Cleared here so a single-sided rebuild drops any stale two-sided
+    // markers; the two-sided branch below recomputes them.
+    this.conflicts = [];
     // Match the void surfaces to the dense mesh's stock material so a
     // cavity reads as the same carved solid.
     this.undercut?.setStyle({
@@ -740,6 +780,77 @@ export class HeightfieldDriver {
       });
       // Scene3D calls setSolidVisible / setEdgesVisible right after build();
       // those fan to the back, so its visibility matches the front's.
+      // Flag columns where the finished front + back carves cross the stock.
+      this.conflicts = this.computeTwoSidedConflicts({
+        frontGenerated: input.generated,
+        frontToolForSeg: input.toolForSeg ?? (() => input.tool as ToolEntry),
+        fp,
+        cellSize: this.sim.cell_size(),
+        topZ: this.sim.top_z(),
+        thickness: stockThickness,
+      });
+    }
+  }
+
+  /// World-anchored two-sided conflict markers for the current build —
+  /// clusters of columns where the finished front carve and the reflected
+  /// back carve overlap or cut clean through. Empty for a single-sided job
+  /// or before the first build. Scene3D reads this right after `build()`.
+  getTwoSidedConflicts(): ConflictMarker[] {
+    return this.conflicts;
+  }
+
+  /// Detect two-sided conflicts by pairing the finished BACK heightfield
+  /// (already carved to completion in `this.back`) against a FINISHED front.
+  /// The live `this.sim` sits at the playhead, not the program end, so this
+  /// carves a THROWAWAY front sim to completion on the SAME grid + floor.
+  /// One extra full front carve per two-sided Generate (a rare, debounced
+  /// user action) — negligible next to generation itself.
+  private computeTwoSidedConflicts(p: {
+    frontGenerated: GenerateResponse;
+    frontToolForSeg: (segIdx: number) => ToolEntry;
+    fp: { minX: number; minY: number; maxX: number; maxY: number };
+    cellSize: number;
+    topZ: number;
+    thickness: number;
+  }): ConflictMarker[] {
+    if (!this.wasm || !this.back) return [];
+    const back = this.back.finalHeights();
+    if (!back) return [];
+    const stockBottomZ = p.topZ - p.thickness;
+    const sim = new this.wasm.Simulator(
+      p.fp.minX,
+      p.fp.minY,
+      p.fp.maxX,
+      p.fp.maxY,
+      p.cellSize,
+      p.topZ,
+      stockBottomZ,
+    );
+    try {
+      // The conflict is a property of the finished part, so the front's
+      // fixtures (a collision concern, not a material one) don't apply.
+      sim.set_fixtures([]);
+      sim.set_toolpath(p.frontGenerated.toolpath);
+      carveProgramToCompletion(sim, p.frontGenerated.toolpath.length, p.frontToolForSeg);
+      const cols = sim.cols();
+      const rows = sim.rows();
+      // Grid mismatch would misalign the two fields — bail rather than
+      // compare across incompatible layouts.
+      if (cols !== back.cols || rows !== back.rows) return [];
+      const live = new Float32Array(this.wasm.memory.buffer, sim.data_ptr(), cols * rows);
+      const frontFinal = live.slice();
+      return detectTwoSidedConflicts(frontFinal, back.heights, {
+        cols,
+        rows,
+        cellSize: sim.cell_size(),
+        originX: sim.origin_x(),
+        originY: sim.origin_y(),
+        topZ: sim.top_z(),
+        thickness: p.thickness,
+      });
+    } finally {
+      sim.free();
     }
   }
 
@@ -1207,6 +1318,7 @@ export class HeightfieldDriver {
       this.back.dispose();
       this.back = null;
     }
+    this.conflicts = [];
     // Drop any void geometry but keep the builder alive for the next
     // build() (it's created once in the constructor).
     this.undercut?.clear();
