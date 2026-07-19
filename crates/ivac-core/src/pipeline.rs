@@ -50,7 +50,10 @@ mod regions;
 mod selection;
 mod setup_resolver;
 mod tabs;
+mod two_sided_emit;
 mod warnings;
+
+pub use two_sided_emit::{run_pipeline_two_sided, TwoSidedResponse};
 
 // Re-export the op-source selection helpers so child modules can
 // keep doing `use super::ordered_selection;` etc. without caring that
