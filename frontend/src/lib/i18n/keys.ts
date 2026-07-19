@@ -212,6 +212,11 @@ export type MsgKey =
   | "gcode.silenced.title"
   | "gcode.stale"
   | "gcode.stale.title"
+  | "gcode.tab.back"
+  | "gcode.tab.front"
+  | "gcode.tab.readonly"
+  | "gcode.tab.readonly.title"
+  | "gcode.tab.title"
   | "genbar.chip.clean"
   | "genbar.chip.critical"
   | "genbar.chip.details_title"
@@ -1836,6 +1841,11 @@ export const MSG_KEYS: readonly MsgKey[] = [
   "gcode.silenced.title",
   "gcode.stale",
   "gcode.stale.title",
+  "gcode.tab.back",
+  "gcode.tab.front",
+  "gcode.tab.readonly",
+  "gcode.tab.readonly.title",
+  "gcode.tab.title",
   "genbar.chip.clean",
   "genbar.chip.critical",
   "genbar.chip.details_title",

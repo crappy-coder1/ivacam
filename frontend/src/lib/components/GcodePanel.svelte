@@ -37,10 +37,39 @@
   const DEFAULT_ROW_H = 16;
   const DEFAULT_CHAPTER_H = 30;
 
-  // Split the gcode lazily — only when the project's generated output
-  // changes — so scrolling a 5000-line program doesn't redo work.
-  const lines = $derived(project.gen.generated?.gcode.split('\n') ?? []);
-  const idx = $derived(project.gen.generated?.gcode_index ?? null);
+  /// Which stock face's program this panel is showing. Only meaningful
+  /// for a two-sided (flip-stock) run, where `generatedBack` is non-null.
+  /// The 3D preview + playhead still track the FRONT toolpath (dual-side
+  /// preview is separate work), so the Back tab is a read-only listing:
+  /// no active-line highlight and clicking a line is inert.
+  let activeSide = $state<'front' | 'back'>('front');
+  const twoSided = $derived(project.gen.generatedBack != null);
+
+  /// The generate response for the selected tab. Falls back to the front
+  /// program whenever there is no back program (single-sided run — the
+  /// common case), so that path is byte-for-byte unchanged.
+  const activeGen = $derived(
+    activeSide === 'back' && project.gen.generatedBack
+      ? project.gen.generatedBack
+      : project.gen.generated,
+  );
+
+  // Snap back to the Front tab if the back program disappears (e.g. the
+  // user re-Generates a now-single-sided job) so we never strand the UI
+  // on a hidden tab.
+  $effect(() => {
+    if (!twoSided && activeSide === 'back') activeSide = 'front';
+  });
+
+  // Per-side line counts for the tab badges — cheap, recomputed only
+  // when the respective program changes.
+  const frontLineCount = $derived(project.gen.generated?.gcode.split('\n').length ?? 0);
+  const backLineCount = $derived(project.gen.generatedBack?.gcode.split('\n').length ?? 0);
+
+  // Split the gcode lazily — only when the selected program changes — so
+  // scrolling a 5000-line program doesn't redo work.
+  const lines = $derived(activeGen?.gcode.split('\n') ?? []);
+  const idx = $derived(activeGen?.gcode_index ?? null);
 
   const chapters = $derived(parseGcodeChapters(lines, project.data.operations));
 
@@ -102,6 +131,9 @@
   // mapping goes via arc length so dense connectors don't blow past
   // the gcode-panel highlight faster than long boundary edges.
   const activeLine = $derived.by<number | null>(() => {
+    // The 3D preview + playhead follow the front toolpath, so there is no
+    // meaningful active line while the Back tab is showing.
+    if (activeSide === 'back') return null;
     const gen = project.gen.generated;
     if (!gen || gen.toolpath.length === 0 || !idx) return null;
     const total = gen.toolpath.length;
@@ -184,6 +216,9 @@
   });
 
   function jumpToLine(line: number) {
+    // Back-tab rows are a read-only listing — the front toolpath is what
+    // the 3D scene + playhead track, so there is nothing to jump to here.
+    if (activeSide === 'back') return;
     const gen = project.gen.generated;
     if (!gen || !idx) return;
     // 1-based → array index. Walk back to the nearest preceding line
@@ -248,79 +283,179 @@
   });
 </script>
 
-{#if project.gen.generated && project.gen.generated.gcode}
-  <div
-    class="gcode"
-    class:stale={project.data.dirty}
-    bind:this={host}
-    role="listbox"
-    aria-label={t('gcode.label')}
-    tabindex="0"
-    onkeydown={onPanelKey}
-    onscroll={onScroll}
-  >
-    {#if project.data.dirty}
-      <div class="stale-badge" title={t('gcode.stale.title')}>
-        ⚠ {t('gcode.stale')}
+{#if activeGen && activeGen.gcode}
+  <div class="gcode-panel">
+    {#if twoSided}
+      <!-- Two-sided (flip-stock) run: let the user inspect either face's
+           program. Single-sided runs render exactly as before (no bar). -->
+      <div class="gcode-tabs" role="group" aria-label={t('gcode.tab.title')}>
+        <button
+          type="button"
+          class:active={activeSide === 'front'}
+          aria-pressed={activeSide === 'front'}
+          title={t('gcode.tab.title')}
+          onclick={() => (activeSide = 'front')}
+        >
+          {t('gcode.tab.front')}
+          <span class="gcode-tab-badge">{frontLineCount}</span>
+        </button>
+        <button
+          type="button"
+          class:active={activeSide === 'back'}
+          aria-pressed={activeSide === 'back'}
+          title={t('gcode.tab.title')}
+          onclick={() => (activeSide = 'back')}
+        >
+          {t('gcode.tab.back')}
+          <span class="gcode-tab-badge">{backLineCount}</span>
+        </button>
+        {#if activeSide === 'back'}
+          <span class="gcode-tab-hint" title={t('gcode.tab.readonly.title')}
+            >{t('gcode.tab.readonly')}</span
+          >
+        {/if}
       </div>
     {/if}
-    <div class="gcode-inner">
-      <!-- Top spacer stands in for the rows scrolled above the window. -->
-      <div class="spacer" style:height="{win.padTop}px"></div>
-      {#each visibleLines as line (line)}
-        {@const i = line - 1}
-        {@const chIdx = lineChapter[i] ?? 0}
-        {@const ch = chapters[chIdx]}
-        {@const text = lines[i] ?? ''}
-        {#if chapterStart[i]}
-          <div class="chapter-head" data-chapter-idx={chIdx} class:disabled={ch.disabled}>
-            <span class="chapter-caret">▾</span>
-            <span class="chapter-name">{ch.name}</span>
-            {#if ch.disabled}
-              <span class="chapter-tag" title={t('gcode.silenced.title')}
-                >{t('gcode.silenced')}</span
-              >
-            {/if}
-          </div>
-        {/if}
-        <!-- svelte-ignore a11y_click_events_have_key_events -->
-        <!-- Keyboard support lives at the container (.gcode listbox);
-             each option is a -1 tabindex to keep the roving pattern. -->
-        <div
-          role="option"
-          tabindex="-1"
-          aria-selected={activeLine === line}
-          class="row"
-          class:active={activeLine === line}
-          class:focused={focusedLine === line}
-          class:silenced={ch?.disabled ?? false}
-          data-line={line}
-          onclick={() => jumpToLine(line)}
-        >
-          <span class="num">{line}</span>
-          <span class="text">{ch?.disabled && text.length > 0 ? '; ' + text : text}</span>
+    <div
+      class="gcode"
+      class:stale={project.data.dirty}
+      class:readonly={activeSide === 'back'}
+      bind:this={host}
+      role="listbox"
+      aria-label={t('gcode.label')}
+      tabindex="0"
+      onkeydown={onPanelKey}
+      onscroll={onScroll}
+    >
+      {#if project.data.dirty}
+        <div class="stale-badge" title={t('gcode.stale.title')}>
+          ⚠ {t('gcode.stale')}
         </div>
-      {/each}
-      <!-- Bottom spacer stands in for the rows below the window. -->
-      <div class="spacer" style:height="{win.padBottom}px"></div>
-    </div>
-    <!-- Off-screen probe: one header + one row whose measured heights
-         feed the windowing offsets. Never interactive, never read. -->
-    <div class="measure" aria-hidden="true" bind:this={probeEl}>
-      <div class="chapter-head">
-        <span class="chapter-caret">▾</span>
-        <span class="chapter-name">probe</span>
+      {/if}
+      <div class="gcode-inner">
+        <!-- Top spacer stands in for the rows scrolled above the window. -->
+        <div class="spacer" style:height="{win.padTop}px"></div>
+        {#each visibleLines as line (line)}
+          {@const i = line - 1}
+          {@const chIdx = lineChapter[i] ?? 0}
+          {@const ch = chapters[chIdx]}
+          {@const text = lines[i] ?? ''}
+          {#if chapterStart[i]}
+            <div class="chapter-head" data-chapter-idx={chIdx} class:disabled={ch.disabled}>
+              <span class="chapter-caret">▾</span>
+              <span class="chapter-name">{ch.name}</span>
+              {#if ch.disabled}
+                <span class="chapter-tag" title={t('gcode.silenced.title')}
+                  >{t('gcode.silenced')}</span
+                >
+              {/if}
+            </div>
+          {/if}
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- Keyboard support lives at the container (.gcode listbox);
+             each option is a -1 tabindex to keep the roving pattern. -->
+          <div
+            role="option"
+            tabindex="-1"
+            aria-selected={activeLine === line}
+            class="row"
+            class:active={activeLine === line}
+            class:focused={focusedLine === line}
+            class:silenced={ch?.disabled ?? false}
+            data-line={line}
+            onclick={() => jumpToLine(line)}
+          >
+            <span class="num">{line}</span>
+            <span class="text">{ch?.disabled && text.length > 0 ? '; ' + text : text}</span>
+          </div>
+        {/each}
+        <!-- Bottom spacer stands in for the rows below the window. -->
+        <div class="spacer" style:height="{win.padBottom}px"></div>
       </div>
-      <div class="row"><span class="num">0</span><span class="text">probe</span></div>
+      <!-- Off-screen probe: one header + one row whose measured heights
+         feed the windowing offsets. Never interactive, never read. -->
+      <div class="measure" aria-hidden="true" bind:this={probeEl}>
+        <div class="chapter-head">
+          <span class="chapter-caret">▾</span>
+          <span class="chapter-name">probe</span>
+        </div>
+        <div class="row"><span class="num">0</span><span class="text">probe</span></div>
+      </div>
     </div>
   </div>
 {/if}
 
 <style>
+  /* Column host: the (optional) Front/Back tab bar sits above the
+     scrolling code area, which flexes to fill the rest. */
+  .gcode-panel {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+  }
+  .gcode-tabs {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    flex: 0 0 auto;
+    padding: 0.25rem 0.4rem;
+    background: var(--bg-panel);
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    font-family: system-ui, sans-serif;
+  }
+  .gcode-tabs button {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: 0.72rem;
+    padding: 0.15rem 0.5rem;
+    cursor: pointer;
+  }
+  .gcode-tabs button:hover {
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+    color: var(--text);
+  }
+  .gcode-tabs button.active {
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+    border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+    color: var(--text-strong);
+    font-weight: 600;
+  }
+  .gcode-tab-badge {
+    font-size: 0.62rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-faint);
+    background: color-mix(in srgb, var(--text-muted) 14%, transparent);
+    border-radius: 999px;
+    padding: 0 0.35rem;
+    line-height: 1.4;
+  }
+  .gcode-tabs button.active .gcode-tab-badge {
+    color: var(--text);
+  }
+  .gcode-tab-hint {
+    margin-left: auto;
+    font-size: 0.65rem;
+    font-style: italic;
+    color: var(--text-muted);
+    padding-right: 0.3rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .gcode {
     position: relative; /* anchor stale-badge */
     width: 100%;
-    height: 100%;
+    flex: 1 1 auto;
+    min-height: 0;
     overflow: auto;
     background: var(--bg-input);
     border-top: 1px solid var(--border);
@@ -425,6 +560,14 @@
   }
   .row:hover {
     background: color-mix(in srgb, var(--accent) 10%, transparent);
+  }
+  /* Back tab is a read-only listing (the 3D preview + playhead track the
+     front toolpath), so its rows aren't click-to-jump targets. */
+  .gcode.readonly .row {
+    cursor: default;
+  }
+  .gcode.readonly .row:hover {
+    background: transparent;
   }
   .row.active {
     background: color-mix(in srgb, var(--accent) 30%, transparent);
