@@ -159,6 +159,135 @@ Tool libraries can also be saved separately as `.ivac-toolset.json`
 (`Tools ▸ Save toolset` / `Load toolset`), so the same library can be
 reused across projects.
 
+## Two-sided (flip-stock) machining
+
+Some parts need cutting from both faces: two-sided signs, joinery,
+pockets deeper than the stock is thick, or 3D-effect carving with a
+front and a back. ivaCAM handles this as **one project that emits two
+G-code programs** — you cut the front, flip the stock over once, and cut
+the back. The alignment between the two setups is the whole game, so the
+workflow is opinionated and automated around **dowel-pin registration**.
+
+### 1. Enable it and pick the flip axis
+
+In the **Stock** panel, turn on **Enable two-sided machining**. That
+seeds a sensible default registration: flip about **X**, two **6 mm**
+dowel holes inset **10 mm** from the edges.
+
+The **flip axis** is the single most error-prone choice in the whole
+workflow — get it wrong and the back cuts land mirrored the wrong way.
+Read the two options literally:
+
+| Choice                     | You turn the stock over about… | What mirrors        |
+| -------------------------- | ------------------------------- | ------------------- |
+| **Flip about X (mirror Y)** | a left–right line (parallel to X) | Y (front↔back edge) |
+| **Flip about Y (mirror X)** | a front–back line (parallel to Y) | X (left↔right edge) |
+
+The **flip direction preview** badge next to the setting shows which way
+the stock rolls, so you can match it to how you'll physically turn the
+material on the table.
+
+### 2. Dowel registration (automatic)
+
+Two dowel holes are the minimum for an unambiguous flip — one hole would
+let the stock pivot. ivaCAM auto-places them **on the flip-axis
+centre-line** (the line the mirror leaves untouched, so the same holes
+register both setups) and spreads them toward the two ends, inset by the
+**dowel inset** you set. You never type hole coordinates.
+
+- **Dowel diameter** — match your pins (6 mm is the hobby-CNC standard).
+- **Dowel holes** — count (2 is plenty for most parts; 3+ for large or
+  asymmetric stock).
+- **Dowel inset** — distance from the stock edge, kept in waste material
+  clear of the part envelope.
+
+The **front** program drills these holes (through the stock into your
+spoilboard, so a pin passes fully); the **back** program only references
+their positions in its header — it does not re-drill them.
+
+### 3. Tag each operation's side
+
+With two-sided mode on, every operation's properties panel gains a
+**Side** dropdown: **Front** (default) or **Back**. Back operations are
+mirrored about the flip axis and machined after you turn the stock over.
+
+Author a **back** op's cut depths **from the back face** — 0 is the back
+face, negative goes into the stock — exactly like a front op reads from
+the top face. ivaCAM emits those depths verbatim and tells the operator
+to re-zero Z after the flip, because real stock thickness varies by a
+few tenths and a physical re-zero is more reliable than a computed one.
+
+### 4. Preview and conflict checks
+
+Generate as usual. The 3D scene shows **one solid**: the front carve as
+the top surface and the mirrored back carve as the underside, stitched
+watertight. Two safety checks run automatically:
+
+- A front op that would cut **clean through** the stock is **refused** —
+  you can't flip and re-register a part you've already severed. Reduce
+  its depth, add holding tabs, or move the through-cut to the back
+  (last) side.
+- Where a front cut and a back cut **overlap** (they meet past the stock
+  thickness), red **conflict markers** appear at the collision and a
+  warning rides on the front program. Verify the through-feature is
+  intended before cutting.
+
+### 5. Two programs out
+
+A two-sided generate produces a **front** and a **back** program:
+
+- The **G-code panel** grows **Front / Back** tabs. (The back tab is a
+  read-only listing — the live 3D playhead tracks the front toolpath.)
+- The Generate bar shows **two** download buttons — **Front** and
+  **Back**, each in your post-processor's file extension — and `File ▸
+  Save G-code` gains matching *front* / *back* entries. Save both.
+
+Each program carries a header block that repeats the workflow so the
+operator at the machine doesn't need the app open.
+
+### 6. At the machine
+
+This is the physical routine the two programs are written for:
+
+1. **Run the front program first.** It drills the dowel holes, then cuts
+   the front. Do **not** unclamp the stock yet.
+2. **Drop the dowel pins in** the freshly drilled holes.
+3. **Flip the stock** about the axis named in the back program's header,
+   and seat it on the pins at the coordinates the header lists.
+4. **Re-zero Z** to the new top (the back face) — the header reminds you,
+   because the exact thickness matters here.
+5. **Run the back program.**
+
+### Worked example (desk-verified)
+
+A 60 × 40 × 10 mm two-sided sign — a 3 mm front pocket and a 2 mm back
+pocket, flip about X, two 6 mm dowels inset 2 mm — emits a front program
+that opens with:
+
+```gcode
+; ===== TWO-SIDED JOB: FRONT PROGRAM =====
+; Run this program FIRST.
+; Drills 2 dowel registration hole(s) — leave the pins in for the back program.
+; Do NOT unclamp the stock until the back program is set up.
+```
+
+drills the two dowels on the y = 20 centre-line (`G83 X2 Y20 …` /
+`G83 X58 …`, deep enough for the drill tip to break through), then cuts
+the front pocket. The back program opens with:
+
+```gcode
+; ===== TWO-SIDED JOB: BACK PROGRAM =====
+; 1. FLIP the stock about the X axis.
+; 2. Seat the stock on the dowel pins at: (2.00, 20.00), (58.00, 20.00).
+; 3. RE-ZERO Z to the new top (back) face before running — stock thickness varies.
+```
+
+and cuts the back pocket mirrored into the far half of the stock
+(Y 23–37 where the front pocket sat at Y 3–17), at depths measured from
+the back face. Both programs' preambles are the standard LinuxCNC / GRBL
+`G21 G90 G54 G17 G40 G94` block; the dowel peck cycle closes with `G80`
+before the tool change — safe to run on either controller.
+
 ## Troubleshooting
 
 | Symptom                                      | First thing to check                                                                                           |
