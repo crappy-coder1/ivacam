@@ -499,6 +499,9 @@ export type MsgKey =
   | "oplist.empty.sub"
   | "oplist.empty.title"
   | "oplist.expand.title"
+  | "oplist.filter.all"
+  | "oplist.filter.empty"
+  | "oplist.filter.title"
   | "oplist.grip.title"
   | "oplist.group_by_tool"
   | "oplist.group_by_tool.title"
@@ -507,6 +510,9 @@ export type MsgKey =
   | "oplist.repick.layers_suffix"
   | "oplist.repick.title_empty"
   | "oplist.repick.title_ready"
+  | "oplist.side.back"
+  | "oplist.side.count.title"
+  | "oplist.side.front"
   | "oplist.status.cycle_marker"
   | "oplist.status.dirty"
   | "oplist.status.gcode_include"
@@ -2117,6 +2123,9 @@ export const MSG_KEYS: readonly MsgKey[] = [
   "oplist.empty.sub",
   "oplist.empty.title",
   "oplist.expand.title",
+  "oplist.filter.all",
+  "oplist.filter.empty",
+  "oplist.filter.title",
   "oplist.grip.title",
   "oplist.group_by_tool",
   "oplist.group_by_tool.title",
@@ -2125,6 +2134,9 @@ export const MSG_KEYS: readonly MsgKey[] = [
   "oplist.repick.layers_suffix",
   "oplist.repick.title_empty",
   "oplist.repick.title_ready",
+  "oplist.side.back",
+  "oplist.side.count.title",
+  "oplist.side.front",
   "oplist.status.cycle_marker",
   "oplist.status.dirty",
   "oplist.status.gcode_include",

@@ -16,7 +16,7 @@
     pickerHelp,
     type PickerKind,
   } from './OpKindPicker.svelte';
-  import { t } from '../i18n';
+  import { t, type MsgKey } from '../i18n';
   import { warningMessage } from './warning-display';
 
   interface Props {
@@ -30,6 +30,38 @@
   let pickerOpen = $state(false);
   let dragId = $state<number | null>(null);
   let dragOverId = $state<number | null>(null);
+
+  /// Two-sided (flip-stock) view state. When the stock carries a flip
+  /// registration the flat list is partitioned into Front / Back sections
+  /// (matching how the two-sided emit `.retain`s ops per face and runs one
+  /// program each), with an All/Front/Back filter chip. Single-sided
+  /// projects — the common case — see none of this: `twoSided` is false so
+  /// the list renders exactly as before.
+  type SideFilter = 'all' | 'front' | 'back';
+  let sideFilter = $state<SideFilter>('all');
+  const SIDE_FILTERS: { value: SideFilter; labelKey: MsgKey }[] = [
+    { value: 'all', labelKey: 'oplist.filter.all' },
+    { value: 'front', labelKey: 'oplist.side.front' },
+    { value: 'back', labelKey: 'oplist.side.back' },
+  ];
+  /// Front is stored as `undefined` (the wire omits it), so anything not
+  /// explicitly 'back' reads as front.
+  function opSide(op: OpEntry): 'front' | 'back' {
+    return op.side === 'back' ? 'back' : 'front';
+  }
+  const twoSided = $derived(project.data.stock.flip != null);
+  const frontOps = $derived(project.data.operations.filter((o) => opSide(o) === 'front'));
+  const backOps = $derived(project.data.operations.filter((o) => opSide(o) === 'back'));
+  /// The ops actually rendered (and navigated by the keyboard), in display
+  /// order. Single-sided: raw program order. Two-sided: front group then
+  /// back group, honouring the active filter chip. Reorder still targets the
+  /// GLOBAL array by op id, so grouping never corrupts program order.
+  const visibleOps = $derived.by(() => {
+    if (!twoSided) return project.data.operations;
+    if (sideFilter === 'front') return frontOps;
+    if (sideFilter === 'back') return backOps;
+    return [...frontOps, ...backOps];
+  });
 
   function toolName(toolId: number): string {
     const tool = project.data.tools.find((x) => x.id === toolId);
@@ -282,7 +314,9 @@
   /// drag-grip's mouse-only counterpart). Roving tabindex
   /// on each row: only the selected op is in the tab order.
   function onListKey(e: KeyboardEvent) {
-    const ops = project.data.operations;
+    // Navigate/reorder over the VISIBLE ops (respects the two-sided
+    // grouping + filter). Single-sided this is just project.data.operations.
+    const ops = visibleOps;
     if (ops.length === 0) return;
     const curIdx = Math.max(
       0,
@@ -295,8 +329,14 @@
       const dir = e.key === 'ArrowDown' ? 1 : -1;
       const dest = Math.max(0, Math.min(ops.length - 1, curIdx + dir));
       if (dest !== curIdx) {
-        project.reorderOperation(ops[curIdx].id, dest);
-        e.preventDefault();
+        // Move to the GLOBAL array slot of the adjacent visible op, so
+        // "move down" swaps with the neighbour the user actually sees even
+        // when grouping/filtering reorders the display away from raw order.
+        const globalDest = project.data.operations.findIndex((o) => o.id === ops[dest].id);
+        if (globalDest >= 0) {
+          project.reorderOperation(ops[curIdx].id, globalDest);
+          e.preventDefault();
+        }
       }
       return;
     }
@@ -384,6 +424,150 @@
       </label>
     {/if}
 
+    <!-- One op row, factored into a snippet so both the flat (single-sided)
+         list and the two-sided Front/Back grouping render identical rows. -->
+    {#snippet opRow(op: OpEntry)}
+      {@const status = statusFor(op)}
+      {@const selected = project.sel.selectedOpId === op.id}
+      {@const dragOver = dragOverId === op.id}
+      {@const orphans = orphansFor(op)}
+      {@const hasOrphans = orphans.objectIds.length > 0 || orphans.layers.length > 0}
+      <li
+        class:selected
+        class:drag-over={dragOver}
+        class:op-disabled={!op.enabled}
+        data-op-row-id={op.id}
+      >
+        <div
+          class="row"
+          ondragover={(e) => onDragOver(e, op.id)}
+          ondrop={(e) => onDrop(e, op.id)}
+          onclick={() => selectOp(op.id)}
+          onkeydown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') selectOp(op.id);
+          }}
+          role="option"
+          tabindex={selected ? 0 : -1}
+          aria-selected={selected}
+        >
+          <span
+            class="grip"
+            draggable="true"
+            ondragstart={(e) => onDragStart(e, op.id)}
+            ondragend={onDragEnd}
+            title={t('oplist.grip.title')}
+            aria-hidden="true">⋮⋮</span
+          >
+          <input
+            type="checkbox"
+            checked={op.enabled}
+            onclick={(e) => e.stopPropagation()}
+            onchange={(e) =>
+              project.updateOperation(op.id, {
+                enabled: (e.currentTarget as HTMLInputElement).checked,
+              })}
+          />
+          <span class="caret" aria-hidden="true">{selected ? '▾' : '▸'}</span>
+          <span
+            class="ico"
+            title={`${kindLabel(op.kind)} — ${pickerHelp(op.kind)}`}
+            aria-label={`${kindLabel(op.kind)} — ${pickerHelp(op.kind)}`}
+            style:color={op.kind === 'pause' ? null : opSourceCss(op.id, selected)}
+            >{KIND_ICON[op.kind]}</span
+          >
+          <span class="name">{op.name}</span>
+          <span class="tool"
+            >{#if isProgramOnlyOp(op.kind)}
+              <!-- Program-only ops carry no cutter. Render
+                       a dash with the kind label so the row reads as
+                       a deliberate program-flow building block instead
+                       of an unconfigured cutting op. -->
+              — {kindLabel(op.kind).toLowerCase()} —
+            {:else}
+              {toolName(op.toolId)}
+            {/if}</span
+          >
+          {#if opHasPanelWarning(op)}
+            <button
+              type="button"
+              class="status {status.tone} status-btn"
+              use:longpressTooltip
+              title={t('oplist.status_btn.title', { reason: status.reason })}
+              aria-label={t('oplist.status_btn.aria', { name: op.name })}
+              onclick={(e) => {
+                e.stopPropagation();
+                warningFocus.focus(op.id);
+              }}>{status.label}</button
+            >
+          {:else}
+            <span class="status {status.tone}" title={status.reason}>{status.label}</span>
+          {/if}
+          {#if hasOrphans}
+            <button
+              class="repick"
+              disabled={project.sel.selectedObjects.size === 0}
+              onclick={(e) => {
+                e.stopPropagation();
+                repickFromSelection(op.id);
+              }}
+              title={project.sel.selectedObjects.size === 0
+                ? t('oplist.repick.title_empty', {
+                    objects: orphans.objectIds.length,
+                    layers: orphans.layers.length
+                      ? t('oplist.repick.layers_suffix', { count: orphans.layers.length })
+                      : '',
+                  })
+                : t('oplist.repick.title_ready', { count: project.sel.selectedObjects.size })}
+              aria-label={t('oplist.repick.aria', { name: op.name })}
+            >
+              {t('oplist.repick')}
+            </button>
+          {/if}
+          <button
+            class="dup"
+            use:longpressTooltip
+            onclick={(e) => {
+              e.stopPropagation();
+              project.duplicateOperation(op.id);
+            }}
+            title={t('oplist.duplicate.title')}
+            aria-label={t('oplist.duplicate.aria', { name: op.name })}>⎘</button
+          >
+          <button
+            class="del"
+            use:longpressTooltip
+            onclick={(e) => {
+              e.stopPropagation();
+              project.removeOperation(op.id);
+            }}
+            title={t('oplist.delete.title')}
+            aria-label={t('oplist.delete.aria', { name: op.name })}>×</button
+          >
+        </div>
+        {#if selected}
+          <div class="props">
+            <OpPropertiesPanel embedded />
+          </div>
+        {/if}
+      </li>
+    {/snippet}
+
+    {#if twoSided && project.data.operations.length > 0}
+      <!-- Stock-face filter chips (All / Front / Back). Only shown for
+           two-sided jobs; single-sided projects never see them. -->
+      <div class="side-filter" role="group" aria-label={t('oplist.filter.title')}>
+        {#each SIDE_FILTERS as f (f.value)}
+          <button
+            type="button"
+            class:active={sideFilter === f.value}
+            aria-pressed={sideFilter === f.value}
+            title={t('oplist.filter.title')}
+            onclick={() => (sideFilter = f.value)}>{t(f.labelKey)}</button
+          >
+        {/each}
+      </div>
+    {/if}
+
     {#if project.data.operations.length === 0}
       <div class="empty-card">
         <p class="empty-title">{t('oplist.empty.title')}</p>
@@ -394,131 +578,25 @@
       </div>
     {:else}
       <ul role="listbox" class="ops-list" tabindex="-1" onkeydown={onListKey}>
-        {#each project.data.operations as op (op.id)}
-          {@const status = statusFor(op)}
-          {@const selected = project.sel.selectedOpId === op.id}
-          {@const dragOver = dragOverId === op.id}
-          {@const orphans = orphansFor(op)}
-          {@const hasOrphans = orphans.objectIds.length > 0 || orphans.layers.length > 0}
-          <li
-            class:selected
-            class:drag-over={dragOver}
-            class:op-disabled={!op.enabled}
-            data-op-row-id={op.id}
-          >
-            <div
-              class="row"
-              ondragover={(e) => onDragOver(e, op.id)}
-              ondrop={(e) => onDrop(e, op.id)}
-              onclick={() => selectOp(op.id)}
-              onkeydown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') selectOp(op.id);
-              }}
-              role="option"
-              tabindex={selected ? 0 : -1}
-              aria-selected={selected}
-            >
-              <span
-                class="grip"
-                draggable="true"
-                ondragstart={(e) => onDragStart(e, op.id)}
-                ondragend={onDragEnd}
-                title={t('oplist.grip.title')}
-                aria-hidden="true">⋮⋮</span
+        {#each visibleOps as op, i (op.id)}
+          <!-- Front/Back section header: rendered when the side changes as we
+               scan the display list. Two-sided jobs only. -->
+          {#if twoSided && (i === 0 || opSide(visibleOps[i - 1]) !== opSide(op))}
+            {@const side = opSide(op)}
+            <li class="side-head" role="presentation">
+              <span class="side-name"
+                >{side === 'back' ? t('oplist.side.back') : t('oplist.side.front')}</span
               >
-              <input
-                type="checkbox"
-                checked={op.enabled}
-                onclick={(e) => e.stopPropagation()}
-                onchange={(e) =>
-                  project.updateOperation(op.id, {
-                    enabled: (e.currentTarget as HTMLInputElement).checked,
-                  })}
-              />
-              <span class="caret" aria-hidden="true">{selected ? '▾' : '▸'}</span>
-              <span
-                class="ico"
-                title={`${kindLabel(op.kind)} — ${pickerHelp(op.kind)}`}
-                aria-label={`${kindLabel(op.kind)} — ${pickerHelp(op.kind)}`}
-                style:color={op.kind === 'pause' ? null : opSourceCss(op.id, selected)}
-                >{KIND_ICON[op.kind]}</span
+              <span class="side-badge" title={t('oplist.side.count.title')}
+                >{side === 'back' ? backOps.length : frontOps.length}</span
               >
-              <span class="name">{op.name}</span>
-              <span class="tool"
-                >{#if isProgramOnlyOp(op.kind)}
-                  <!-- Program-only ops carry no cutter. Render
-                       a dash with the kind label so the row reads as
-                       a deliberate program-flow building block instead
-                       of an unconfigured cutting op. -->
-                  — {kindLabel(op.kind).toLowerCase()} —
-                {:else}
-                  {toolName(op.toolId)}
-                {/if}</span
-              >
-              {#if opHasPanelWarning(op)}
-                <button
-                  type="button"
-                  class="status {status.tone} status-btn"
-                  use:longpressTooltip
-                  title={t('oplist.status_btn.title', { reason: status.reason })}
-                  aria-label={t('oplist.status_btn.aria', { name: op.name })}
-                  onclick={(e) => {
-                    e.stopPropagation();
-                    warningFocus.focus(op.id);
-                  }}>{status.label}</button
-                >
-              {:else}
-                <span class="status {status.tone}" title={status.reason}>{status.label}</span>
-              {/if}
-              {#if hasOrphans}
-                <button
-                  class="repick"
-                  disabled={project.sel.selectedObjects.size === 0}
-                  onclick={(e) => {
-                    e.stopPropagation();
-                    repickFromSelection(op.id);
-                  }}
-                  title={project.sel.selectedObjects.size === 0
-                    ? t('oplist.repick.title_empty', {
-                        objects: orphans.objectIds.length,
-                        layers: orphans.layers.length
-                          ? t('oplist.repick.layers_suffix', { count: orphans.layers.length })
-                          : '',
-                      })
-                    : t('oplist.repick.title_ready', { count: project.sel.selectedObjects.size })}
-                  aria-label={t('oplist.repick.aria', { name: op.name })}
-                >
-                  {t('oplist.repick')}
-                </button>
-              {/if}
-              <button
-                class="dup"
-                use:longpressTooltip
-                onclick={(e) => {
-                  e.stopPropagation();
-                  project.duplicateOperation(op.id);
-                }}
-                title={t('oplist.duplicate.title')}
-                aria-label={t('oplist.duplicate.aria', { name: op.name })}>⎘</button
-              >
-              <button
-                class="del"
-                use:longpressTooltip
-                onclick={(e) => {
-                  e.stopPropagation();
-                  project.removeOperation(op.id);
-                }}
-                title={t('oplist.delete.title')}
-                aria-label={t('oplist.delete.aria', { name: op.name })}>×</button
-              >
-            </div>
-            {#if selected}
-              <div class="props">
-                <OpPropertiesPanel embedded />
-              </div>
-            {/if}
-          </li>
+            </li>
+          {/if}
+          {@render opRow(op)}
         {/each}
+        {#if visibleOps.length === 0}
+          <li class="side-empty" role="presentation">{t('oplist.filter.empty')}</li>
+        {/if}
       </ul>
     {/if}
   {/if}
@@ -538,6 +616,65 @@
   }
   .group-by-tool input {
     margin: 0;
+  }
+  /* Two-sided (flip-stock) face controls. Rendered only when the stock
+     carries a flip registration — single-sided projects never see them. */
+  .side-filter {
+    display: inline-flex;
+    gap: 0.3rem;
+    margin: 0 0 0.5rem;
+  }
+  .side-filter button {
+    background: var(--bg-elevated);
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    border-radius: 1rem;
+    padding: 0.1rem 0.6rem;
+    font-size: 0.72rem;
+    line-height: 1.5;
+    cursor: pointer;
+  }
+  .side-filter button:hover {
+    color: var(--text);
+    border-color: var(--accent);
+  }
+  .side-filter button.active {
+    background: color-mix(in srgb, var(--accent) 16%, var(--bg-elevated));
+    border-color: var(--accent);
+    color: var(--text-strong);
+    font-weight: 600;
+  }
+  /* Front/Back section header between runs of same-side ops. */
+  .side-head {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin: 0.35rem 0 0.1rem;
+    padding: 0 0.15rem;
+    font-size: 0.68rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+  }
+  .side-head:first-child {
+    margin-top: 0;
+  }
+  .side-badge {
+    font-size: 0.66rem;
+    font-weight: 600;
+    padding: 0 0.3rem;
+    background: var(--bg-app);
+    color: var(--text-muted);
+    border-radius: 10px;
+    line-height: 1.5;
+  }
+  /* Shown when a face filter hides every op (e.g. no back ops yet). */
+  .side-empty {
+    padding: 0.5rem 0.3rem;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    font-style: italic;
   }
   .ops {
     width: 100%;
