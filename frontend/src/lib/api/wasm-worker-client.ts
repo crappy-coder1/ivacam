@@ -15,6 +15,7 @@ import { CancelledError, type PipelineEvent, type ProgressEvent, type WiacClient
 import type {
   GenerateRequest,
   GenerateResponse,
+  TwoSidedGenerateResponse,
   HelixRadiusRequest,
   HelixRadiusResponse,
   ImportResponse,
@@ -197,6 +198,10 @@ export class WasmWorkerClient implements WiacClient {
 
   generate(request: GenerateRequest): Promise<GenerateResponse> {
     return this.call('generate', [request]);
+  }
+
+  generateTwoSided(request: GenerateRequest): Promise<TwoSidedGenerateResponse> {
+    return this.call('generateTwoSided', [request]);
   }
 
   async generateStream(

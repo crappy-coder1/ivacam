@@ -5,6 +5,7 @@ import { CancelledError, type PipelineEvent, type ProgressEvent, type WiacClient
 import type {
   GenerateRequest,
   GenerateResponse,
+  TwoSidedGenerateResponse,
   HelixRadiusRequest,
   HelixRadiusResponse,
   ImportResponse,
@@ -84,6 +85,16 @@ export class HttpWiacClient implements WiacClient {
     });
     if (!res.ok) await throwHttpError('/generate', res);
     return (await res.json()) as GenerateResponse;
+  }
+
+  async generateTwoSided(request: GenerateRequest): Promise<TwoSidedGenerateResponse> {
+    const res = await fetch(`${this.base}/generate/two-sided`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    if (!res.ok) await throwHttpError('/generate/two-sided', res);
+    return (await res.json()) as TwoSidedGenerateResponse;
   }
 
   async renderText(request: RenderTextRequest): Promise<RenderTextResponse> {
@@ -426,6 +437,12 @@ class WasmClientLazy {
         ensure().then((c) =>
           c.generateStreaming ? c.generateStreaming(req, onEvent, signal) : c.generate(req),
         ),
+      generateTwoSided: (req) =>
+        ensure().then((c) =>
+          c.generateTwoSided
+            ? c.generateTwoSided(req)
+            : Promise.reject(new Error('two-sided generation not supported by this transport')),
+        ),
       renderText: (req) => ensure().then((c) => c.renderText(req)),
       renderTextLayer: (layer) => ensure().then((c) => c.renderTextLayer(layer)),
       computeHelixRadius: (req) => ensure().then((c) => c.computeHelixRadius(req)),
@@ -461,6 +478,12 @@ class TauriClientLazy {
       generateStreaming: (req, onEvent, signal) =>
         ensure().then((c) =>
           c.generateStreaming ? c.generateStreaming(req, onEvent, signal) : c.generate(req),
+        ),
+      generateTwoSided: (req) =>
+        ensure().then((c) =>
+          c.generateTwoSided
+            ? c.generateTwoSided(req)
+            : Promise.reject(new Error('two-sided generation not supported by this transport')),
         ),
       renderText: (req) => ensure().then((c) => c.renderText(req)),
       renderTextLayer: (layer) => ensure().then((c) => c.renderTextLayer(layer)),

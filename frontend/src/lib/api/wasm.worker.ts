@@ -80,6 +80,11 @@ ctx.onmessage = async (e: MessageEvent<WorkerRequest>) => {
       case 'generate':
         post({ id, type: 'result', value: m.generate(args[0] as GenerateRequest) });
         break;
+      case 'generateTwoSided': {
+        if (!m.generateTwoSided) throw new Error('this wasm build predates two-sided generation');
+        post({ id, type: 'result', value: m.generateTwoSided(args[0] as GenerateRequest) });
+        break;
+      }
       case 'generateStreaming': {
         const req = args[0] as GenerateRequest;
         if (m.generateStreaming) {

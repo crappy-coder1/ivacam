@@ -14,6 +14,11 @@ export type VersionResponse = components['schemas']['VersionResponse'];
 export type HealthResponse = components['schemas']['HealthResponse'];
 export type GenerateRequest = components['schemas']['GenerateRequest'];
 export type GenerateResponse = components['schemas']['GenerateResponse'];
+/// One program from a two-sided run. Field-identical to `GenerateResponse`.
+export type PipelineResponse = components['schemas']['PipelineResponse'];
+/// Result of a two-sided (flip-stock) generate: `{ front, back? }`. `back` is
+/// present only for a genuine two-sided job (mirrored geometry + flip header).
+export type TwoSidedGenerateResponse = components['schemas']['TwoSidedGenerateResponse'];
 export type RegionPreview = components['schemas']['RegionPreview'];
 export type PipelineWarning = components['schemas']['PipelineWarning'];
 export type ToolpathSegment = components['schemas']['ToolpathSegment'];

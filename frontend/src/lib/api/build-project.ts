@@ -722,6 +722,9 @@ function buildOp(opIn: OpEntry, machine: MachineSettings): WireOp {
       ? { finish_tool_id: op.finishToolId }
       : {}),
     source: buildSource(opIn),
+    // Two-sided flip: emit `side` only for Back ops (omit for Front so
+    // single-sided projects serialize byte-identically, matching serde).
+    ...(opIn.side === 'back' ? { side: 'back' as const } : {}),
     params: {
       // Program-only ops (Pause, Homing, Probe, CycleMarker,
       // GcodeInclude) construct without `depth` / `startDepth` —
@@ -808,6 +811,23 @@ function buildStock(state: ProjectStateView): WireStock | null {
     // Stock-top Z placement. Omit at the default (0) to keep the
     // wire compact.
     ...(stock.offsetZ ? { top_z_mm: stock.offsetZ } : {}),
+    // Two-sided (flip-stock) registration. Absent = single-sided.
+    ...(stock.flip
+      ? {
+          flip: {
+            axis: stock.flip.axis,
+            ...(stock.flip.dowels
+              ? {
+                  dowels: {
+                    diameter_mm: stock.flip.dowels.diameterMm,
+                    count: stock.flip.dowels.count,
+                    margin_mm: stock.flip.dowels.marginMm,
+                  },
+                }
+              : {}),
+          },
+        }
+      : {}),
   };
 }
 

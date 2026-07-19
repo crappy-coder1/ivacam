@@ -147,6 +147,12 @@ export interface OpBase {
   /// another op across it. Use it to lock a stability-critical cut order
   /// (tabs, thin walls). Ignored when grouping is off. Default false.
   pinOrder?: boolean;
+  /// Which stock face this op cuts in a two-sided (flip-stock) job.
+  /// `undefined`/`'front'` = the top face as authored (the default);
+  /// `'back'` = the opposite face, mirrored + machined after the flip.
+  /// Only meaningful when `stock.flip` is set. Sent as `side` on the wire
+  /// op, omitted when front (byte-identical serde).
+  side?: 'front' | 'back';
 }
 
 /// Fields shared by closed-contour ops (profile + pocket): cut

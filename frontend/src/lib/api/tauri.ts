@@ -10,6 +10,7 @@ import { CancelledError, type PipelineEvent, type ProgressEvent, type WiacClient
 import type {
   GenerateRequest,
   GenerateResponse,
+  TwoSidedGenerateResponse,
   HelixRadiusRequest,
   HelixRadiusResponse,
   ImportResponse,
@@ -66,6 +67,10 @@ export class TauriWiacClient implements WiacClient {
 
   async generate(request: GenerateRequest): Promise<GenerateResponse> {
     return invoke<GenerateResponse>('generate', { request });
+  }
+
+  async generateTwoSided(request: GenerateRequest): Promise<TwoSidedGenerateResponse> {
+    return invoke<TwoSidedGenerateResponse>('generate_two_sided', { request });
   }
 
   // Tauri doesn't have HTTP-style streaming; the work happens in-process

@@ -86,6 +86,26 @@ export function defaultFixtureName(kind: FixtureKind, id: number): string {
   }
 }
 
+/// Auto-placed dowel-pin registration knobs for a two-sided job. Hole
+/// positions are DERIVED, not stored: `count` holes on the flip-axis
+/// centre-line, inset `marginMm` from the stock edges. Mirrors the Rust
+/// `DowelPinConfig` (sent as `dowels` inside the wire flip object).
+export interface DowelPinConfig {
+  diameterMm: number;
+  count: number;
+  marginMm: number;
+}
+
+/// Registration for a two-sided (flip-stock) job. When present, ops with
+/// `side: 'back'` are mirrored about `axis` and machined after the stock is
+/// physically flipped; the front program drills the dowel holes and the back
+/// program references them. Absent = single-sided (the default). Mirrors the
+/// Rust `FlipRegistration` (sent as `flip` on the wire stock).
+export interface FlipRegistration {
+  axis: 'x' | 'y';
+  dowels?: DowelPinConfig;
+}
+
 export interface StockConfig {
   visible: boolean;
   mode: 'auto' | 'manual';
@@ -106,6 +126,10 @@ export interface StockConfig {
   /// heightmap top, and the out-of-stock scan. Distinct from
   /// `workOffset.z_mm` (which moves the WCS origin, not the material).
   offsetZ?: number;
+  /// Two-sided (flip-stock) registration. `undefined` = single-sided (the
+  /// default); when set, ops with `side: 'back'` are emitted as a mirrored
+  /// second program. Sent as `flip` on the wire stock.
+  flip?: FlipRegistration;
 }
 
 export type CoolantMode = 'off' | 'mist' | 'flood';

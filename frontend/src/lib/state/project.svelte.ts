@@ -3,6 +3,7 @@
 
 import type {
   GenerateResponse,
+  TwoSidedGenerateResponse,
   ImportResponse,
   Segment,
   SimDiagnostics,
@@ -679,6 +680,9 @@ export class ProjectState {
 
   setGenerated(r: GenerateResponse) {
     this.gen.generated = r;
+    // Single-program run clears any prior two-sided back program so a
+    // single-sided regenerate can't leave a stale back behind.
+    this.gen.generatedBack = null;
     this.gen.generatedVersion += 1;
     // Pre-compute cumulative arc length over the toolpath so playback
     // can advance by physical distance instead of segment count. See
@@ -711,6 +715,16 @@ export class ProjectState {
     this.data.dirty = false;
     this.error = null;
     this.playhead = 1.0;
+  }
+
+  /// Store a two-sided (flip-stock) result: the FRONT program becomes the
+  /// primary `generated` (all existing consumers see it), and the BACK
+  /// program is held alongside for the Front/Back gcode tabs + dual-surface
+  /// preview. Delegates the front-program bookkeeping to `setGenerated`
+  /// (which first clears `generatedBack`), then sets the back.
+  setGeneratedTwoSided(r: TwoSidedGenerateResponse) {
+    this.setGenerated(r.front);
+    this.gen.generatedBack = r.back ?? null;
   }
 
   setError(err: string | WiacError) {

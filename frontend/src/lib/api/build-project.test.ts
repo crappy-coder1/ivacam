@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { buildProject } from './build-project';
 import type { ImportResponse } from './types';
 import type { OpEntry } from '../state/op_types';
-import type { MachineSettings, ToolEntry, WorkOffset } from '../state/project-types';
+import type { MachineSettings, StockConfig, ToolEntry, WorkOffset } from '../state/project-types';
 
 function fakeImport(): ImportResponse {
   return {
@@ -838,5 +838,58 @@ describe('raster engrave (rt1.12)', () => {
       type: 'raster_engrave',
       power_curve: { kind: 'linear', min: 0, max: 1000 },
     });
+  });
+});
+
+describe('buildProject — two-sided (flip-stock) wire mapping', () => {
+  const backOp = (): OpEntry => ({ ...profileOp(), id: 2, side: 'back' });
+  const singleSidedStock = (): StockConfig => ({
+    visible: true,
+    mode: 'manual',
+    margin: 5,
+    thickness: 10,
+    customX: 100,
+    customY: 100,
+  });
+  const flipStock = (): StockConfig => ({
+    ...singleSidedStock(),
+    flip: { axis: 'x', dowels: { diameterMm: 4, count: 2, marginMm: 2 } },
+  });
+
+  it('emits side:back only for back ops — front ops omit it (byte-identical serde)', () => {
+    const project = buildProject({
+      transformedImport: fakeImport(),
+      machine: baseMachine(),
+      tools: [baseTool()],
+      operations: [profileOp(), backOp()],
+      stock: flipStock(),
+    });
+    const [front, back] = project!.operations as unknown as Record<string, unknown>[];
+    expect(front).not.toHaveProperty('side');
+    expect(back).toMatchObject({ side: 'back' });
+  });
+
+  it('maps stock.flip → wire flip with snake_case dowels', () => {
+    const project = buildProject({
+      transformedImport: fakeImport(),
+      machine: baseMachine(),
+      tools: [baseTool()],
+      operations: [backOp()],
+      stock: flipStock(),
+    });
+    expect(project!.stock).toMatchObject({
+      flip: { axis: 'x', dowels: { diameter_mm: 4, count: 2, margin_mm: 2 } },
+    });
+  });
+
+  it('omits flip for a single-sided stock', () => {
+    const project = buildProject({
+      transformedImport: fakeImport(),
+      machine: baseMachine(),
+      tools: [baseTool()],
+      operations: [profileOp()],
+      stock: singleSidedStock(),
+    });
+    expect(project!.stock).not.toHaveProperty('flip');
   });
 });

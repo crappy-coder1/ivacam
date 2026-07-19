@@ -15,6 +15,7 @@ export type WorkerMethod =
   | 'importBytes'
   | 'generate'
   | 'generateStreaming'
+  | 'generateTwoSided'
   | 'renderText'
   | 'renderTextLayer'
   | 'computeHelixRadius'

@@ -5,6 +5,7 @@
 import type {
   GenerateRequest,
   GenerateResponse,
+  TwoSidedGenerateResponse,
   HelixRadiusRequest,
   HelixRadiusResponse,
   ImportResponse,
@@ -47,6 +48,13 @@ export interface WiacClient {
     onEvent: (event: PipelineEvent) => void,
     cancelToken?: AbortSignal,
   ): Promise<GenerateResponse>;
+  /**
+   * Two-sided (flip-stock) generate: returns `{ front, back? }` — the back
+   * program present only for a genuine two-sided job (mirrored geometry +
+   * flip/re-zero header). Optional; the caller falls back to single-program
+   * `generate()` when a transport predates it.
+   */
+  generateTwoSided?(request: GenerateRequest): Promise<TwoSidedGenerateResponse>;
   /**
    * Render TTF font + string → segments. Used by the AddTextDialog to
    * stage geometry before adding it to the project.

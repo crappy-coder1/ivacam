@@ -40,8 +40,15 @@ export type PipelineNoteEvent =
 
 export class GeneratedState {
   /// Most recent CAM pipeline result (gcode + toolpath + warnings).
-  /// `null` between Generate runs and after a project reload.
+  /// `null` between Generate runs and after a project reload. For a
+  /// two-sided (flip-stock) run this holds the FRONT program, so every
+  /// existing consumer keeps working unchanged.
   generated = $state<GenerateResponse | null>(null);
+
+  /// The BACK program of a two-sided (flip-stock) run — mirrored geometry
+  /// with a flip/re-zero header. `null` for a single-sided run (the common
+  /// case) and cleared on every single-program `setGenerated`.
+  generatedBack = $state<GenerateResponse | null>(null);
 
   /// Monotonic counter bumped on every `setGenerated` write. Scene3D's
   /// sim-rebuild key uses this instead of `generated.gcode.length` so

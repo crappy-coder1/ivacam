@@ -264,26 +264,35 @@
         post_processor: post,
         project: opProject as unknown as GenerateRequestWithProject['project'],
       };
-      let r;
-      if (client.generateStreaming) {
-        r = await client.generateStreaming(
-          req,
-          (ev) => {
-            // Live progress is read from project.gen.pipelineProgress, which
-            // notePipelineEvent maintains; the bar binds to that.
-            project.notePipelineEvent(ev);
-          },
-          abortController.signal,
-        );
-      } else if (client.generateStream) {
-        // Coarse-grained streaming fallback (no per-op events). The bar
-        // shows an indeterminate running state via project.gen.pipelineState;
-        // there's no fraction to surface here, so the callback is a no-op.
-        r = await client.generateStream(req, () => {});
+      // Two-sided (flip-stock) jobs emit two programs, so they take the
+      // buffered `generateTwoSided` path (no streaming — two-sided jobs are
+      // small relative to the unbounded-raster case streaming targets).
+      const twoSided = project.data.stock?.flip != null && client.generateTwoSided != null;
+      if (twoSided) {
+        const both = await client.generateTwoSided!(req);
+        project.setGeneratedTwoSided(both);
       } else {
-        r = await client.generate(req);
+        let r;
+        if (client.generateStreaming) {
+          r = await client.generateStreaming(
+            req,
+            (ev) => {
+              // Live progress is read from project.gen.pipelineProgress, which
+              // notePipelineEvent maintains; the bar binds to that.
+              project.notePipelineEvent(ev);
+            },
+            abortController.signal,
+          );
+        } else if (client.generateStream) {
+          // Coarse-grained streaming fallback (no per-op events). The bar
+          // shows an indeterminate running state via project.gen.pipelineState;
+          // there's no fraction to surface here, so the callback is a no-op.
+          r = await client.generateStream(req, () => {});
+        } else {
+          r = await client.generate(req);
+        }
+        project.setGenerated(r);
       }
-      project.setGenerated(r);
       generatedPost = post;
       project.finishGenerate();
     } catch (e) {

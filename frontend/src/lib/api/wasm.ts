@@ -7,6 +7,7 @@ import { CancelledError, type PipelineEvent, type ProgressEvent, type WiacClient
 import type {
   GenerateRequest,
   GenerateResponse,
+  TwoSidedGenerateResponse,
   HelixRadiusRequest,
   HelixRadiusResponse,
   ImportResponse,
@@ -28,6 +29,9 @@ export type WasmModule = {
     request: GenerateRequest,
     onEvent: (event: PipelineEvent) => void,
   ) => GenerateResponse | null;
+  /// Two-sided (flip-stock) generate → `{ front, back? }`. Optional because
+  /// older wasm builds predate the export.
+  generateTwoSided?: (request: GenerateRequest) => TwoSidedGenerateResponse;
   renderText: (request: RenderTextRequest) => RenderTextResponse;
   renderTextLayer: (layer: WireTextLayer) => RenderTextLayerResponse;
   computeHelixRadius: (request: HelixRadiusRequest) => HelixRadiusResponse;
@@ -78,6 +82,14 @@ export class WasmWiacClient implements WiacClient {
   async generate(request: GenerateRequest): Promise<GenerateResponse> {
     const m = await loadModule();
     return m.generate(request);
+  }
+
+  async generateTwoSided(request: GenerateRequest): Promise<TwoSidedGenerateResponse> {
+    const m = await loadModule();
+    if (!m.generateTwoSided) {
+      throw new Error('this wasm build predates two-sided generation');
+    }
+    return m.generateTwoSided(request);
   }
 
   async generateStream(
