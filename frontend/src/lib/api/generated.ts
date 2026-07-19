@@ -1388,6 +1388,18 @@ export interface components {
             /** Format: double */
             start_angle_deg?: number;
         };
+        PipelineResponse: {
+            gcode: string;
+            gcode_index: components["schemas"]["GcodeIndex"];
+            /** @description Filled-area preview for Pocket ops: the actual region the cutter will machine, computed via the per-op `SourceCombine` mode (Auto by default — outer + inner = annulus). The frontend paints these as translucent fills so the user sees what they're cutting before reading the toolpath. Empty for non-Pocket ops. */
+            regions?: components["schemas"]["RegionPreview"][];
+            stats: components["schemas"]["PipelineStats"];
+            /** @description Acceleration- and jerk-aware program-time estimate. See [`crate::sim::timing`] for the integrator. The total accounts for motion under the trapezoidal profile, tool-change time (`MachineConfig.toolchange_s` × number of M6s), and per-tool spindle pauses summed across used tools. */
+            time_estimate: components["schemas"]["TimeEstimate"];
+            toolpath: components["schemas"]["ToolpathSegment"][];
+            /** @description Non-fatal warnings raised during planning — mostly tool-fit problems (cutter doesn't fit the geometry, kind mismatch, …). The frontend surfaces these in the operations list status badge and a sidebar list; the gcode is still emitted. */
+            warnings?: components["schemas"]["PipelineWarning"][];
+        };
         PipelineStats: {
             /** Format: uint */
             closed_object_count: number;
@@ -2472,6 +2484,13 @@ export interface components {
         };
         /** @enum {string} */
         TransportKind: "python-bridge" | "rust-server" | "tauri" | "wasm";
+        /** @description Result of a two-sided emission: the front program plus, for a genuine two-sided job, the back program. `back` is `None` for a single-sided project — the orchestrator then returns the front field unchanged from the ordinary single-program path, so single-sided callers see byte-identical output. */
+        TwoSidedGenerateResponse: {
+            /** @description The back program — present only when the job is two-sided (stock flip registration set and at least one enabled `Back` op). Its geometry is mirrored and its header carries the flip + Z-re-zero instructions. */
+            back?: components["schemas"]["PipelineResponse"] | null;
+            /** @description The front program (and, in a two-sided job, the one that drills the dowel registration holes). */
+            front: components["schemas"]["PipelineResponse"];
+        };
         /** @enum {string} */
         UnitSystem: "mm" | "inch";
         /** @description Parameters specific to [`super::op::OpKind::VCarve`]. */

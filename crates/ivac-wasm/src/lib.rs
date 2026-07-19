@@ -26,7 +26,9 @@ use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
 use ivac_core::input::text::{render_text_api, render_text_layer_api, RenderTextRequest};
-use ivac_core::pipeline::{generate_streaming, run_pipeline, CancelToken, PipelineRequest};
+use ivac_core::pipeline::{
+    generate_streaming, run_pipeline, run_pipeline_two_sided, CancelToken, PipelineRequest,
+};
 use ivac_core::project::TextLayer;
 use ivac_core::{
     compute_helix_radius as core_compute_helix_radius, HelixRadiusRequest, ImportOptions,
@@ -108,6 +110,30 @@ pub fn generate(request: JsValue) -> Result<JsValue, JsValue> {
     let project = req.project.clone();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         run_pipeline(req, |_phase, _fraction, _msg| {})
+    }));
+    match result {
+        Ok(Ok(resp)) => serde_wasm_bindgen::to_value(&resp).map_err(into_js_error),
+        Ok(Err(e)) => match e.to_structured(Some(&project)) {
+            Some(structured) => Err(structured_error_to_js(structured)),
+            None => Err(JsValue::from_str("cancelled")),
+        },
+        Err(panic) => Err(structured_error_to_js(
+            ivac_core::Error::internal(format!("panic: {}", panic_message(&panic)))
+                .with_hint("Please report this bug — see the toast for details."),
+        )),
+    }
+}
+
+/// Two-sided (flip-stock) generate: returns `{ front, back }` — the back
+/// program present only for a two-sided job (mirrored geometry + flip/re-zero
+/// header). A single-sided project comes back with `back: null` and a front
+/// identical to [`generate`].
+#[wasm_bindgen(js_name = generateTwoSided)]
+pub fn generate_two_sided(request: JsValue) -> Result<JsValue, JsValue> {
+    let req: PipelineRequest = serde_wasm_bindgen::from_value(request).map_err(into_js_error)?;
+    let project = req.project.clone();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_pipeline_two_sided(req, |_phase, _fraction, _msg| {})
     }));
     match result {
         Ok(Ok(resp)) => serde_wasm_bindgen::to_value(&resp).map_err(into_js_error),

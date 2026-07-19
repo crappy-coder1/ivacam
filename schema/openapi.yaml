@@ -2158,6 +2158,39 @@ components:
         - count
         - kind
         type: object
+    PipelineResponse:
+      properties:
+        gcode:
+          type: string
+        gcode_index:
+          $ref: '#/components/schemas/GcodeIndex'
+        regions:
+          description: 'Filled-area preview for Pocket ops: the actual region the cutter will machine, computed via the per-op `SourceCombine` mode (Auto by default — outer + inner = annulus). The frontend paints these as translucent fills so the user sees what they''re cutting before reading the toolpath. Empty for non-Pocket ops.'
+          items:
+            $ref: '#/components/schemas/RegionPreview'
+          type: array
+        stats:
+          $ref: '#/components/schemas/PipelineStats'
+        time_estimate:
+          allOf:
+          - $ref: '#/components/schemas/TimeEstimate'
+          description: Acceleration- and jerk-aware program-time estimate. See [`crate::sim::timing`] for the integrator. The total accounts for motion under the trapezoidal profile, tool-change time (`MachineConfig.toolchange_s` × number of M6s), and per-tool spindle pauses summed across used tools.
+        toolpath:
+          items:
+            $ref: '#/components/schemas/ToolpathSegment'
+          type: array
+        warnings:
+          description: Non-fatal warnings raised during planning — mostly tool-fit problems (cutter doesn't fit the geometry, kind mismatch, …). The frontend surfaces these in the operations list status badge and a sidebar list; the gcode is still emitted.
+          items:
+            $ref: '#/components/schemas/PipelineWarning'
+          type: array
+      required:
+      - gcode
+      - gcode_index
+      - stats
+      - time_estimate
+      - toolpath
+      type: object
     PipelineStats:
       properties:
         closed_object_count:
@@ -4038,6 +4071,21 @@ components:
       - tauri
       - wasm
       type: string
+    TwoSidedGenerateResponse:
+      description: 'Result of a two-sided emission: the front program plus, for a genuine two-sided job, the back program. `back` is `None` for a single-sided project — the orchestrator then returns the front field unchanged from the ordinary single-program path, so single-sided callers see byte-identical output.'
+      properties:
+        back:
+          anyOf:
+          - $ref: '#/components/schemas/PipelineResponse'
+          - type: 'null'
+          description: The back program — present only when the job is two-sided (stock flip registration set and at least one enabled `Back` op). Its geometry is mirrored and its header carries the flip + Z-re-zero instructions.
+        front:
+          allOf:
+          - $ref: '#/components/schemas/PipelineResponse'
+          description: The front program (and, in a two-sided job, the one that drills the dowel registration holes).
+      required:
+      - front
+      type: object
     UnitSystem:
       enum:
       - mm

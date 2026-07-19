@@ -30,8 +30,8 @@ use ivac_core::input::text::{
     RenderTextResponse,
 };
 use ivac_core::pipeline::{
-    clear_pipeline_cache, generate_streaming, run_pipeline, CancelToken, PipelineEvent,
-    PipelineRequest, PipelineResponse,
+    clear_pipeline_cache, generate_streaming, run_pipeline, run_pipeline_two_sided, CancelToken,
+    PipelineEvent, PipelineRequest, PipelineResponse, TwoSidedResponse,
 };
 use ivac_core::project::TextLayer;
 use ivac_core::{
@@ -164,6 +164,32 @@ pub async fn generate(request: PipelineRequest) -> Result<PipelineResponse, Stri
     let result = tokio::task::spawn_blocking(move || {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             run_pipeline(request, |_p, _f, _m| {})
+        }))
+    })
+    .await
+    .map_err(|e| internal(format!("join error: {e}")))?;
+    match result {
+        Ok(Ok(resp)) => Ok(resp),
+        Ok(Err(e)) => match e.to_structured(Some(&project)) {
+            Some(structured) => Err(serialize_error(structured)),
+            None => Err(internal("cancelled")),
+        },
+        Err(panic) => Err(serialize_error(
+            WiacError::internal(format!("panic: {}", panic_message(&panic)))
+                .with_hint("Please report this bug — see the toast for details."),
+        )),
+    }
+}
+
+/// Two-sided (flip-stock) generate: returns the front program plus, for a
+/// two-sided job, the mirrored back program. A single-sided project comes back
+/// with `back: null` and a front identical to [`generate`].
+#[tauri::command]
+pub async fn generate_two_sided(request: PipelineRequest) -> Result<TwoSidedResponse, String> {
+    let project = request.project.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_pipeline_two_sided(request, |_p, _f, _m| {})
         }))
     })
     .await

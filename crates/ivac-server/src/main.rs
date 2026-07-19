@@ -31,8 +31,9 @@ use ivac_core::input::text::{
     RenderTextResponse,
 };
 use ivac_core::pipeline::{
-    generate_streaming, run_pipeline, stream_gcode_to_writer, CancelToken, PipelineError,
-    PipelineEvent, PipelineRequest, PipelineResponse, PostProcessorKind, StreamGcodeError,
+    generate_streaming, run_pipeline, run_pipeline_two_sided, stream_gcode_to_writer, CancelToken,
+    PipelineError, PipelineEvent, PipelineRequest, PipelineResponse, PostProcessorKind,
+    StreamGcodeError, TwoSidedResponse,
 };
 use ivac_core::project::TextLayer;
 use ivac_core::{compute_helix_radius, HelixRadiusRequest, HelixRadiusResponse};
@@ -59,6 +60,7 @@ async fn main() -> Result<()> {
         .route("/version", get(version))
         .route("/import", post(import))
         .route("/generate", post(generate))
+        .route("/generate/two-sided", post(generate_two_sided))
         .route("/generate/stream", post(generate_stream))
         .route("/generate/gcode", post(generate_gcode_stream))
         .route("/generate/cancel/:token_id", post(generate_cancel))
@@ -258,6 +260,19 @@ async fn generate(
     Json(req): Json<GenerateRequest>,
 ) -> Result<Json<GenerateResponse>, AppError> {
     run_pipeline(req, |_phase, _fraction, _msg| {})
+        .map(Json)
+        .map_err(AppError::from)
+}
+
+/// Two-sided (flip-stock) variant of `/generate`: returns the front program
+/// plus, for a two-sided job, the mirrored back program (see
+/// [`run_pipeline_two_sided`]). A single-sided project comes back with
+/// `back: null` and a front byte-identical to `/generate`.
+async fn generate_two_sided(
+    State(_state): State<Arc<AppState>>,
+    Json(req): Json<GenerateRequest>,
+) -> Result<Json<TwoSidedResponse>, AppError> {
+    run_pipeline_two_sided(req, |_phase, _fraction, _msg| {})
         .map(Json)
         .map_err(AppError::from)
 }

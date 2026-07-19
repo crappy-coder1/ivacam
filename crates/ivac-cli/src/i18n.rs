@@ -149,6 +149,7 @@ mod tests {
         "cli.err.parse_project",
         "cli.err.output",
         "cli.err.streaming",
+        "cli.err.two_sided_needs_output",
         "cli.stream.done",
     ];
 

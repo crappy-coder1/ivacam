@@ -2591,6 +2591,7 @@ mod tests;
 pub(crate) fn register_schemas(map: &mut crate::schema::SchemaMap) {
     crate::schema::insert::<PipelineRequest>(map, "GenerateRequest");
     crate::schema::insert::<PipelineResponse>(map, "GenerateResponse");
+    crate::schema::insert::<TwoSidedResponse>(map, "TwoSidedGenerateResponse");
     crate::schema::insert::<PipelineStats>(map, "GenerateStats");
     crate::schema::insert::<RegionPreview>(map, "RegionPreview");
     crate::schema::insert::<PipelineWarning>(map, "PipelineWarning");

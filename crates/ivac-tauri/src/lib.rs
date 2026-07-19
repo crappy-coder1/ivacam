@@ -205,6 +205,7 @@ fn run_app() -> tauri::Result<()> {
             commands::version,
             commands::import_path,
             commands::generate,
+            commands::generate_two_sided,
             commands::generate_streaming_cmd,
             commands::generate_streaming_ready_cmd,
             commands::cancel_generate,

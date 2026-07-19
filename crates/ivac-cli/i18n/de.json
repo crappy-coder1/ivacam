@@ -17,5 +17,6 @@
   "cli.err.parse_project": "Projekt-JSON einlesen {path}",
   "cli.err.output": "Ausgabedatei erstellen {path}",
   "cli.err.streaming": "G-Code streamen: {detail}",
+  "cli.err.two_sided_needs_output": "--two-sided benötigt --output <Basis> (zwei Programme können nicht nach stdout streamen)",
   "cli.stream.done": "G-Code nach {dest} geschrieben ({objects} Objekte, {offsets} Offsets)"
 }

@@ -17,5 +17,6 @@
   "cli.err.parse_project": "parse project JSON {path}",
   "cli.err.output": "create output {path}",
   "cli.err.streaming": "stream gcode: {detail}",
+  "cli.err.two_sided_needs_output": "--two-sided requires --output <base> (two programs cannot stream to stdout)",
   "cli.stream.done": "wrote gcode to {dest} ({objects} objects, {offsets} offsets)"
 }

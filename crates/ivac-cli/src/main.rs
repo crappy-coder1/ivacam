@@ -84,7 +84,7 @@ fn print_help() {
     eprintln!("  ivac generate <path> [--post linuxcnc|grbl|hpgl] [--diameter MM] [--depth MM]");
     eprintln!("                       [--inside|--outside|--on] [--overcut]");
     eprintln!("      {}", i18n::t("cli.help.generate"));
-    eprintln!("  ivac stream-gcode <project.json> [--output FILE]");
+    eprintln!("  ivac stream-gcode <project.json> [--output FILE] [--two-sided]");
     eprintln!("      {}", i18n::t("cli.help.stream"));
     eprintln!("  ivac --help");
     eprintln!("      {}", i18n::t("cli.help.help"));
@@ -202,6 +202,7 @@ fn cmd_generate(args: impl Iterator<Item = String>) -> Result<()> {
 fn cmd_stream(args: impl Iterator<Item = String>) -> Result<()> {
     let mut path: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
+    let mut two_sided = false;
     let mut iter = args.peekable();
     while let Some(arg) = iter.next() {
         let needs_value =
@@ -212,6 +213,7 @@ fn cmd_stream(args: impl Iterator<Item = String>) -> Result<()> {
                     iter.next().with_context(needs_value("--output"))?,
                 ));
             }
+            "--two-sided" => two_sided = true,
             other if path.is_none() => path = Some(PathBuf::from(other)),
             other => bail!("{}", i18n::tp("cli.err.unexpected_arg", &[("arg", other)])),
         }
@@ -228,6 +230,13 @@ fn cmd_stream(args: impl Iterator<Item = String>) -> Result<()> {
                 &[("path", &path.display().to_string())],
             )
         })?;
+
+    // Two-sided (flip-stock) jobs emit two programs, so they can't stream to a
+    // single sink — they write `<base>.front.<ext>` / `<base>.back.<ext>` and
+    // require an explicit --output base.
+    if two_sided {
+        return cmd_stream_two_sided(request, output);
+    }
 
     // Destination: a file if --output was given, else stdout. Both buffered —
     // the streaming sink issues one write per emitted line.
@@ -264,6 +273,65 @@ fn cmd_stream(args: impl Iterator<Item = String>) -> Result<()> {
         )
     );
     for w in &outcome.warnings {
+        eprintln!("  ! {}", w.message);
+    }
+    Ok(())
+}
+
+/// Two-sided (flip-stock) emission: write `<base>.front.<ext>` and, for a
+/// genuine two-sided job, `<base>.back.<ext>`. Buffered (not streamed) because
+/// two programs can't share one sink; two-sided jobs are small relative to the
+/// unbounded-raster case the streaming path targets.
+fn cmd_stream_two_sided(
+    request: ivac_core::pipeline::PipelineRequest,
+    output: Option<PathBuf>,
+) -> Result<()> {
+    let base = output.context(i18n::t("cli.err.two_sided_needs_output"))?;
+    let two =
+        ivac_core::pipeline::run_pipeline_two_sided(request, |_p, _f, _m| {}).map_err(|e| {
+            anyhow::anyhow!(i18n::tp("cli.err.streaming", &[("detail", &e.to_string())]))
+        })?;
+
+    write_program(&side_path(&base, "front"), &two.front)?;
+    if let Some(back) = &two.back {
+        write_program(&side_path(&base, "back"), back)?;
+    }
+    Ok(())
+}
+
+/// Insert `.<side>` before the extension of `base` (`out.gcode` + `front` →
+/// `out.front.gcode`; an extensionless `out` → `out.front`).
+fn side_path(base: &std::path::Path, side: &str) -> PathBuf {
+    let stem = base
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let name = match base.extension() {
+        Some(ext) => format!("{stem}.{side}.{}", ext.to_string_lossy()),
+        None => format!("{stem}.{side}"),
+    };
+    base.with_file_name(name)
+}
+
+/// Write one program's gcode to `path` and print the standard done summary.
+fn write_program(
+    path: &std::path::Path,
+    resp: &ivac_core::pipeline::PipelineResponse,
+) -> Result<()> {
+    std::fs::write(path, &resp.gcode)
+        .with_context(|| i18n::tp("cli.err.output", &[("path", &path.display().to_string())]))?;
+    eprintln!(
+        "{}",
+        i18n::tp(
+            "cli.stream.done",
+            &[
+                ("dest", &path.display().to_string()),
+                ("objects", &resp.stats.object_count.to_string()),
+                ("offsets", &resp.stats.offset_count.to_string()),
+            ],
+        )
+    );
+    for w in &resp.warnings {
         eprintln!("  ! {}", w.message);
     }
     Ok(())
