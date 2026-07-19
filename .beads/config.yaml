@@ -52,3 +52,12 @@
 # - linear.api-key
 # - github.org
 # - github.repo
+
+# Suppress the git commands in `bd prime`'s SESSION CLOSE PROTOCOL (stealth mode).
+# This repo's push policy is human-gated: agents commit locally and hand off; a
+# maintainer reviews and pushes. The stock prime protocol tells agents to `git
+# push` ("work is not done until pushed"), which directly contradicts CLAUDE.md
+# and is injected into every session. Setting this makes prime's close protocol
+# say only `bd close`, so CLAUDE.md stays the single source of truth on push. See
+# ivac-vvo6. Affects prime OUTPUT only — bd's own state export is unchanged.
+no-git-ops: true
