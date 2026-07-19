@@ -247,4 +247,36 @@ describe('HeightfieldDriver two-sided conflict pass', () => {
     driver.build(buildInput({ generated: { toolpath: frontTp } as unknown as GenerateResponse }));
     expect(driver.getTwoSidedConflicts()).toEqual([]);
   });
+
+  // The front mesh's `position` buffer is the longest one under the driver
+  // group (the EdgesGeometry carries far fewer verts).
+  function frontPositions(group: { traverse: (cb: (o: unknown) => void) => void }): Float32Array {
+    let best: Float32Array | undefined;
+    group.traverse((o: unknown) => {
+      const g = (o as { geometry?: { getAttribute?: (n: string) => { array: Float32Array } } })
+        .geometry;
+      const p = g?.getAttribute?.('position');
+      if (p && (!best || p.array.length > best.length)) best = p.array;
+    });
+    if (!best) throw new Error('no position attribute found');
+    return best;
+  }
+
+  it('folds the reflected back carve into the front mesh as its per-cell floor', async () => {
+    const driver = await freshDriver();
+    // Front cell 0 cut 2 mm (top −2); back cell 0 cut 3 mm. On 10 mm stock the
+    // reflected back surface for cell 0 sits at 2·mid − back = −10 − (−3) = −7,
+    // well clear of the front top → a full solid, no conflict.
+    const { generated, generatedBack } = programs(carved({ 0: 2 }), carved({ 0: 3 }));
+    driver.build(buildInput({ generated, generatedBack }));
+    expect(driver.getTwoSidedConflicts()).toEqual([]);
+
+    const pos = frontPositions(driver.group);
+    // 4×4 front grid → FLOOR_BASE = 20·16 + 4·4 + 4·4 = 352. Cell 0's floor
+    // quad sits just below its reflected back floor (−7 − 0.05).
+    const FLOOR = 352;
+    expect(pos[(FLOOR + 0 * 4) * 3 + 2]).toBeCloseTo(-7.05, 4);
+    // Cell 5's back is uncut → floor falls back to the true stock bottom (−10).
+    expect(pos[(FLOOR + 5 * 4) * 3 + 2]).toBeCloseTo(-10.05, 4);
+  });
 });

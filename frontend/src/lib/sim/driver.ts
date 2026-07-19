@@ -15,7 +15,7 @@
 import * as THREE from 'three';
 import { HeightfieldMeshPyramid, pickMinLodLevelForBudget } from './heightfield_mesh';
 import { UndercutMeshBuilder } from './undercut_mesh';
-import { midPlaneZ, backReflectionOffsetZ } from './dual_surface';
+import { backReflectionOffsetZ } from './dual_surface';
 import { detectTwoSidedConflicts, type ConflictMarker } from './two_sided_conflict';
 import { planAdvance, playheadToSegment } from './playhead';
 import { computeFootprint } from './footprint';
@@ -334,43 +334,33 @@ function carveProgramToCompletion(
 }
 
 /// The second carved surface for a two-sided (flip-stock) preview: a back-side
-/// `Simulator` + `HeightfieldMeshPyramid` rendered in a group REFLECTED about
-/// the stock mid-plane so the back cuts read as the part underside (see
-/// `./dual_surface` for the frame math, and the Phase-0 spike
-/// `dev/dualsurface_spike.ts` that proved it reads as one coherent solid).
+/// Owns the BACK `Simulator` of a two-sided (flip-stock) preview and carves
+/// its whole program to completion — a static "finished underside". It does
+/// NOT render: the finished back heightfield is folded into the FRONT mesh as
+/// a per-cell floor (reflected about the stock mid-plane), so one watertight
+/// solid spans the front carve (top) down to the back carve (floor). See
+/// `./dual_surface` for the reflection frame math.
 ///
 /// Owned by [`HeightfieldDriver`] only when a two-sided Generate produced a
-/// back program; the single-sided front path is untouched. It shares the
+/// back program; the single-sided front path never touches it. It shares the
 /// driver's `WasmHandle` (module + memory), so the second sim is cheap.
 ///
-/// v1 scope (ivac-rt1.11.4): the back is carved ONCE to completion — a static
-/// "finished underside" — while the playhead keeps scrubbing the FRONT (the
-/// established "preview follows front side" contract). It uses a CONSTANT floor
-/// at the mid-plane; a cut that crosses the mid-plane shows a flat seam there,
-/// resolved by the per-column-floor fast-follow. No deviation overlay, undercut
-/// voids, or per-frame deviation overlay on the back yet. Two-sided
-/// conflict cells ARE surfaced — see `HeightfieldDriver.getTwoSidedConflicts`,
-/// which pairs this surface's finished heightfield against the front's.
+/// v1 scope (ivac-rt1.11.4): the back is carved ONCE to completion while the
+/// playhead keeps scrubbing the FRONT (the "preview follows front side"
+/// contract). No deviation overlay or undercut voids on the back yet.
+/// Two-sided conflict cells are surfaced separately — see
+/// `HeightfieldDriver.getTwoSidedConflicts`, which pairs this surface's
+/// finished heightfield against the front's.
 class BackSurface {
-  /// Reflected container under the driver's group. `scale.z = −1` plus
-  /// `position.z = 2·midPlane` realizes `worldZ = 2·midPlane − localZ`.
-  private readonly reflect = new THREE.Group();
   private sim: SimulatorWasm | null = null;
-  private mesh: HeightfieldMeshPyramid | null = null;
 
-  constructor(
-    private wasm: WasmHandle,
-    parent: THREE.Group,
-    private requestRender: () => void,
-  ) {
-    parent.add(this.reflect);
-  }
+  constructor(private wasm: WasmHandle) {}
 
-  /// Build the back sim + mesh and carve the whole back program to completion.
+  /// Build the back sim and carve the whole back program to completion.
   /// `fp` / `cellSize` / `topZ` / `thickness` MIRROR the front build so both
-  /// grids align cell-for-cell (a prerequisite for the future per-column
-  /// conflict pass). `toolForSeg` resolves each back segment's op tool, so a
-  /// multi-op back program carves with the right cutter cross-sections.
+  /// grids align cell-for-cell — a prerequisite for both the per-cell floor
+  /// and the conflict pass. `toolForSeg` resolves each back segment's op tool,
+  /// so a multi-op back program carves with the right cutter cross-sections.
   build(input: {
     backGenerated: GenerateResponse;
     toolForSeg: (segIdx: number) => ToolEntry;
@@ -378,10 +368,9 @@ class BackSurface {
     cellSize: number;
     topZ: number;
     thickness: number;
-    settings: AppSettings;
   }) {
-    this.disposeSimMesh();
-    const { fp, cellSize, topZ, thickness, settings } = input;
+    this.disposeSim();
+    const { fp, cellSize, topZ, thickness } = input;
     const stockBottomZ = topZ - thickness;
     const sim = new this.wasm.Simulator(
       fp.minX,
@@ -400,47 +389,14 @@ class BackSurface {
     // the front driver's bulk advance) — the back is a static "finished
     // underside".
     carveProgramToCompletion(sim, input.backGenerated.toolpath.length, input.toolForSeg);
-
-    const simCols = sim.cols();
-    const simRows = sim.rows();
-    const minLevel = pickMinLodLevelForBudget(simCols, simRows, settings.maxRenderTriangles);
-    const mesh = new HeightfieldMeshPyramid(
-      {
-        cols: simCols,
-        rows: simRows,
-        cellSize: sim.cell_size(),
-        originX: sim.origin_x(),
-        originY: sim.origin_y(),
-        topZ: sim.top_z(),
-        // Constant floor at the mid-plane: the reflected back fills the stock's
-        // bottom half and tiles with the (also mid-plane-floored) front mesh.
-        floorZ: midPlaneZ(sim.top_z(), thickness),
-        solidColor: settings.solidColor,
-        solidOpacity: settings.solidOpacity,
-        edgeColor: settings.edgeColor,
-        edgeOpacity: settings.edgeOpacity,
-      },
-      3,
-      minLevel,
-    );
-    // Reflect about the mid-plane so the carved top-down surface faces down as
-    // the stock underside.
-    this.reflect.scale.z = -1;
-    this.reflect.position.z = backReflectionOffsetZ(sim.top_z(), thickness);
-    this.reflect.add(mesh.group);
-    const view = new Float32Array(this.wasm.memory.buffer, sim.data_ptr(), simCols * simRows);
-    mesh.updateHeights(view);
-    mesh.rebuildEdges();
     this.sim = sim;
-    this.mesh = mesh;
-    this.requestRender();
   }
 
   /// Snapshot of the fully-carved back heightfield as a JS-owned COPY (so
   /// it survives WASM memory growth or this surface's teardown), plus its
-  /// grid dims. Same grid as the front build — the driver's two-sided
-  /// conflict pass pairs it against the finished front depths. Null before
-  /// `build()` / after `dispose()`.
+  /// grid dims. Same grid as the front build — consumed both as the front
+  /// mesh's reflected floor and by the driver's two-sided conflict pass.
+  /// Null before `build()` / after `dispose()`.
   finalHeights(): { heights: Float32Array; cols: number; rows: number } | null {
     if (!this.sim) return null;
     const cols = this.sim.cols();
@@ -449,46 +405,16 @@ class BackSurface {
     return { heights: live.slice(), cols, rows };
   }
 
-  /// Keep the back mesh's LOD in step with the front's active level.
-  setActiveLevel(level: number) {
-    this.mesh?.setActiveLevel(level);
-  }
-
-  setSolidVisible(visible: boolean) {
-    this.mesh?.setSolidVisible(visible);
-  }
-
-  setEdgesVisible(visible: boolean) {
-    this.mesh?.setEdgesVisible(visible);
-  }
-
-  applyStyle(
-    settings: Pick<AppSettings, 'solidColor' | 'solidOpacity' | 'edgeColor' | 'edgeOpacity'>,
-  ) {
-    this.mesh?.setStyle({
-      solidColor: settings.solidColor,
-      solidOpacity: settings.solidOpacity,
-      edgeColor: settings.edgeColor,
-      edgeOpacity: settings.edgeOpacity,
-    });
-  }
-
-  private disposeSimMesh() {
-    if (this.mesh) {
-      this.reflect.remove(this.mesh.group);
-      this.mesh.dispose();
-      this.mesh = null;
-    }
+  private disposeSim() {
     if (this.sim) {
       this.sim.free();
       this.sim = null;
     }
   }
 
-  /// Tear down sim + mesh and detach the reflected group from the parent.
+  /// Free the back sim.
   dispose() {
-    this.disposeSimMesh();
-    this.reflect.removeFromParent();
+    this.disposeSim();
   }
 }
 
@@ -703,14 +629,13 @@ export class HeightfieldDriver {
     const simCols = this.sim.cols();
     const simRows = this.sim.rows();
     const minLevel = pickMinLodLevelForBudget(simCols, simRows, input.settings.maxRenderTriangles);
-    // Two-sided: the reflected back surface owns the bottom half, so the front
-    // mesh floors at the mid-plane instead of the true stock bottom — the two
-    // meshes then tile the full thickness and meet at the mid-plane. A
-    // single-sided job floors at the real bottom (the full block is visible).
+    // The front mesh always floors at the true stock bottom. For a two-sided
+    // job the block below installs a per-cell floor (the reflected back
+    // surface) so this ONE mesh spans the front carve (top) down to the back
+    // carve (floor) as a single watertight solid — no second reflected mesh,
+    // and a front cut past the mid-plane shows its true depth instead of
+    // clamping at a constant seam.
     const twoSided = input.generatedBack != null;
-    const frontFloorZ = twoSided
-      ? midPlaneZ(this.sim.top_z(), stockThickness)
-      : this.sim.top_z() - stockThickness;
     this.mesh = new HeightfieldMeshPyramid(
       {
         cols: simCols,
@@ -719,7 +644,7 @@ export class HeightfieldDriver {
         originX: this.sim.origin_x(),
         originY: this.sim.origin_y(),
         topZ: this.sim.top_z(),
-        floorZ: frontFloorZ,
+        floorZ: stockBottomZ,
         solidColor: input.settings.solidColor,
         solidOpacity: input.settings.solidOpacity,
         edgeColor: input.settings.edgeColor,
@@ -768,7 +693,7 @@ export class HeightfieldDriver {
     // stale back, so this creates a fresh one; a single-sided rebuild simply
     // skips it (leaving `this.back` null).
     if (twoSided && input.generatedBack && input.toolForSegBack && this.wasm) {
-      this.back = new BackSurface(this.wasm, this.group, this.opts.requestRender);
+      this.back = new BackSurface(this.wasm);
       this.back.build({
         backGenerated: input.generatedBack,
         toolForSeg: input.toolForSegBack,
@@ -776,10 +701,11 @@ export class HeightfieldDriver {
         cellSize: this.sim.cell_size(),
         topZ: this.sim.top_z(),
         thickness: stockThickness,
-        settings: input.settings,
       });
-      // Scene3D calls setSolidVisible / setEdgesVisible right after build();
-      // those fan to the back, so its visibility matches the front's.
+      // Fold the finished back carve into the front mesh as its per-cell
+      // floor (reflected about the mid-plane) so the ONE front mesh renders
+      // the whole two-sided solid, then repaint against the new floor.
+      this.applyBackFloor(this.sim.top_z(), stockThickness);
       // Flag columns where the finished front + back carves cross the stock.
       this.conflicts = this.computeTwoSidedConflicts({
         frontGenerated: input.generated,
@@ -798,6 +724,25 @@ export class HeightfieldDriver {
   /// or before the first build. Scene3D reads this right after `build()`.
   getTwoSidedConflicts(): ConflictMarker[] {
     return this.conflicts;
+  }
+
+  /// Install the finished back carve as the front mesh's per-cell floor,
+  /// reflected about the stock mid-plane: `floor[i] = 2·midPlane −
+  /// back[i]`. The front mesh then spans the front carve (top) down to the
+  /// back carve (floor) as one watertight solid. A full `updateHeights`
+  /// follows so tops re-clamp against the new floor and the underside
+  /// steps close. Bails on a grid mismatch (the two sims share fp +
+  /// cellSize, so this is a defensive guard, not an expected path).
+  private applyBackFloor(topZ: number, thickness: number): void {
+    if (!this.mesh || !this.sim || !this.back) return;
+    const back = this.back.finalHeights();
+    if (!back) return;
+    if (back.cols !== this.sim.cols() || back.rows !== this.sim.rows()) return;
+    const offset = backReflectionOffsetZ(topZ, thickness);
+    const floor = new Float32Array(back.heights.length);
+    for (let i = 0; i < floor.length; i++) floor[i] = offset - back.heights[i];
+    this.mesh.setFloor(floor);
+    if (this.heightView) this.mesh.updateHeights(this.heightView);
   }
 
   /// Detect two-sided conflicts by pairing the finished BACK heightfield
@@ -1162,12 +1107,12 @@ export class HeightfieldDriver {
     this.mesh?.setSolidVisible(visible);
     // Void surfaces are part of the solid stock — show them with it.
     this.undercut?.setVisible(visible);
-    this.back?.setSolidVisible(visible);
+    // Two-sided: the back is folded into the front mesh's floor, so the front
+    // mesh's visibility already covers it — no separate back mesh to toggle.
   }
 
   setEdgesVisible(visible: boolean) {
     this.mesh?.setEdgesVisible(visible);
-    this.back?.setEdgesVisible(visible);
   }
 
   /// Live-apply settings changes (color / opacity). Resolution / max
@@ -1185,7 +1130,8 @@ export class HeightfieldDriver {
       solidColor: settings.solidColor,
       solidOpacity: settings.solidOpacity,
     });
-    this.back?.applyStyle(settings);
+    // The back is folded into the front mesh's floor, so the front mesh's
+    // setStyle (above) already restyles the whole two-sided solid.
     this.opts.requestRender();
   }
 
@@ -1261,8 +1207,9 @@ export class HeightfieldDriver {
     }
     if (next !== current) {
       this.mesh.setActiveLevel(next);
-      // Keep the reflected back surface at the same LOD as the front.
-      this.back?.setActiveLevel(next);
+      // The back is the front mesh's per-cell floor, so the pyramid re-pools
+      // and installs it for the new level inside setActiveLevel — nothing
+      // separate to swap here.
       // The new level's EdgesGeometry is stale — schedule a rebuild
       // through the same trailing-debounce path that handles carves
       // so a pan that crosses LOD thresholds doesn't stall on a

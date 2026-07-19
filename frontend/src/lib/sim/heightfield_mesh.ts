@@ -146,6 +146,10 @@ export class HeightfieldMesh {
   /// True while a deviation colormap is displayed (drives `material.color`
   /// white-vs-stock and whether carve updates repaint class colors).
   private deviationActive = false;
+  /// True once a per-cell floor is installed (two-sided preview). Drives
+  /// the floor-quad material color: the real back-carve bottom surface
+  /// keeps the stock color, vs. the darkened void shade single-sided.
+  private perCellFloorActive = false;
   private readonly geometry: THREE.BufferGeometry;
   private readonly material: THREE.MeshStandardMaterial;
   private readonly mesh: THREE.Mesh;
@@ -817,9 +821,26 @@ export class HeightfieldMesh {
       // Defensive: an undersized buffer would read past its end in
       // floorAt. Ignore it and keep the scalar floor.
       this.floor = null;
+      this.perCellFloorActive = false;
+      this.applyFloorColor();
       return;
     }
     this.floor = view;
+    this.perCellFloorActive = view != null;
+    this.applyFloorColor();
+  }
+
+  /// Pick the floor-quad material color. With a per-cell floor (two-sided),
+  /// the floor quads are the part's real back-carved bottom surface, so
+  /// they keep the full stock color. Single-sided, they only show where a
+  /// cell cuts through to the flat stock bottom, where the ~65%-darkened
+  /// "void" shade reads the hole as empty space rather than a filled face.
+  private applyFloorColor(): void {
+    this.floorMaterial.color.copy(
+      this.perCellFloorActive
+        ? new THREE.Color(this.solidColor)
+        : deriveFloorColor(this.solidColor),
+    );
   }
 
   /// Paint (or clear) the target-surface deviation overlay. `classes` is a
@@ -924,10 +945,10 @@ export class HeightfieldMesh {
       if (!this.deviationActive) {
         this.material.color.set(opts.solidColor);
       }
-      // Keep the floor material's color in sync with the (darkened)
-      // stock color so cut-through holes always read as a void of
-      // the current stock material, not a stale palette mismatch.
-      this.floorMaterial.color.copy(deriveFloorColor(opts.solidColor));
+      // Keep the floor material's color in sync with the stock color —
+      // darkened for a single-sided void, full stock color when it's the
+      // real two-sided bottom surface (see applyFloorColor).
+      this.applyFloorColor();
     }
     if (opts.solidOpacity !== undefined) {
       this.material.opacity = opts.solidOpacity;
