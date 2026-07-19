@@ -1281,6 +1281,7 @@ export type MsgKey =
   | "stock.flip.axis.x.hint"
   | "stock.flip.axis.y"
   | "stock.flip.axis.y.hint"
+  | "stock.flip.badge"
   | "stock.flip.dowel_count"
   | "stock.flip.dowel_dia"
   | "stock.flip.dowel_margin"
@@ -2916,6 +2917,7 @@ export const MSG_KEYS: readonly MsgKey[] = [
   "stock.flip.axis.x.hint",
   "stock.flip.axis.y",
   "stock.flip.axis.y.hint",
+  "stock.flip.badge",
   "stock.flip.dowel_count",
   "stock.flip.dowel_dia",
   "stock.flip.dowel_margin",

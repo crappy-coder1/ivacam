@@ -15,6 +15,7 @@
   import { t } from '../i18n';
   import { computeFootprint } from '../sim/driver';
   import { parseFiniteNumber } from '../cam/units';
+  import { longpressTooltip } from '../actions/longpress-tooltip';
   import {
     inferDefaultWorkOffset,
     type Wcs,
@@ -404,9 +405,41 @@
           </select>
         </span>
       </label>
-      <p class="flip-hint">
-        {t(flip.axis === 'x' ? 'stock.flip.axis.x.hint' : 'stock.flip.axis.y.hint')}
-      </p>
+      <!-- Axis-consequence: an SVG "flip" badge (mirrors the 3D scene gizmo —
+           dashed hinge line + roll arrow) beside the plain-language hint, so
+           the error-prone axis choice is legible in 2D too. The badge flips
+           orientation with the axis; a subtle pulse draws the eye. -->
+      <div class="flip-vis">
+        <span
+          class="flip-badge-wrap"
+          role="img"
+          aria-label={t('stock.flip.badge')}
+          title={t(flip.axis === 'x' ? 'stock.flip.axis.x.hint' : 'stock.flip.axis.y.hint')}
+          use:longpressTooltip
+        >
+          <svg class="flip-badge" viewBox="0 0 60 44" aria-hidden="true">
+            <rect class="fb-stock" x="12" y="12" width="36" height="20" rx="3" />
+            {#if flip.axis === 'x'}
+              <!-- Flip about X: horizontal hinge, stock rolls top↔bottom. -->
+              <line class="fb-hinge" x1="6" y1="22" x2="54" y2="22" />
+              <g class="fb-arrow">
+                <path class="fb-arc" d="M 30 7 A 16 15 0 0 1 30 37" />
+                <polygon class="fb-head" points="24,33 30,41 36,33" />
+              </g>
+            {:else}
+              <!-- Flip about Y: vertical hinge, stock rolls left↔right. -->
+              <line class="fb-hinge" x1="30" y1="6" x2="30" y2="38" />
+              <g class="fb-arrow">
+                <path class="fb-arc" d="M 9 22 A 21 15 0 0 1 51 22" />
+                <polygon class="fb-head" points="47,16 55,22 47,28" />
+              </g>
+            {/if}
+          </svg>
+        </span>
+        <p class="flip-hint">
+          {t(flip.axis === 'x' ? 'stock.flip.axis.x.hint' : 'stock.flip.axis.y.hint')}
+        </p>
+      </div>
       <label>
         <span>{t('stock.flip.dowel_dia')}</span>
         <span class="field">
@@ -516,12 +549,66 @@
   fieldset.flip .check input[type='checkbox'] {
     accent-color: var(--accent);
   }
-  fieldset.flip .flip-hint {
+  fieldset.flip .flip-vis {
     grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  fieldset.flip .flip-hint {
     margin: 0;
     font-size: 0.68rem;
     line-height: 1.3;
     color: var(--text-muted);
+  }
+  /* Flip badge — a compact pictogram of the roll: faint stock rectangle,
+     amber hinge line along the flip axis, and a curved roll arrow. Flat
+     colours from theme tokens; sizes are in the 60×44 viewBox. The wrapper
+     span carries the a11y label + long-press tooltip (an <svg> can't). */
+  fieldset.flip .flip-badge-wrap {
+    flex: 0 0 auto;
+    display: inline-flex;
+  }
+  .flip-badge {
+    width: 3rem;
+    height: 2.2rem;
+  }
+  .flip-badge .fb-stock {
+    fill: color-mix(in srgb, var(--stock-edge) 12%, transparent);
+    stroke: var(--stock-edge);
+    stroke-width: 1.5;
+  }
+  .flip-badge .fb-hinge {
+    stroke: var(--warn);
+    stroke-width: 2;
+    stroke-dasharray: 4 3;
+    stroke-linecap: round;
+  }
+  .flip-badge .fb-arc {
+    fill: none;
+    stroke: var(--warn);
+    stroke-width: 2.4;
+    stroke-linecap: round;
+  }
+  .flip-badge .fb-head {
+    fill: var(--warn);
+  }
+  /* Draw the eye without churning: a gentle pulse of the arrow only. */
+  @media (prefers-reduced-motion: no-preference) {
+    .flip-badge .fb-arrow {
+      transform-box: fill-box;
+      transform-origin: center;
+      animation: flip-badge-pulse 1.9s ease-in-out infinite;
+    }
+  }
+  @keyframes flip-badge-pulse {
+    0%,
+    100% {
+      opacity: 0.55;
+    }
+    50% {
+      opacity: 1;
+    }
   }
   /* WCS section uses the same 2-col grid as Origin offset but adds a
      full-width snap-button row beneath. The select gets the same field

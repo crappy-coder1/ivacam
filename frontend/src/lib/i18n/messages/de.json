@@ -1144,6 +1144,7 @@
   "stock.flip.axis.y": "Um Y wenden (X spiegeln)",
   "stock.flip.axis.x.hint": "Das Werkstück um eine links–rechts verlaufende Linie (parallel zur X-Achse) wenden. X-Positionen bleiben, Y wird an der Werkstückmitte gespiegelt. Rückseiten-Schnitte erscheinen vorne–hinten gespiegelt.",
   "stock.flip.axis.y.hint": "Das Werkstück um eine vorne–hinten verlaufende Linie (parallel zur Y-Achse) wenden. Y-Positionen bleiben, X wird an der Werkstückmitte gespiegelt. Rückseiten-Schnitte erscheinen links–rechts gespiegelt.",
+  "stock.flip.badge": "Vorschau der Wenderichtung",
   "stock.flip.dowel_dia": "Passstift-Durchmesser",
   "stock.flip.dowel_count": "Passstift-Bohrungen",
   "stock.flip.dowel_margin": "Passstift-Randabstand",

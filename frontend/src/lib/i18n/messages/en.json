@@ -1147,6 +1147,7 @@
   "stock.flip.axis.y": "Flip about Y (mirror X)",
   "stock.flip.axis.x.hint": "Turn the stock over about a line running left–right (parallel to X). X positions stay put; Y mirrors about the stock centre. Back-face cuts land mirrored front-to-back.",
   "stock.flip.axis.y.hint": "Turn the stock over about a line running front–back (parallel to Y). Y positions stay put; X mirrors about the stock centre. Back-face cuts land mirrored left-to-right.",
+  "stock.flip.badge": "Flip direction preview",
   "stock.flip.dowel_dia": "Dowel diameter",
   "stock.flip.dowel_count": "Dowel holes",
   "stock.flip.dowel_margin": "Dowel inset",
