@@ -91,13 +91,32 @@ export class HeightfieldMesh {
   private readonly originX: number;
   private readonly originY: number;
   private readonly topZ: number;
+  /// Scalar fallback floor (physical stock bottom). Used for every cell
+  /// when `floor` is null — the single-sided case and the initial
+  /// uncut-stock state. A two-sided build calls `setFloor` to supply a
+  /// per-cell floor (the reflected back surface); each entry then clamps
+  /// into `[floorZ, topZ]` via `floorAt`.
   private readonly floorZ: number;
+  /// Per-cell floor heights (row-major, `cols × rows`), or null to use
+  /// the scalar `floorZ` everywhere. When set, the underside becomes a
+  /// stepped surface (see FLOOR_RIGHT/FLOOR_UP). Swapped in by `setFloor`;
+  /// the caller must follow with a full `updateHeights` to repaint.
+  private floor: Float32Array | null = null;
 
   // Vertex region offsets — in VERTICES, not floats. Multiply by 3 to
   // get into the positions/normals arrays.
   private readonly TOP_BASE: number; // 4 * N
   private readonly RIGHT_BASE: number; // 4 * N
   private readonly UP_BASE: number; // 4 * N
+  /// Interior +X / +Y walls of the BOTTOM (floor) surface — the dual of
+  /// RIGHT/UP for the underside. Zero-height (degenerate, dropped by the
+  /// rasterizer) whenever the per-cell floor is flat, which includes
+  /// every single-sided job (floor === null → constant floorZ). They only
+  /// carry area on a two-sided job whose reflected back surface steps
+  /// between adjacent cells, so the underside stays watertight instead of
+  /// leaking through gaps between differing floor depths.
+  private readonly FLOOR_RIGHT_BASE: number; // 4 * N
+  private readonly FLOOR_UP_BASE: number; // 4 * N
   private readonly LEFT_BASE: number; // 4 * rows
   private readonly BOTTOM_BASE: number; // 4 * cols
   /// Per-cell floor quad. 4 verts per cell; on carve-through
@@ -172,7 +191,12 @@ export class HeightfieldMesh {
     this.TOP_BASE = 0;
     this.RIGHT_BASE = 4 * n;
     this.UP_BASE = 8 * n;
-    this.LEFT_BASE = 12 * n;
+    this.FLOOR_RIGHT_BASE = 12 * n;
+    this.FLOOR_UP_BASE = 16 * n;
+    // TOP..FLOOR_UP are the five contiguous per-cell regions
+    // (5 × 4n verts). updateHeights uploads them as one range, so they
+    // must stay adjacent and in this order.
+    this.LEFT_BASE = 20 * n;
     this.BOTTOM_BASE = this.LEFT_BASE + 4 * this.rows;
     this.FLOOR_BASE = this.BOTTOM_BASE + 4 * this.cols;
     this.TOTAL_VERTS = this.FLOOR_BASE + 4 * n;
@@ -183,12 +207,13 @@ export class HeightfieldMesh {
     this.colors = new Float32Array(this.TOTAL_VERTS * 3).fill(1);
     this.solidColor = opts.solidColor;
     const normals = new Float32Array(this.TOTAL_VERTS * 3);
-    // Per cell: top(2) + right(2) + up(2) + floor(2) = 8 triangles ×
-    // 3 indices = 24 indices. Per fringe wall: 2 triangles = 6
-    // indices. Per-cell floor quads (rather than a single big quad)
-    // let cut-through cells collapse their underside
-    // so the user sees through the stock from below.
-    const indices = new Uint32Array(24 * n + 6 * this.rows + 6 * this.cols);
+    // Per cell: top(2) + right(2) + up(2) + floor-right(2) + floor-up(2)
+    // + floor(2) = 12 triangles × 3 indices = 36 indices. Per fringe
+    // wall: 2 triangles = 6 indices. Per-cell floor quads (rather than a
+    // single big quad) let cut-through cells collapse their underside so
+    // the user sees through the stock from below; the floor-right/up
+    // walls close the steps between differing floor depths.
+    const indices = new Uint32Array(36 * n + 6 * this.rows + 6 * this.cols);
 
     this.initStaticBuffers(normals, indices);
 
@@ -201,14 +226,14 @@ export class HeightfieldMesh {
     this.geometry.setAttribute('color', this.colorAttr);
     this.geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
     this.geometry.setIndex(new THREE.BufferAttribute(indices, 1));
-    // Split into two material groups: cells (top + walls + fringes)
-    // use the main stock material; per-cell floor quads use
-    // a darker floor material so cut-through cells expose a visibly
-    // different surface. Index offsets must match the
-    // initStaticBuffers emit order (cells, LEFT fringe, BOTTOM
-    // fringe, per-cell floors). The floor region is 6 indices per
-    // cell × N cells.
-    const floorIndexStart = 18 * n + 6 * this.rows + 6 * this.cols;
+    // Split into two material groups: cells (top + walls + floor-walls +
+    // fringes) use the main stock material; per-cell floor quads use a
+    // darker floor material so cut-through cells expose a visibly
+    // different surface. Index offsets must match the initStaticBuffers
+    // emit order (cells: 5 quads = 30 idx each, LEFT fringe, BOTTOM
+    // fringe, per-cell floors). The floor region is 6 indices per cell
+    // × N cells.
+    const floorIndexStart = 30 * n + 6 * this.rows + 6 * this.cols;
     this.geometry.addGroup(0, floorIndexStart, 0);
     this.geometry.addGroup(floorIndexStart, 6 * n, 1);
     this.geometry.boundingBox = new THREE.Box3(
@@ -440,6 +465,36 @@ export class HeightfieldMesh {
         writeNormal(uBase + 3, 0, 1, 0);
         pushQuad(indexOff, uBase + 0, uBase + 1, uBase + 2, uBase + 3);
         indexOff += 6;
+
+        // FLOOR-RIGHT wall: the +X wall of the underside, closing the
+        // step between this cell's floor (zA) and the ix+1 neighbor's
+        // (zB). Same XY footprint + normal as the RIGHT wall; only the Z
+        // values (written by writeFloorRightWall) differ. Degenerate
+        // whenever the floor is flat across the boundary.
+        const frBase = this.FLOOR_RIGHT_BASE + cellIdx * 4;
+        writeVertex(frBase + 0, xR, yB);
+        writeVertex(frBase + 1, xR, yT);
+        writeVertex(frBase + 2, xR, yB);
+        writeVertex(frBase + 3, xR, yT);
+        writeNormal(frBase + 0, 1, 0, 0);
+        writeNormal(frBase + 1, 1, 0, 0);
+        writeNormal(frBase + 2, 1, 0, 0);
+        writeNormal(frBase + 3, 1, 0, 0);
+        pushQuad(indexOff, frBase + 0, frBase + 1, frBase + 2, frBase + 3);
+        indexOff += 6;
+
+        // FLOOR-UP wall: the +Y wall of the underside.
+        const fuBase = this.FLOOR_UP_BASE + cellIdx * 4;
+        writeVertex(fuBase + 0, xL, yT);
+        writeVertex(fuBase + 1, xR, yT);
+        writeVertex(fuBase + 2, xL, yT);
+        writeVertex(fuBase + 3, xR, yT);
+        writeNormal(fuBase + 0, 0, 1, 0);
+        writeNormal(fuBase + 1, 0, 1, 0);
+        writeNormal(fuBase + 2, 0, 1, 0);
+        writeNormal(fuBase + 3, 0, 1, 0);
+        pushQuad(indexOff, fuBase + 0, fuBase + 1, fuBase + 2, fuBase + 3);
+        indexOff += 6;
       }
     }
 
@@ -504,11 +559,28 @@ export class HeightfieldMesh {
     }
   }
 
-  /// Clamp a cell's Z to [floorZ, topZ]. Cells carved below floorZ
-  /// render as a flat hole at the floor — no negative-thickness boxes.
-  private clampZ(z: number): number {
+  /// This cell's floor height, clamped into `[floorZ, topZ]`. Returns the
+  /// scalar `floorZ` when no per-cell floor is set (single-sided + the
+  /// initial uncut state). A two-sided reflected back surface can sit
+  /// anywhere in the stock; clamping to `topZ` means a back cut that
+  /// reaches (or passes) the front face collapses the cell's bar to zero
+  /// height — the two-sided conflict case, which the conflict markers
+  /// flag separately.
+  private floorAt(ix: number, iy: number): number {
+    if (!this.floor) return this.floorZ;
+    const f = this.floor[iy * this.cols + ix];
+    if (f < this.floorZ) return this.floorZ;
+    if (f > this.topZ) return this.topZ;
+    return f;
+  }
+
+  /// Clamp a cell's top Z to [floorAt(cell), topZ]. Cells carved below
+  /// their floor render as a flat hole at the floor — no
+  /// negative-thickness boxes.
+  private clampZ(z: number, ix: number, iy: number): number {
     if (z > this.topZ) return this.topZ;
-    if (z < this.floorZ) return this.floorZ;
+    const floor = this.floorAt(ix, iy);
+    if (z < floor) return floor;
     return z;
   }
 
@@ -518,7 +590,7 @@ export class HeightfieldMesh {
     if (ix < 0 || ix >= this.cols || iy < 0 || iy >= this.rows) {
       return this.topZ;
     }
-    return this.clampZ(view[iy * this.cols + ix]);
+    return this.clampZ(view[iy * this.cols + ix], ix, iy);
   }
 
   /// Rewrite the four top-face vertex Z values for cell (ix, iy).
@@ -539,8 +611,27 @@ export class HeightfieldMesh {
   /// topZ (which left the side looking open).
   private writeRightWall(ix: number, iy: number, zA: number, view: Float32Array): void {
     const cellIdx = iy * this.cols + ix;
-    const zB = ix + 1 < this.cols ? this.cellZ(view, ix + 1, iy) : this.floorZ;
+    // At the grid's right edge the "neighbor" is open air, so the wall
+    // drops from this cell's top all the way to its own floor to close
+    // the side of the stock (the FLOOR-RIGHT wall is degenerate there).
+    const zB = ix + 1 < this.cols ? this.cellZ(view, ix + 1, iy) : this.floorAt(ix, iy);
     const p = (this.RIGHT_BASE + cellIdx * 4) * 3;
+    this.positions[p + 2] = zA;
+    this.positions[p + 5] = zA;
+    this.positions[p + 8] = zB;
+    this.positions[p + 11] = zB;
+  }
+
+  /// Rewrite the four floor +X wall vertex Z values for cell (ix, iy).
+  /// Mirror of `writeRightWall` for the underside: v0/v1 ride on this
+  /// cell's floor (zA), v2/v3 on the ix+1 neighbor's floor (zB). At the
+  /// grid edge zB = zA (degenerate; the RIGHT wall already closes that
+  /// side down to the floor).
+  private writeFloorRightWall(ix: number, iy: number): void {
+    const cellIdx = iy * this.cols + ix;
+    const zA = this.floorAt(ix, iy);
+    const zB = ix + 1 < this.cols ? this.floorAt(ix + 1, iy) : zA;
+    const p = (this.FLOOR_RIGHT_BASE + cellIdx * 4) * 3;
     this.positions[p + 2] = zA;
     this.positions[p + 5] = zA;
     this.positions[p + 8] = zB;
@@ -551,8 +642,21 @@ export class HeightfieldMesh {
   /// top wall. Same outside-of-grid handling as the right wall.
   private writeTopWall(ix: number, iy: number, zA: number, view: Float32Array): void {
     const cellIdx = iy * this.cols + ix;
-    const zB = iy + 1 < this.rows ? this.cellZ(view, ix, iy + 1) : this.floorZ;
+    const zB = iy + 1 < this.rows ? this.cellZ(view, ix, iy + 1) : this.floorAt(ix, iy);
     const p = (this.UP_BASE + cellIdx * 4) * 3;
+    this.positions[p + 2] = zA;
+    this.positions[p + 5] = zA;
+    this.positions[p + 8] = zB;
+    this.positions[p + 11] = zB;
+  }
+
+  /// Rewrite the four floor +Y wall vertex Z values for cell (ix, iy).
+  /// Mirror of `writeTopWall` for the underside.
+  private writeFloorTopWall(ix: number, iy: number): void {
+    const cellIdx = iy * this.cols + ix;
+    const zA = this.floorAt(ix, iy);
+    const zB = iy + 1 < this.rows ? this.floorAt(ix, iy + 1) : zA;
+    const p = (this.FLOOR_UP_BASE + cellIdx * 4) * 3;
     this.positions[p + 2] = zA;
     this.positions[p + 5] = zA;
     this.positions[p + 8] = zB;
@@ -565,8 +669,9 @@ export class HeightfieldMesh {
   /// remaining material in this column).
   private writeLeftFringe(iy: number, zA: number): void {
     const p = (this.LEFT_BASE + iy * 4) * 3;
-    this.positions[p + 2] = this.floorZ;
-    this.positions[p + 5] = this.floorZ;
+    const floor = this.floorAt(0, iy);
+    this.positions[p + 2] = floor;
+    this.positions[p + 5] = floor;
     this.positions[p + 8] = zA;
     this.positions[p + 11] = zA;
   }
@@ -574,8 +679,9 @@ export class HeightfieldMesh {
   /// BOTTOM fringe: vertex Zs for cell (ix, 0)'s outside-facing wall.
   private writeBottomFringe(ix: number, zA: number): void {
     const p = (this.BOTTOM_BASE + ix * 4) * 3;
-    this.positions[p + 2] = this.floorZ;
-    this.positions[p + 5] = this.floorZ;
+    const floor = this.floorAt(ix, 0);
+    this.positions[p + 2] = floor;
+    this.positions[p + 5] = floor;
     this.positions[p + 8] = zA;
     this.positions[p + 11] = zA;
   }
@@ -591,10 +697,11 @@ export class HeightfieldMesh {
   private writeCellFloor(ix: number, iy: number, z: number): void {
     const cellIdx = iy * this.cols + ix;
     const p = (this.FLOOR_BASE + cellIdx * 4) * 3;
-    if (z <= this.floorZ + 1e-6) {
+    const floor = this.floorAt(ix, iy);
+    if (z <= floor + 1e-6) {
       const cx = this.originX + (ix + 0.5) * this.cellSize;
       const cy = this.originY + (iy + 0.5) * this.cellSize;
-      const cz = this.floorZ;
+      const cz = floor;
       for (let k = 0; k < 4; k++) {
         this.positions[p + k * 3 + 0] = cx;
         this.positions[p + k * 3 + 1] = cy;
@@ -606,7 +713,7 @@ export class HeightfieldMesh {
     const xR = xL + this.cellSize;
     const yB = this.originY + iy * this.cellSize;
     const yT = yB + this.cellSize;
-    const fz = this.floorZ - 0.05;
+    const fz = floor - 0.05;
     this.positions[p + 0] = xL;
     this.positions[p + 1] = yB;
     this.positions[p + 2] = fz;
@@ -637,7 +744,7 @@ export class HeightfieldMesh {
     for (let iy = iy0; iy < iy1; iy++) {
       const dataRow = iy * this.cols;
       for (let ix = ix0; ix < ix1; ix++) {
-        const z = this.clampZ(dataView[dataRow + ix]);
+        const z = this.clampZ(dataView[dataRow + ix], ix, iy);
         // Only rewrite the top face when this cell is actually inside
         // the original (non-expanded) AABB — the −X/−Y expansion is
         // there to pick up neighbor walls, not extra top-face writes.
@@ -651,10 +758,15 @@ export class HeightfieldMesh {
           // don't depend on this cell's value.
           this.writeCellFloor(ix, iy, z);
         }
-        // Both walls always need refresh: their far-side Z could have
+        // Both top walls always need refresh: their far-side Z could have
         // moved even if this cell didn't change.
         this.writeRightWall(ix, iy, z, dataView);
         this.writeTopWall(ix, iy, z, dataView);
+        // Floor walls only carry area on a two-sided per-cell floor; they
+        // are cheap degenerate writes otherwise. Kept in step so a full
+        // repaint after setFloor closes the underside steps.
+        this.writeFloorRightWall(ix, iy);
+        this.writeFloorTopWall(ix, iy);
         if (ix === 0) this.writeLeftFringe(iy, z);
         if (iy === 0) this.writeBottomFringe(ix, z);
       }
@@ -669,8 +781,12 @@ export class HeightfieldMesh {
     this.positionAttr.clearUpdateRanges();
     const lowCellIdx = iy0 * this.cols + ix0;
     const highCellIdx = (iy1 - 1) * this.cols + (ix1 - 1);
+    // TOP..FLOOR_UP are five contiguous per-cell regions; one range from
+    // the low cell's TOP vertex to the high cell's last FLOOR_UP vertex
+    // uploads all of them (a superset — same trick as before, now five
+    // regions wide instead of three).
     const cellsMinVert = this.TOP_BASE + lowCellIdx * 4;
-    const cellsMaxVert = this.UP_BASE + highCellIdx * 4 + 4;
+    const cellsMaxVert = this.FLOOR_UP_BASE + highCellIdx * 4 + 4;
     this.positionAttr.addUpdateRange(cellsMinVert * 3, (cellsMaxVert - cellsMinVert) * 3);
     if (ix0 === 0) {
       this.positionAttr.addUpdateRange((this.LEFT_BASE + iy0 * 4) * 3, (iy1 - iy0) * 4 * 3);
@@ -684,6 +800,26 @@ export class HeightfieldMesh {
     const floorMaxVert = this.FLOOR_BASE + highCellIdx * 4 + 4;
     this.positionAttr.addUpdateRange(floorMinVert * 3, (floorMaxVert - floorMinVert) * 3);
     this.positionAttr.needsUpdate = true;
+  }
+
+  /// Install a per-cell floor (row-major `cols × rows`), or `null` to
+  /// revert to the scalar `floorZ`. This is a two-sided-preview seam: the
+  /// caller passes the reflected back surface so the front mesh becomes
+  /// one watertight solid spanning the front carve (top) down to the back
+  /// carve (floor), instead of two meshes meeting at a constant mid-plane.
+  ///
+  /// Only swaps the buffer + validates dimensions; the geometry is not
+  /// repainted here. The caller MUST follow with a full `updateHeights`
+  /// (no aabb) so tops re-clamp against the new floor and the floor walls
+  /// close every step. The driver's build path already does exactly that.
+  setFloor(view: Float32Array | null): void {
+    if (view && view.length < this.cols * this.rows) {
+      // Defensive: an undersized buffer would read past its end in
+      // floorAt. Ignore it and keep the scalar floor.
+      this.floor = null;
+      return;
+    }
+    this.floor = view;
   }
 
   /// Paint (or clear) the target-surface deviation overlay. `classes` is a

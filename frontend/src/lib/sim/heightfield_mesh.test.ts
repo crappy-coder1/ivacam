@@ -141,6 +141,117 @@ describe('HeightfieldMesh deviation overlay', () => {
   });
 });
 
+/// Per-cell floor (two-sided watertight preview). `setFloor` installs the
+/// reflected back surface so the front mesh becomes one solid spanning the
+/// front carve (top) down to the back carve (floor). We read the `position`
+/// buffer straight back to lock: (a) single-sided stays render-identical
+/// (floor walls degenerate), (b) a stepped floor closes the underside, and
+/// (c) a carve-through to the per-cell floor collapses that cell's floor quad.
+describe('HeightfieldMesh per-cell floor', () => {
+  const baseOpts: HeightfieldOptions = {
+    cols: 2,
+    rows: 1,
+    cellSize: 1,
+    originX: 0,
+    originY: 0,
+    topZ: 0,
+    floorZ: -10,
+    solidColor: '#808080',
+    solidOpacity: 1,
+    edgeColor: '#000000',
+    edgeOpacity: 1,
+  };
+
+  // The main geometry's `position` attribute is the longest one in the group
+  // (the EdgesGeometry carries far fewer verts). Pick by array length.
+  function positionArray(group: { traverse: (cb: (o: unknown) => void) => void }): Float32Array {
+    let best: Float32Array | undefined;
+    group.traverse((o: unknown) => {
+      const g = (o as { geometry?: { getAttribute?: (n: string) => { array: Float32Array } } })
+        .geometry;
+      const p = g?.getAttribute?.('position');
+      if (p && (!best || p.array.length > best.length)) best = p.array;
+    });
+    if (!best) throw new Error('no position attribute found');
+    return best;
+  }
+
+  // Vertex-region bases for a cols×rows grid (mirror of the class layout).
+  function bases(cols: number, rows: number) {
+    const n = cols * rows;
+    return {
+      FLOOR_RIGHT: 12 * n,
+      FLOOR_UP: 16 * n,
+      FLOOR: 20 * n + 4 * rows + 4 * cols,
+    };
+  }
+
+  // The four Z values of a 4-vertex wall/quad starting at vertex `vBase`.
+  function quadZ(pos: Float32Array, vBase: number): number[] {
+    const p = vBase * 3;
+    return [pos[p + 2], pos[p + 5], pos[p + 8], pos[p + 11]];
+  }
+
+  it('leaves floor walls degenerate for a single-sided carve (render-identical)', () => {
+    const mesh = new HeightfieldMesh(baseOpts);
+    // Carve cell 0 to −3, leave cell 1 at the top. No per-cell floor.
+    mesh.updateHeights(new Float32Array([-3, 0]));
+    const pos = positionArray(mesh.group);
+    const b = bases(2, 1);
+    // The top RIGHT wall between cell 0 and 1 (RIGHT_BASE = 4n = 8) carries
+    // area (−3 → 0)…
+    const rightWall = quadZ(pos, 8 + 0 * 4);
+    expect(rightWall[0]).toBeCloseTo(-3); // this cell top
+    expect(rightWall[2]).toBeCloseTo(0); // neighbor top
+    // …while the FLOOR-RIGHT wall stays degenerate at the scalar floor.
+    const floorRight = quadZ(pos, b.FLOOR_RIGHT + 0 * 4);
+    for (const z of floorRight) expect(z).toBeCloseTo(-10);
+  });
+
+  it('closes the underside step between two floor depths', () => {
+    const mesh = new HeightfieldMesh(baseOpts);
+    // Reflected back surface: cell 0 floor −8, cell 1 floor −4.
+    mesh.setFloor(new Float32Array([-8, -4]));
+    mesh.updateHeights(new Float32Array([0, 0])); // uncut tops
+    const pos = positionArray(mesh.group);
+    const b = bases(2, 1);
+    // FLOOR-RIGHT wall of cell 0 spans its floor (−8) to the neighbor's (−4).
+    const floorRight = quadZ(pos, b.FLOOR_RIGHT + 0 * 4);
+    expect(floorRight[0]).toBeCloseTo(-8);
+    expect(floorRight[1]).toBeCloseTo(-8);
+    expect(floorRight[2]).toBeCloseTo(-4);
+    expect(floorRight[3]).toBeCloseTo(-4);
+    // Floor quads sit just below each cell's own floor.
+    expect(quadZ(pos, b.FLOOR + 0 * 4)[0]).toBeCloseTo(-8.05);
+    expect(quadZ(pos, b.FLOOR + 1 * 4)[0]).toBeCloseTo(-4.05);
+  });
+
+  it('collapses a cell floor quad when the top carves through to that floor', () => {
+    const mesh = new HeightfieldMesh(baseOpts);
+    mesh.setFloor(new Float32Array([-8, -4]));
+    // Cell 0 carved down to its floor (−8) → through-hole; cell 1 uncut.
+    mesh.updateHeights(new Float32Array([-8, 0]));
+    const pos = positionArray(mesh.group);
+    const b = bases(2, 1);
+    // Collapsed: all four floor-quad verts share the cell-center XY.
+    const q = b.FLOOR + 0 * 4;
+    const xs = [pos[q * 3 + 0], pos[q * 3 + 3], pos[q * 3 + 6], pos[q * 3 + 9]];
+    expect(new Set(xs)).toEqual(new Set([0.5])); // cell 0 center X
+    // Cell 1's floor quad stays a full quad at −4.05.
+    expect(quadZ(pos, b.FLOOR + 1 * 4)[0]).toBeCloseTo(-4.05);
+  });
+
+  it('ignores an undersized floor buffer and keeps the scalar floor', () => {
+    const mesh = new HeightfieldMesh(baseOpts);
+    mesh.setFloor(new Float32Array([-8])); // needs 2 cells
+    mesh.updateHeights(new Float32Array([0, 0]));
+    const pos = positionArray(mesh.group);
+    const b = bases(2, 1);
+    // Fell back to scalar floorZ (−10) → floor quad at −10.05.
+    expect(quadZ(pos, b.FLOOR + 0 * 4)[0]).toBeCloseTo(-10.05);
+  });
+});
+
 describe('HeightfieldMeshPyramid deviation pooling', () => {
   const baseOpts: HeightfieldOptions = {
     cols: 4,
