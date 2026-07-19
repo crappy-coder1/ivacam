@@ -304,3 +304,70 @@ describe('HeightfieldMeshPyramid deviation pooling', () => {
     expect(colors[13]).toBeCloseTo(0.62);
   });
 });
+
+describe('HeightfieldMeshPyramid floor pooling', () => {
+  const baseOpts: HeightfieldOptions = {
+    cols: 4,
+    rows: 1,
+    cellSize: 1,
+    originX: 0,
+    originY: 0,
+    topZ: 0,
+    floorZ: -10,
+    solidColor: '#808080',
+    solidOpacity: 1,
+    edgeColor: '#000000',
+    edgeOpacity: 1,
+  };
+
+  function positionArray(group: { traverse: (cb: (o: unknown) => void) => void }): Float32Array {
+    let best: Float32Array | undefined;
+    group.traverse((o: unknown) => {
+      const g = (o as { geometry?: { getAttribute?: (n: string) => { array: Float32Array } } })
+        .geometry;
+      const p = g?.getAttribute?.('position');
+      if (p && (!best || p.array.length > best.length)) best = p.array;
+    });
+    if (!best) throw new Error('no position attribute found');
+    return best;
+  }
+
+  it('MAX-pools the per-cell floor when a coarse level activates', () => {
+    // 4×1 grid, 2 LOD levels. L1 pools 2×1 blocks.
+    const pyr = new HeightfieldMeshPyramid({ ...baseOpts }, 1, 0);
+    pyr.updateHeights(new Float32Array([0, 0, 0, 0]));
+    // Reflected back surface per L0 cell. L1 block 0 = max(−8,−2) = −2;
+    // block 1 = max(−6,−4) = −4 (the most back-carved child survives).
+    pyr.setFloor(new Float32Array([-8, -2, -6, -4]));
+    pyr.updateHeights(new Float32Array([0, 0, 0, 0])); // full repaint (contract)
+    pyr.setActiveLevel(1);
+    expect(pyr.getActiveLevel()).toBe(1);
+
+    const pos = positionArray(pyr.group);
+    // L1 is a 2×1 grid → FLOOR_BASE = 20·2 + 4·1 + 4·2 = 52.
+    const FLOOR = 52;
+    expect(pos[(FLOOR + 0 * 4) * 3 + 2]).toBeCloseTo(-2.05); // block 0 floor quad
+    expect(pos[(FLOOR + 1 * 4) * 3 + 2]).toBeCloseTo(-4.05); // block 1 floor quad
+    // FLOOR-RIGHT wall (FLOOR_RIGHT_BASE = 12·2 = 24) closes the −2 → −4 step.
+    const fr = 24 + 0 * 4;
+    expect(pos[fr * 3 + 2]).toBeCloseTo(-2);
+    expect(pos[fr * 3 + 8]).toBeCloseTo(-4);
+  });
+
+  it('clears the per-cell floor on every level when passed null', () => {
+    const pyr = new HeightfieldMeshPyramid({ ...baseOpts }, 1, 0);
+    pyr.updateHeights(new Float32Array([0, 0, 0, 0]));
+    pyr.setFloor(new Float32Array([-8, -2, -6, -4]));
+    pyr.updateHeights(new Float32Array([0, 0, 0, 0]));
+    // Revert to the scalar floor, then repaint.
+    pyr.setFloor(null);
+    pyr.updateHeights(new Float32Array([0, 0, 0, 0]));
+
+    const pos = positionArray(pyr.group);
+    // Active level is L0 (4×1) → FLOOR_BASE = 20·4 + 4·1 + 4·4 = 100.
+    const FLOOR = 100;
+    // Every floor quad back at the scalar floorZ (−10) − 0.05.
+    expect(pos[(FLOOR + 0 * 4) * 3 + 2]).toBeCloseTo(-10.05);
+    expect(pos[(FLOOR + 1 * 4) * 3 + 2]).toBeCloseTo(-10.05);
+  });
+});

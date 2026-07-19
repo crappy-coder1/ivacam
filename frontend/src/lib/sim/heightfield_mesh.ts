@@ -1031,6 +1031,17 @@ export class HeightfieldMeshPyramid {
   /// `classPools[k>0]` is a pyramid-owned `Uint8Array` of `cols_k * rows_k`.
   /// Empty placeholder for `k < minLevel`.
   private readonly classPools: Uint8Array[];
+  /// Per-cell floor pools, parallel to `pools`. `floorPools[0]` holds the
+  /// L0 floor view stored by `setFloor` (empty = no per-cell floor, the
+  /// single-sided default); `floorPools[k>0]` is a pyramid-owned
+  /// MAX-pooled `Float32Array`, allocated lazily the first time a coarse
+  /// level actually needs it (single-sided jobs never pay for it).
+  ///
+  /// MAX-pool (dual of the height MIN-pool): the floor is the reflected
+  /// back surface, and a back cut RAISES it, so a coarse cell takes the
+  /// highest child floor — the most back-carved — and never under-reports
+  /// the back cut at a coarse LOD.
+  private floorPools: Float32Array[];
   /// Whether a deviation overlay is currently active (drives level-swap
   /// repaint + `updateHeights`-time re-pooling of coarse class buffers).
   private deviationOn: boolean;
@@ -1067,6 +1078,7 @@ export class HeightfieldMeshPyramid {
     this.levels = [];
     this.pools = [];
     this.classPools = [];
+    this.floorPools = [];
     this.deviationOn = false;
     this.levelCols = [];
     this.levelRows = [];
@@ -1107,6 +1119,9 @@ export class HeightfieldMeshPyramid {
         this.classPools.push(new Uint8Array(cols_k * rows_k));
       }
     }
+    // Floor pools start empty on every level (single-sided default);
+    // `setFloor` fills [0] and lazily allocates the coarse levels it uses.
+    this.floorPools = this.pools.map(() => new Float32Array(0));
     // Active level starts at the floor.
     this.activeLevel = this.minLevel;
     const initialMesh = this.levels[this.activeLevel];
@@ -1131,6 +1146,16 @@ export class HeightfieldMeshPyramid {
       // No L0 view yet — driver hasn't called updateHeights. Leave the
       // new level at its initial-stock state until the next update.
       return;
+    }
+    // Install the per-cell floor BEFORE updateHeights so the new mesh
+    // clamps its tops against the (pooled) floor. No-op when single-sided.
+    if (this.floorPools[0].length > 0) {
+      if (clamped === 0) {
+        newMesh.setFloor(this.floorPools[0]);
+      } else {
+        this.poolFloorRange(clamped, 0, 0, this.cols, this.rows);
+        newMesh.setFloor(this.floorPools[clamped]);
+      }
     }
     if (clamped === 0) {
       newMesh.updateHeights(this.pools[0]);
@@ -1227,6 +1252,67 @@ export class HeightfieldMeshPyramid {
         ix1: lod_ix1,
         iy1: lod_iy1,
       });
+    }
+  }
+
+  /// Drop-in for `HeightfieldMesh.setFloor`. Stores the L0 floor view so a
+  /// later level-swap can re-pool from it, MAX-pools it into the active
+  /// coarse level, and forwards to that level's mesh. Pass `null` to clear
+  /// the per-cell floor on every level. Like the single-mesh contract, the
+  /// caller must follow with a full `updateHeights` so tops re-clamp.
+  setFloor(view: Float32Array | null): void {
+    if (!view) {
+      this.floorPools[0] = new Float32Array(0);
+      for (const m of this.levels) m?.setFloor(null);
+      return;
+    }
+    this.floorPools[0] = view;
+    const k = this.activeLevel;
+    const mesh = this.levels[k];
+    if (!mesh) return;
+    if (k === 0) {
+      mesh.setFloor(view);
+      return;
+    }
+    this.poolFloorRange(k, 0, 0, this.cols, this.rows);
+    mesh.setFloor(this.floorPools[k]);
+  }
+
+  /// MAX-pool L0 floor cells in `[ix0, ix1) × [iy0, iy1)` into `floorPools[k]`,
+  /// allocating that coarse buffer on first use. MAX (not MIN like heights)
+  /// because a back cut raises the reflected floor: a coarse cell takes the
+  /// highest child floor so the back carve stays visible at a coarse LOD.
+  private poolFloorRange(k: number, ix0: number, iy0: number, ix1: number, iy1: number): void {
+    const f = 1 << k;
+    const cols_k = this.levelCols[k];
+    const rows_k = this.levelRows[k];
+    if (this.floorPools[k].length !== cols_k * rows_k) {
+      this.floorPools[k] = new Float32Array(cols_k * rows_k);
+    }
+    const lod_ix0 = Math.max(0, Math.floor(ix0 / f));
+    const lod_iy0 = Math.max(0, Math.floor(iy0 / f));
+    const lod_ix1 = Math.min(cols_k, Math.ceil(ix1 / f));
+    const lod_iy1 = Math.min(rows_k, Math.ceil(iy1 / f));
+    const L0 = this.floorPools[0];
+    const pool = this.floorPools[k];
+    const cols = this.cols;
+    const rows = this.rows;
+    for (let py = lod_iy0; py < lod_iy1; py++) {
+      const blockY0 = py * f;
+      const blockY1 = Math.min(rows, blockY0 + f);
+      for (let px = lod_ix0; px < lod_ix1; px++) {
+        const blockX0 = px * f;
+        const blockX1 = Math.min(cols, blockX0 + f);
+        let m = L0[blockY0 * cols + blockX0];
+        for (let iy = blockY0; iy < blockY1; iy++) {
+          const row = iy * cols;
+          for (let ix = blockX0; ix < blockX1; ix++) {
+            const v = L0[row + ix];
+            if (v > m) m = v;
+          }
+        }
+        pool[py * cols_k + px] = m;
+      }
     }
   }
 
