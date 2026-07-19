@@ -17,6 +17,7 @@
   import { reduceCanvasClick } from '../canvas/entity-selection';
   import { reducePointerDown } from '../canvas/pointer-down';
   import { reducePointerUp } from '../canvas/pointer-up';
+  import { reducePointerMove, hoverCursor } from '../canvas/pointer-move';
   import {
     computeViewportTransform,
     placementsBBox,
@@ -673,245 +674,259 @@
     // while pan/zoom/select/picking. pxToData returns null if the
     // transform isn't staged yet (no imported drawing).
     cursorXY = pxToData(cx, cy);
-    // Feed the live touch position into the gesture tracker and,
-    // while a pinch is active, recompute zoom + pan from the two
-    // fingers' movement (consuming the event before any hover / select).
+    // Feed the live touch position into the gesture tracker so a live
+    // pinch reads the fresh finger positions.
     if (activePointers.has(e.pointerId)) {
       activePointers.set(e.pointerId, { x: cx, y: cy });
     }
-    if (pinch) {
-      const a = activePointers.get(pinch.idA);
-      const b = activePointers.get(pinch.idB);
-      if (a && b && lastBaseTransform) {
-        const next = applyPinch(
-          { zoom: userZoom, panX: userPanX, panY: userPanY },
-          lastBaseTransform,
-          { a: pinch.prevA, b: pinch.prevB },
-          { a, b },
-        );
-        userZoom = next.zoom;
-        userPanX = next.panX;
-        userPanY = next.panY;
-        pinch.prevA = { ...a };
-        pinch.prevB = { ...b };
-      }
-      return;
-    }
-    // Promote a parked stock-handle press to a real drag once the finger
-    // leaves the tap tolerance (ivac-0rbu) — below that it's still a
-    // candidate tap that should select the object under the handle.
-    if (
-      pendingStockGrab &&
-      e.pointerId === pendingStockGrab.pointerId &&
-      !withinTapTolerance({ x: pendingStockGrab.cx0, y: pendingStockGrab.cy0 }, { x: cx, y: cy })
-    ) {
-      stockDrag = {
-        kind: pendingStockGrab.kind,
-        pointerId: pendingStockGrab.pointerId,
-        startBox: pendingStockGrab.startBox,
-        grab: pendingStockGrab.grab,
-        startOffsetX: pendingStockGrab.startOffsetX,
-        startOffsetY: pendingStockGrab.startOffsetY,
-      };
-      pendingStockGrab = null;
-      canvas.style.cursor = 'grabbing';
-    }
-    // Live stock-gizmo drag (phone). Move pans the offset (mode kept);
-    // resize rewrites the box and switches to manual. Each gesture
-    // coalesces into one undo via the explicit setStock key.
-    if (stockDrag && e.pointerId === stockDrag.pointerId) {
-      const cur = pxToData(cx, cy);
-      if (cur) {
-        // Round gizmo output to 0.01 mm so the stored stock dims stay
-        // clean numbers (a raw drag yields long float tails).
-        const r2 = (n: number) => Math.round(n * 100) / 100;
-        if (stockDrag.kind === 'move') {
-          project.setStock(
-            {
-              offsetX: r2(stockDrag.startOffsetX + (cur.x - stockDrag.grab.x)),
-              offsetY: r2(stockDrag.startOffsetY + (cur.y - stockDrag.grab.y)),
-            },
-            'setStock:gizmo-move',
-          );
-        } else {
-          const nextBox = dragStockBox(
-            stockDrag.kind as StockResizeKind,
-            stockDrag.startBox,
-            stockDrag.grab,
-            cur,
-            STOCK_MIN_MM,
-          );
-          const patch = boxToStock(nextBox, currentBboxCenter());
-          project.setStock(
-            {
-              mode: patch.mode,
-              customX: r2(patch.customX),
-              customY: r2(patch.customY),
-              offsetX: r2(patch.offsetX),
-              offsetY: r2(patch.offsetY),
-            },
-            'setStock:gizmo-resize',
-          );
-        }
-      }
-      canvas.style.cursor = 'grabbing';
-      e.preventDefault();
-      return;
-    }
-    // A held finger that wanders past tap tolerance is a drag, not a
-    // hold — cancel the pending long-press context menu.
-    if (longPressStart && !withinTapTolerance(longPressStart, { x: cx, y: cy })) {
-      cancelLongPress();
-    }
-    // In approach-pick mode, the cursor IS the picker — update
-    // the preview marker on every move and short-circuit the
-    // hover-hit / box-select paths below.
-    if (approachPickActive) {
-      const data = pxToData(cx, cy);
-      if (data) {
-        const tol = approachSnapToleranceData();
-        const snap = shiftDown ? null : findOSnap(osnapTargets, data.x, data.y, tol, osnapSettings);
-        approachPreview = snap
-          ? { x: snap.x, y: snap.y, snap: snap.kind }
-          : { x: data.x, y: data.y, snap: null };
-      } else {
-        approachPreview = null;
-      }
-      canvas.style.cursor = 'crosshair';
-      return;
-    } else if (approachPreview) {
-      approachPreview = null;
-    }
 
-    // Live drag of an already-placed approach marker.
-    if (approachDrag && e.pointerId === approachDrag.pointerId) {
-      const data = pxToData(cx, cy);
-      if (data) {
-        const tol = approachSnapToleranceData();
-        const snap = shiftDown ? null : findOSnap(osnapTargets, data.x, data.y, tol, osnapSettings);
-        const x = snap ? snap.x : data.x;
-        const y = snap ? snap.y : data.y;
-        project.updateOperation(approachDrag.opId, { approachPoint: [x, y] });
-        approachPreview = { x, y, snap: snap?.kind ?? null };
-      }
-      canvas.style.cursor = 'grabbing';
-      return;
-    }
-
-    // Live drag of a raster-engrave placement image.
-    // Commits straight to the source origin (coalesced ⇒ one undo
-    // entry); the overlay repaint tracks the new origin reactively.
-    if (rasterDrag && e.pointerId === rasterDrag.pointerId) {
-      const data = pxToData(cx, cy);
-      if (data) {
-        project.updateReliefSource(rasterDrag.sourceId, {
-          origin: { x: data.x - rasterDrag.grabDX, y: data.y - rasterDrag.grabDY },
-        });
-      }
-      canvas.style.cursor = 'grabbing';
-      return;
-    }
-
-    // Live drag of a text layer's origin (coalesced ⇒ one
-    // undo entry); the bg repaint tracks the new origin reactively.
-    if (textDrag && e.pointerId === textDrag.pointerId) {
-      const data = pxToData(cx, cy);
-      if (data) {
-        project.updateTextLayer(textDrag.id, {
-          origin: { x: data.x - textDrag.grabDX, y: data.y - textDrag.grabDY },
-        });
-      }
-      canvas.style.cursor = 'grabbing';
-      return;
-    }
-
-    // Hover-near-marker preview. Mirror the hit-test that
-    // onPointerDown does for click-to-drag so the cursor flips to
-    // `grab` BEFORE the user mousedowns — without this the marker is
-    // draggable but invisibly so.
-    {
-      const selOp =
-        project.sel.selectedOpId == null
-          ? null
-          : project.data.operations.find((o) => o.id === project.sel.selectedOpId);
-      if (
-        selOp &&
-        (selOp.kind === 'profile' || selOp.kind === 'pocket') &&
-        selOp.approachPoint &&
-        !panDrag &&
-        !boxSelect
-      ) {
-        const data = pxToData(cx, cy);
-        if (data) {
-          const hitR = approachMarkerHitRadiusData();
-          const [ax, ay] = selOp.approachPoint;
-          const dx = data.x - ax;
-          const dy = data.y - ay;
-          if (dx * dx + dy * dy <= hitR * hitR) {
-            canvas.style.cursor = 'grab';
-            return;
+    // The move handler is a priority pipeline with two cleanups interleaved
+    // between the mode returns; reducePointerMove (lib/canvas/pointer-move.ts)
+    // owns that fragile order as a pure, tested decision. We resolve the
+    // predicates here and run the verbatim body the winning mode names.
+    const intent = reducePointerMove({
+      pinchActive: pinch != null,
+      promoteStock:
+        pendingStockGrab != null &&
+        e.pointerId === pendingStockGrab.pointerId &&
+        !withinTapTolerance({ x: pendingStockGrab.cx0, y: pendingStockGrab.cy0 }, { x: cx, y: cy }),
+      stockDragMatches: stockDrag != null && e.pointerId === stockDrag.pointerId,
+      longPressWandered:
+        longPressStart != null && !withinTapTolerance(longPressStart, { x: cx, y: cy }),
+      approachPickActive,
+      approachDragMatches: approachDrag != null && e.pointerId === approachDrag.pointerId,
+      rasterDragMatches: rasterDrag != null && e.pointerId === rasterDrag.pointerId,
+      textDragMatches: textDrag != null && e.pointerId === textDrag.pointerId,
+      // Lazy: mirror onPointerDown's marker hit-test so the cursor flips to
+      // `grab` BEFORE the user mousedowns — without it the marker is
+      // draggable but invisibly so. Gated out while panning / box-selecting.
+      hoverMarkerHit: () => {
+        const selOp =
+          project.sel.selectedOpId == null
+            ? null
+            : project.data.operations.find((o) => o.id === project.sel.selectedOpId);
+        if (
+          selOp &&
+          (selOp.kind === 'profile' || selOp.kind === 'pocket') &&
+          selOp.approachPoint &&
+          !panDrag &&
+          !boxSelect
+        ) {
+          const data = pxToData(cx, cy);
+          if (data) {
+            const hitR = approachMarkerHitRadiusData();
+            const [ax, ay] = selOp.approachPoint;
+            const dx = data.x - ax;
+            const dy = data.y - ay;
+            if (dx * dx + dy * dy <= hitR * hitR) return true;
           }
         }
-      }
-    }
+        return false;
+      },
+      panActive: panDrag != null,
+      boxDragEngaged:
+        boxSelect != null &&
+        (!boxSelect.armed ||
+          Math.hypot(cx - boxSelect.startX, cy - boxSelect.startY) >= BOX_DRAG_THRESHOLD),
+    });
 
-    // Active pan drag: translate the user-pan offsets by the cursor
-    // delta. Each move is RELATIVE so we anchor on the previous frame's
-    // screen position, then update the anchor for the next frame.
-    if (panDrag) {
-      const dx = e.clientX - panDrag.startX;
-      const dy = e.clientY - panDrag.startY;
-      userPanX += dx;
-      userPanY += dy;
-      panDrag = { ...panDrag, startX: e.clientX, startY: e.clientY };
-      return;
-    }
-    // Box-select drag: once the cursor crosses BOX_DRAG_THRESHOLD px
-    // from the arm point, commit to a box drag. While dragging,
-    // suppress hover hit-testing so the cursor stays a crosshair.
-    if (boxSelect) {
-      const dx = cx - boxSelect.startX;
-      const dy = cy - boxSelect.startY;
-      if (!boxSelect.armed || Math.hypot(dx, dy) >= BOX_DRAG_THRESHOLD) {
-        boxSelect = { ...boxSelect, curX: cx, curY: cy, armed: false };
+    // Interleaved cleanups (faithful to the original order): a held finger
+    // that wandered past tap tolerance is a drag, not a hold, so cancel the
+    // pending long-press menu; and leaving pick mode drops any staged preview.
+    if (intent.cancelLongPress) cancelLongPress();
+    if (intent.clearApproachPreview && approachPreview) approachPreview = null;
+
+    switch (intent.mode) {
+      case 'pinch': {
+        const a = activePointers.get(pinch!.idA);
+        const b = activePointers.get(pinch!.idB);
+        if (a && b && lastBaseTransform) {
+          const next = applyPinch(
+            { zoom: userZoom, panX: userPanX, panY: userPanY },
+            lastBaseTransform,
+            { a: pinch!.prevA, b: pinch!.prevB },
+            { a, b },
+          );
+          userZoom = next.zoom;
+          userPanX = next.panX;
+          userPanY = next.panY;
+          pinch!.prevA = { ...a };
+          pinch!.prevB = { ...b };
+        }
+        return;
+      }
+      case 'stock-drag': {
+        // Promote a parked stock-handle press to a real drag once the finger
+        // leaves the tap tolerance (ivac-0rbu) — below that it's still a
+        // candidate tap that should select the object under the handle.
+        if (intent.promoteStock && pendingStockGrab) {
+          stockDrag = {
+            kind: pendingStockGrab.kind,
+            pointerId: pendingStockGrab.pointerId,
+            startBox: pendingStockGrab.startBox,
+            grab: pendingStockGrab.grab,
+            startOffsetX: pendingStockGrab.startOffsetX,
+            startOffsetY: pendingStockGrab.startOffsetY,
+          };
+          pendingStockGrab = null;
+          canvas.style.cursor = 'grabbing';
+        }
+        // Live stock-gizmo drag (phone). Move pans the offset (mode kept);
+        // resize rewrites the box and switches to manual. Each gesture
+        // coalesces into one undo via the explicit setStock key.
+        if (stockDrag && e.pointerId === stockDrag.pointerId) {
+          const cur = pxToData(cx, cy);
+          if (cur) {
+            // Round gizmo output to 0.01 mm so the stored stock dims stay
+            // clean numbers (a raw drag yields long float tails).
+            const r2 = (n: number) => Math.round(n * 100) / 100;
+            if (stockDrag.kind === 'move') {
+              project.setStock(
+                {
+                  offsetX: r2(stockDrag.startOffsetX + (cur.x - stockDrag.grab.x)),
+                  offsetY: r2(stockDrag.startOffsetY + (cur.y - stockDrag.grab.y)),
+                },
+                'setStock:gizmo-move',
+              );
+            } else {
+              const nextBox = dragStockBox(
+                stockDrag.kind as StockResizeKind,
+                stockDrag.startBox,
+                stockDrag.grab,
+                cur,
+                STOCK_MIN_MM,
+              );
+              const patch = boxToStock(nextBox, currentBboxCenter());
+              project.setStock(
+                {
+                  mode: patch.mode,
+                  customX: r2(patch.customX),
+                  customY: r2(patch.customY),
+                  offsetX: r2(patch.offsetX),
+                  offsetY: r2(patch.offsetY),
+                },
+                'setStock:gizmo-resize',
+              );
+            }
+          }
+          canvas.style.cursor = 'grabbing';
+          e.preventDefault();
+        }
+        return;
+      }
+      case 'approach-pick': {
+        // In approach-pick mode, the cursor IS the picker — update
+        // the preview marker on every move.
+        const data = pxToData(cx, cy);
+        if (data) {
+          const tol = approachSnapToleranceData();
+          const snap = shiftDown
+            ? null
+            : findOSnap(osnapTargets, data.x, data.y, tol, osnapSettings);
+          approachPreview = snap
+            ? { x: snap.x, y: snap.y, snap: snap.kind }
+            : { x: data.x, y: data.y, snap: null };
+        } else {
+          approachPreview = null;
+        }
         canvas.style.cursor = 'crosshair';
         return;
       }
-    }
-    // Text-stroke hover takes precedence (text is drawn on top);
-    // when over a glyph stroke we suppress the geometry hover and flip
-    // the cursor to a grab affordance so the drag is discoverable.
-    const tdata = pxToData(cx, cy);
-    const textHover = tdata ? textHitAtData(tdata.x, tdata.y) : null;
-    const idx = textHover ? null : pixelHit(cx, cy);
-    if (idx !== hoverIdx) hoverIdx = idx;
-    const newHoverText = textHover ? textHover.id : null;
-    if (newHoverText !== hoverTextId) hoverTextId = newHoverText;
-    // Tab-placement mode — project cursor to the op's
-    // closest source contour and stage a ghost tab. The ghost only
-    // renders when the projection is within ~6 px of the cursor
-    // (screen-space) so we don't spam ghosts the user wasn't aiming at.
-    if (tabPlacementActive && lastTransform) {
-      const ghost = ghostTabAt(cx, cy);
-      if (
-        !ghost ||
-        !ghostTab ||
-        ghost.objectId !== ghostTab.objectId ||
-        Math.abs(ghost.t - ghostTab.t) > 1e-5
-      ) {
-        ghostTab = ghost;
+      case 'approach-drag': {
+        // Live drag of an already-placed approach marker.
+        const data = pxToData(cx, cy);
+        if (data) {
+          const tol = approachSnapToleranceData();
+          const snap = shiftDown
+            ? null
+            : findOSnap(osnapTargets, data.x, data.y, tol, osnapSettings);
+          const x = snap ? snap.x : data.x;
+          const y = snap ? snap.y : data.y;
+          project.updateOperation(approachDrag!.opId, { approachPoint: [x, y] });
+          approachPreview = { x, y, snap: snap?.kind ?? null };
+        }
+        canvas.style.cursor = 'grabbing';
+        return;
       }
-    } else if (ghostTab) {
-      ghostTab = null;
+      case 'raster-drag': {
+        // Live drag of a raster-engrave placement image.
+        // Commits straight to the source origin (coalesced ⇒ one undo
+        // entry); the overlay repaint tracks the new origin reactively.
+        const data = pxToData(cx, cy);
+        if (data) {
+          project.updateReliefSource(rasterDrag!.sourceId, {
+            origin: { x: data.x - rasterDrag!.grabDX, y: data.y - rasterDrag!.grabDY },
+          });
+        }
+        canvas.style.cursor = 'grabbing';
+        return;
+      }
+      case 'text-drag': {
+        // Live drag of a text layer's origin (coalesced ⇒ one
+        // undo entry); the bg repaint tracks the new origin reactively.
+        const data = pxToData(cx, cy);
+        if (data) {
+          project.updateTextLayer(textDrag!.id, {
+            origin: { x: data.x - textDrag!.grabDX, y: data.y - textDrag!.grabDY },
+          });
+        }
+        canvas.style.cursor = 'grabbing';
+        return;
+      }
+      case 'hover-marker': {
+        canvas.style.cursor = 'grab';
+        return;
+      }
+      case 'pan': {
+        // Active pan drag: translate the user-pan offsets by the cursor
+        // delta. Each move is RELATIVE so we anchor on the previous frame's
+        // screen position, then update the anchor for the next frame.
+        const dx = e.clientX - panDrag!.startX;
+        const dy = e.clientY - panDrag!.startY;
+        userPanX += dx;
+        userPanY += dy;
+        panDrag = { ...panDrag!, startX: e.clientX, startY: e.clientY };
+        return;
+      }
+      case 'box-drag': {
+        // Box-select drag: the cursor crossed BOX_DRAG_THRESHOLD px from the
+        // arm point. While dragging, suppress hover hit-testing so the cursor
+        // stays a crosshair.
+        boxSelect = { ...boxSelect!, curX: cx, curY: cy, armed: false };
+        canvas.style.cursor = 'crosshair';
+        return;
+      }
+      case 'hover': {
+        // Text-stroke hover takes precedence (text is drawn on top);
+        // when over a glyph stroke we suppress the geometry hover and flip
+        // the cursor to a grab affordance so the drag is discoverable.
+        const tdata = pxToData(cx, cy);
+        const textHover = tdata ? textHitAtData(tdata.x, tdata.y) : null;
+        const idx = textHover ? null : pixelHit(cx, cy);
+        if (idx !== hoverIdx) hoverIdx = idx;
+        const newHoverText = textHover ? textHover.id : null;
+        if (newHoverText !== hoverTextId) hoverTextId = newHoverText;
+        // Tab-placement mode — project cursor to the op's
+        // closest source contour and stage a ghost tab. The ghost only
+        // renders when the projection is within ~6 px of the cursor
+        // (screen-space) so we don't spam ghosts the user wasn't aiming at.
+        if (tabPlacementActive && lastTransform) {
+          const ghost = ghostTabAt(cx, cy);
+          if (
+            !ghost ||
+            !ghostTab ||
+            ghost.objectId !== ghostTab.objectId ||
+            Math.abs(ghost.t - ghostTab.t) > 1e-5
+          ) {
+            ghostTab = ghost;
+          }
+        } else if (ghostTab) {
+          ghostTab = null;
+        }
+        canvas.style.cursor = hoverCursor(textHover != null, idx != null, tabPlacementActive);
+        return;
+      }
     }
-    const baseCursor = tabPlacementActive ? 'crosshair' : 'default';
-    canvas.style.cursor = textHover
-      ? 'grab'
-      : idx == null
-        ? baseCursor
-        : tabPlacementActive
-          ? 'cell'
-          : 'pointer';
   }
 
   function onPointerUp(e: PointerEvent) {
