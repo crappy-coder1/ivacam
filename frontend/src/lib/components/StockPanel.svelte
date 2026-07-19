@@ -15,10 +15,68 @@
   import { t } from '../i18n';
   import { computeFootprint } from '../sim/driver';
   import { parseFiniteNumber } from '../cam/units';
-  import { inferDefaultWorkOffset, type Wcs, type WorkOffset } from '../state/project-types';
+  import {
+    inferDefaultWorkOffset,
+    type Wcs,
+    type WorkOffset,
+    type FlipRegistration,
+    type DowelPinConfig,
+  } from '../state/project-types';
 
   function patch(p: Partial<typeof project.data.stock>) {
     project.setStock(p);
+  }
+
+  /// Sensible seed when the user first enables two-sided machining.
+  /// 6 mm dowel pins are the hobby-CNC standard; two holes is the minimum
+  /// for an unambiguous flip alignment (one leaves the part free to
+  /// pivot); a 10 mm inset keeps the holes in waste stock clear of the
+  /// part. Matches the Rust `DowelPinConfig` defaults (count = 2).
+  const DEFAULT_DOWELS: DowelPinConfig = { diameterMm: 6, count: 2, marginMm: 10 };
+  const DEFAULT_FLIP: FlipRegistration = { axis: 'x', dowels: DEFAULT_DOWELS };
+
+  /// Toggle two-sided (flip-stock) mode. Enabling seeds a default flip
+  /// registration; disabling drops it entirely — ops keep their `side`
+  /// tag but it stops mattering (build-project only splits into a second
+  /// program when `flip` is present).
+  function toggleFlip(e: Event) {
+    const on = (e.target as HTMLInputElement).checked;
+    patch({ flip: on ? DEFAULT_FLIP : undefined });
+  }
+
+  /// Merge a partial into the current flip registration and commit it
+  /// under a DISTINCT coalesce key so consecutive edits to *different*
+  /// flip fields each land as their own undo step. Every flip patch shares
+  /// the top-level `flip` key, which would otherwise coalesce unrelated
+  /// edits (axis switch + dowel tweak) into one undo entry.
+  function patchFlip(part: Partial<FlipRegistration>, coalesceKey: string) {
+    const cur = project.data.stock.flip;
+    if (!cur) return;
+    project.setStock({ flip: { ...cur, ...part } }, coalesceKey);
+  }
+
+  /// Commit a nested dowel-config number with the shared invalid-feedback
+  /// flash (keyed `flip:<field>`), mirroring `onStockNumberChange`. Counts
+  /// round to a whole number; diameters / margins keep their decimals.
+  function onDowelNumberChange(
+    field: keyof DowelPinConfig,
+    e: Event,
+    opts: { min?: number; integer?: boolean } = {},
+  ) {
+    const cur = project.data.stock.flip;
+    if (!cur) return;
+    const parsed = parseFiniteNumber((e.target as HTMLInputElement).value, {
+      min: opts.min ?? 0,
+    });
+    const ns = `flip:${field}`;
+    if (parsed.value == null) {
+      invalidKey = ns;
+      return;
+    }
+    invalidKey = null;
+    const value = opts.integer ? Math.round(parsed.value) : parsed.value;
+    const dowels: DowelPinConfig = { ...(cur.dowels ?? DEFAULT_DOWELS), [field]: value };
+    project.setStock({ flip: { ...cur, dowels } }, `setStock:${ns}`);
   }
   function patchWorkOffset(p: Partial<WorkOffset>) {
     project.setWorkOffset(p);
@@ -98,6 +156,12 @@
   );
   const computedLength = $derived(Math.max(0, footprint.maxX - footprint.minX));
   const computedWidth = $derived(Math.max(0, footprint.maxY - footprint.minY));
+
+  /// Reactive alias for the two-sided registration; `undefined` = single-
+  /// sided (the common case). Reading `project.data.stock.flip` inside the
+  /// template tracks nested changes because `setStock` reassigns the whole
+  /// `stock` object immutably.
+  const flip = $derived(project.data.stock.flip);
 </script>
 
 <div class="stock">
@@ -309,6 +373,84 @@
       {t('stock.snap_bbox')}
     </button>
   </fieldset>
+
+  <!-- Two-sided (flip-stock) registration. When enabled, ops tagged
+       side:'back' are mirrored about the flip axis and emitted as a
+       second program to run after the stock is physically turned over;
+       the front program drills the dowel holes the back references. The
+       flip AXIS is the single most error-prone choice in two-sided work,
+       so it carries an explicit label + a live consequence hint (a richer
+       3D flip visual ships as a follow-up, ivac-rt1.11.5 "U"). -->
+  <fieldset class="flip">
+    <legend>{t('stock.flip')}</legend>
+    <label class="check">
+      <input type="checkbox" checked={flip != null} onchange={toggleFlip} />
+      <span>{t('stock.flip.enable')}</span>
+    </label>
+    {#if flip}
+      <label>
+        <span>{t('stock.flip.axis')}</span>
+        <span class="field">
+          <select
+            value={flip.axis}
+            onchange={(e) =>
+              patchFlip(
+                { axis: (e.currentTarget as HTMLSelectElement).value as 'x' | 'y' },
+                'setStock:flip:axis',
+              )}
+          >
+            <option value="x">{t('stock.flip.axis.x')}</option>
+            <option value="y">{t('stock.flip.axis.y')}</option>
+          </select>
+        </span>
+      </label>
+      <p class="flip-hint">
+        {t(flip.axis === 'x' ? 'stock.flip.axis.x.hint' : 'stock.flip.axis.y.hint')}
+      </p>
+      <label>
+        <span>{t('stock.flip.dowel_dia')}</span>
+        <span class="field">
+          <input
+            type="number"
+            step="0.5"
+            min="0.1"
+            value={flip.dowels?.diameterMm ?? DEFAULT_DOWELS.diameterMm}
+            class:invalid={invalidKey === 'flip:diameterMm'}
+            onchange={(e) => onDowelNumberChange('diameterMm', e, { min: 0.1 })}
+          />
+          <span class="unit">mm</span>
+        </span>
+      </label>
+      <label>
+        <span>{t('stock.flip.dowel_count')}</span>
+        <span class="field">
+          <input
+            type="number"
+            step="1"
+            min="2"
+            value={flip.dowels?.count ?? DEFAULT_DOWELS.count}
+            class:invalid={invalidKey === 'flip:count'}
+            onchange={(e) => onDowelNumberChange('count', e, { min: 2, integer: true })}
+          />
+        </span>
+      </label>
+      <label>
+        <span>{t('stock.flip.dowel_margin')}</span>
+        <span class="field">
+          <input
+            type="number"
+            step="0.5"
+            min="0"
+            value={flip.dowels?.marginMm ?? DEFAULT_DOWELS.marginMm}
+            class:invalid={invalidKey === 'flip:marginMm'}
+            onchange={(e) => onDowelNumberChange('marginMm', e, { min: 0 })}
+            title={t('stock.flip.dowel_margin.title')}
+          />
+          <span class="unit">mm</span>
+        </span>
+      </label>
+    {/if}
+  </fieldset>
 </div>
 
 <style>
@@ -351,17 +493,41 @@
   }
   fieldset.dims label,
   fieldset.origin label,
-  fieldset.wcs label {
+  fieldset.wcs label,
+  fieldset.flip label:not(.check) {
     display: flex;
     flex-direction: column;
     gap: 0.15rem;
     color: var(--text-muted);
     font-size: 0.72rem;
   }
+  /* Two-sided registration. The enable checkbox and the axis-consequence
+     hint span the full 2-col grid; everything else reuses the shared
+     column-label + field styling above. */
+  fieldset.flip .check {
+    grid-column: 1 / -1;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.78rem;
+    color: var(--text);
+    cursor: pointer;
+  }
+  fieldset.flip .check input[type='checkbox'] {
+    accent-color: var(--accent);
+  }
+  fieldset.flip .flip-hint {
+    grid-column: 1 / -1;
+    margin: 0;
+    font-size: 0.68rem;
+    line-height: 1.3;
+    color: var(--text-muted);
+  }
   /* WCS section uses the same 2-col grid as Origin offset but adds a
      full-width snap-button row beneath. The select gets the same field
      wrapper styling as the number inputs. */
-  fieldset.wcs .field select {
+  fieldset.wcs .field select,
+  fieldset.flip .field select {
     flex: 1;
     min-width: 0;
     width: 100%;

@@ -445,6 +445,27 @@
 
     <fieldset>
       <legend>{t('opprops.source')}</legend>
+      <!-- Two-sided (flip-stock) face selector. Only meaningful when the
+           stock carries a flip registration; hidden otherwise so a
+           single-sided project never sees a knob that does nothing. Front
+           is stored as `undefined` (the wire omits it) so picking Front
+           normalises the model back to the single-sided default. -->
+      {#if project.data.stock.flip != null}
+        <label class="row" title={t('opprops.side.title')}>
+          <span>{t('opprops.side')}</span>
+          <select
+            value={op.side ?? 'front'}
+            onchange={(e) =>
+              patch(
+                'side',
+                (e.currentTarget as HTMLSelectElement).value === 'back' ? 'back' : undefined,
+              )}
+          >
+            <option value="front">{t('opprops.side.front')}</option>
+            <option value="back">{t('opprops.side.back')}</option>
+          </select>
+        </label>
+      {/if}
       <label class="row">
         <span>{t('opprops.source.mode')}</span>
         <select

@@ -628,6 +628,10 @@ export type MsgKey =
   | "opprops.plunge.ramp.help"
   | "opprops.ramp_angle"
   | "opprops.ramp_angle.title"
+  | "opprops.side"
+  | "opprops.side.back"
+  | "opprops.side.front"
+  | "opprops.side.title"
   | "opprops.source"
   | "opprops.source.all_chains"
   | "opprops.source.layer"
@@ -1254,6 +1258,17 @@ export type MsgKey =
   | "shortcuts.view3d.pan"
   | "shortcuts.zoom"
   | "stock.dimensions"
+  | "stock.flip"
+  | "stock.flip.axis"
+  | "stock.flip.axis.x"
+  | "stock.flip.axis.x.hint"
+  | "stock.flip.axis.y"
+  | "stock.flip.axis.y.hint"
+  | "stock.flip.dowel_count"
+  | "stock.flip.dowel_dia"
+  | "stock.flip.dowel_margin"
+  | "stock.flip.dowel_margin.title"
+  | "stock.flip.enable"
   | "stock.length"
   | "stock.margin"
   | "stock.margin.title"
@@ -2231,6 +2246,10 @@ export const MSG_KEYS: readonly MsgKey[] = [
   "opprops.plunge.ramp.help",
   "opprops.ramp_angle",
   "opprops.ramp_angle.title",
+  "opprops.side",
+  "opprops.side.back",
+  "opprops.side.front",
+  "opprops.side.title",
   "opprops.source",
   "opprops.source.all_chains",
   "opprops.source.layer",
@@ -2857,6 +2876,17 @@ export const MSG_KEYS: readonly MsgKey[] = [
   "shortcuts.view3d.pan",
   "shortcuts.zoom",
   "stock.dimensions",
+  "stock.flip",
+  "stock.flip.axis",
+  "stock.flip.axis.x",
+  "stock.flip.axis.x.hint",
+  "stock.flip.axis.y",
+  "stock.flip.axis.y.hint",
+  "stock.flip.dowel_count",
+  "stock.flip.dowel_dia",
+  "stock.flip.dowel_margin",
+  "stock.flip.dowel_margin.title",
+  "stock.flip.enable",
   "stock.length",
   "stock.margin",
   "stock.margin.title",
