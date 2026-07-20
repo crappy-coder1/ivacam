@@ -41,7 +41,7 @@ const BUDGETS: Record<string, number> = {
   // Epic-tracked god-components under active decomposition (ivac-3xwn).
   'lib/components/EntityCanvas2D.svelte': 2290, // 2273 — ivac-1hxn: PointerDragController slice
   'App.svelte': 2200, // 2155 — ivac-3xwn.1
-  'lib/state/project.svelte.ts': 1080, // 1065 — machine/stock/profile ops extracted to project-machine-ops.ts
+  'lib/state/project.svelte.ts': 1005, // 991 — machine + selection ops extracted to project-{machine,selection}-ops.ts
   // Large but stable / separately tracked components.
   'lib/components/ToolLibraryDialog.svelte': 1010, // 969 — u9iy: collapsed-row cells → ToolRowSummary
   'lib/components/Scene3D.svelte': 1450, // 1404 — held via scene3d/* builders

@@ -31,6 +31,7 @@ import type { OpEntry, OpKind } from './op_types';
 import * as importOps from './import-ops';
 import * as fileOps from './project-file-ops';
 import * as machineOps from './project-machine-ops';
+import * as selectionOps from './project-selection-ops';
 
 // Pure-TypeScript data shapes live in project-types.ts so vitest specs
 // and non-Svelte helpers can import them without booting the rune
@@ -164,9 +165,6 @@ export type {
 } from './op_types';
 export { isContourOp, isPathOp } from './op_types';
 
-// Pure 2D geometry primitives extracted to `lib/canvas/selection-geometry.ts`
-// so vitest specs can exercise them without mounting the canvas.
-import { lineCrossesBBox } from '../canvas/selection-geometry';
 import { computeFootprint } from '../sim/driver';
 import { augmentWithStockOutline } from './stock-outline';
 import { buildOpEntry } from './op_defaults';
@@ -212,7 +210,6 @@ import {
   removeFixtureCommand,
   reorderOperationCommand,
   replaceToolsCommand,
-  selectObjectsCommand,
   setGroupOpsByToolCommand,
   toggleTabPlacementCommand,
   updateFixtureCommand,
@@ -221,7 +218,6 @@ import {
   updateTextLayerCommand,
   type CommandTarget,
 } from './commands';
-import { computeSelectionUpdate, selectionsEqual } from './selection.svelte';
 
 export class ProjectState {
   /// Project-data slice. Owns `imported`,
@@ -576,98 +572,28 @@ export class ProjectState {
     return importOps.reimportFromPath(this, path);
   }
 
+  /// Canvas-click object toggle (undoable) — see
+  /// state/project-selection-ops.ts.
   toggleObject(id: number, additive = false) {
-    if (id <= 0) return;
-    // Route through the same command path as `selectObjects` so the
-    // canvas-click toggle ends up in the undo/redo stack.
-    this.selectObjects([id], additive ? 'toggle' : 'replace');
+    selectionOps.toggleObject(this, id, additive);
   }
 
-  /// Bulk selection update — used by box-select and any other path
-  /// that needs to commit a set of object ids with FreeCAD-style
-  /// modifier semantics in one go. Pushes the change through the
-  /// History so Ctrl+Z reverts the selection.
+  /// Bulk selection update with FreeCAD-style modifier semantics
+  /// (undoable) — see state/project-selection-ops.ts.
   selectObjects(ids: Iterable<number>, mode: SelectionMode) {
-    const prevSelected = new Set(this.sel.selectedObjects);
-    const prevAnchor = this.sel.selectionAnchorObjectId;
-    const { selected: nextSelected, anchor: nextAnchor } = computeSelectionUpdate(
-      prevSelected,
-      prevAnchor,
-      ids,
-      mode,
-    );
-    this.pushSelectionChange(prevSelected, prevAnchor, nextSelected, nextAnchor);
+    selectionOps.selectObjects(this, ids, mode);
   }
 
-  /// Internal: emit a single selection-change command. Used by
-  /// `selectObjects`, `clearSelection`, `seriesSelectTo`, and any
-  /// future selection helper that needs to land in the undo stack.
-  /// Skips the push when prev == next (no-op selection updates
-  /// shouldn't waste an undo slot).
-  private pushSelectionChange(
-    prevSelected: Set<number>,
-    prevAnchor: number | null,
-    nextSelected: Set<number>,
-    nextAnchor: number | null,
-  ) {
-    if (selectionsEqual(prevSelected, nextSelected) && prevAnchor === nextAnchor) return;
-    this.history.exec(
-      selectObjectsCommand(
-        this.sel,
-        { selected: prevSelected, anchor: prevAnchor },
-        { selected: nextSelected, anchor: nextAnchor },
-      ),
-      this.target(),
-    );
-  }
-  /// Series-select: extend the selection from the current anchor object
-  /// to `targetId`, picking every visible object whose bbox is crossed
-  /// by the straight line between the two bbox centroids. Falls back to
-  /// a plain replace when no anchor exists. Honors visibleLayers so
-  /// hidden chains can't be accidentally swept in.
+  /// Series-select from the current anchor to `targetId` along the
+  /// bbox-centroid line — see state/project-selection-ops.ts.
   seriesSelectTo(targetId: number) {
-    if (targetId <= 0) return;
-    const anchorId = this.sel.selectionAnchorObjectId;
-    const meta = this.transformedImport?.object_meta ?? [];
-    if (anchorId == null || anchorId === targetId || meta.length === 0) {
-      this.selectObjects([targetId], 'replace');
-      return;
-    }
-    const visible = this.data.visibleLayers;
-    const byId = new Map<number, (typeof meta)[number]>();
-    for (const m of meta) byId.set(m.id, m);
-    const a = byId.get(anchorId);
-    const t = byId.get(targetId);
-    if (!a || !t) {
-      this.selectObjects([targetId], 'replace');
-      return;
-    }
-    const p0 = { x: (a.bbox.min_x + a.bbox.max_x) * 0.5, y: (a.bbox.min_y + a.bbox.max_y) * 0.5 };
-    const p1 = { x: (t.bbox.min_x + t.bbox.max_x) * 0.5, y: (t.bbox.min_y + t.bbox.max_y) * 0.5 };
-    const picked: number[] = [anchorId, targetId];
-    for (const m of meta) {
-      if (m.id === anchorId || m.id === targetId) continue;
-      if (!visible.has(m.layer)) continue;
-      if (lineCrossesBBox(p0, p1, m.bbox)) picked.push(m.id);
-    }
-    // Compute the post-add selection + override the anchor to `targetId`
-    // so consecutive Shift+clicks chain (anchor → click → click → click).
-    // Single command so Ctrl+Z restores both selection and anchor in
-    // one undo step.
-    const prevSelected = new Set(this.sel.selectedObjects);
-    const prevAnchor = this.sel.selectionAnchorObjectId;
-    const { selected: nextSelected } = computeSelectionUpdate(
-      prevSelected,
-      prevAnchor,
-      picked,
-      'add',
-    );
-    this.pushSelectionChange(prevSelected, prevAnchor, nextSelected, targetId);
+    selectionOps.seriesSelectTo(this, targetId);
   }
+
+  /// Clear the object selection (undoable) — see
+  /// state/project-selection-ops.ts.
   clearSelection() {
-    const prevSelected = new Set(this.sel.selectedObjects);
-    const prevAnchor = this.sel.selectionAnchorObjectId;
-    this.pushSelectionChange(prevSelected, prevAnchor, new Set(), null);
+    selectionOps.clearSelection(this);
   }
 
   setGenerated(r: GenerateResponse) {
