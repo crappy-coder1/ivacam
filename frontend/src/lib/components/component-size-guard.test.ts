@@ -43,7 +43,7 @@ const BUDGETS: Record<string, number> = {
   'App.svelte': 2200, // 2155 — ivac-3xwn.1
   'lib/state/project.svelte.ts': 1200, // 1144 — regrown state god-module (no child yet)
   // Large but stable / separately tracked components.
-  'lib/components/ToolLibraryDialog.svelte': 2150, // 2098 — bzpt WIP
+  'lib/components/ToolLibraryDialog.svelte': 1280, // 1222 — bzpt: presets + expanded-row editor extracted
   'lib/components/Scene3D.svelte': 1450, // 1404 — held via scene3d/* builders
   'lib/components/MachineDialog.svelte': 1300, // 1239
   'lib/components/OpPropertiesPanel.svelte': 1250, // 1200
