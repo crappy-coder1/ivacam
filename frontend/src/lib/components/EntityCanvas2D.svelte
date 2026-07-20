@@ -4,7 +4,7 @@
   import { opSourceCss } from '../state/op-color';
   import { STOCK_OUTLINE_LAYER } from '../state/stock-outline';
   import { consumeSelectHint } from '../state/ui-hints';
-  import { buildObjectPolylines, polylineAtT, type ObjectPolyline } from '../cam/tabs';
+  import { buildObjectPolylines, type ObjectPolyline } from '../cam/tabs';
   import type { BBox } from '../api/types';
   import {
     buildHitIndex as buildHitIndexPure,
@@ -18,6 +18,11 @@
   import { reducePointerDown } from '../canvas/pointer-down';
   import { reducePointerUp } from '../canvas/pointer-up';
   import { reducePointerMove, hoverCursor } from '../canvas/pointer-move';
+  import {
+    findTabAtPixel as hitTabAtPixel,
+    patchTabPlacement,
+    removeTabPlacement,
+  } from '../canvas/tab-hit';
   import {
     computeViewportTransform,
     placementsBBox,
@@ -1230,32 +1235,18 @@
   /// Find an op's tab placement under the cursor (canvas-space).
   /// Walks every op (not just the selected) so right-click works
   /// regardless of which op is active — matches CAD intuition
-  /// ('that tab right there').
+  /// ('that tab right there'). Filters ops to contour + manual/mixed tab
+  /// mode here, then defers the pure projection to lib/canvas/tab-hit.
   function findTabAtPixel(cx: number, cy: number): { opId: number; placementIdx: number } | null {
     if (!lastTransform) return null;
-    const { scale, offX, offY } = lastTransform;
-    const tolPx = 10;
-    const objects = getObjectPolylines();
-    let best: { opId: number; placementIdx: number; d2: number } | null = null;
-    for (const op of project.data.operations) {
-      if (!isContourOp(op)) continue;
-      const mode = op.tabMode?.kind ?? 'off';
-      if (mode !== 'manual' && mode !== 'mixed') continue;
-      const placements = op.tabPlacements ?? [];
-      for (let i = 0; i < placements.length; i++) {
-        const tp = placements[i];
-        const obj = objects.find((o) => o.objectId === tp.objectId);
-        if (!obj) continue;
-        const { point } = polylineAtT(obj.pts, tp.t, obj.closed);
-        const sx = point.x * scale + offX;
-        const sy = offY - point.y * scale;
-        const d2 = (cx - sx) * (cx - sx) + (cy - sy) * (cy - sy);
-        if (d2 > tolPx * tolPx) continue;
-        if (best && d2 >= best.d2) continue;
-        best = { opId: op.id, placementIdx: i, d2 };
-      }
-    }
-    return best ? { opId: best.opId, placementIdx: best.placementIdx } : null;
+    const ops = project.data.operations
+      .filter(isContourOp)
+      .filter((op) => {
+        const mode = op.tabMode?.kind ?? 'off';
+        return mode === 'manual' || mode === 'mixed';
+      })
+      .map((op) => ({ opId: op.id, placements: op.tabPlacements ?? [] }));
+    return hitTabAtPixel(cx, cy, lastTransform, getObjectPolylines(), ops);
   }
 
   /// Update one tab placement's width / height override. Routes
@@ -1267,10 +1258,8 @@
   ) {
     const op = project.data.operations.find((o) => o.id === opId);
     if (!op || !isContourOp(op)) return;
-    const cur = op.tabPlacements ?? [];
-    if (placementIdx < 0 || placementIdx >= cur.length) return;
-    const next = cur.map((p, i) => (i === placementIdx ? { ...p, ...patch } : p));
-    project.updateOperation(opId, { tabPlacements: next });
+    const next = patchTabPlacement(op.tabPlacements ?? [], placementIdx, patch);
+    if (next) project.updateOperation(opId, { tabPlacements: next });
   }
 
   /// Delete one tab placement (via toggleTabPlacement — its remove
@@ -1278,9 +1267,8 @@
   function deleteTabPlacement(opId: number, placementIdx: number) {
     const op = project.data.operations.find((o) => o.id === opId);
     if (!op || !isContourOp(op)) return;
-    const cur = op.tabPlacements ?? [];
-    if (placementIdx < 0 || placementIdx >= cur.length) return;
-    const next = cur.filter((_, i) => i !== placementIdx);
+    const next = removeTabPlacement(op.tabPlacements ?? [], placementIdx);
+    if (!next) return;
     project.updateOperation(opId, { tabPlacements: next });
     tabPopover = null;
   }
