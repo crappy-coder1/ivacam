@@ -33,6 +33,7 @@
   import { ViewController } from '../canvas/view-controller.svelte';
   import { HoverState } from '../canvas/hover-state.svelte';
   import { TouchTracker } from '../canvas/touch-tracker';
+  import { PointerDragController } from '../canvas/pointer-drag.svelte';
   import { withinTapTolerance, LONG_PRESS_MS } from '../canvas/touch-gestures';
   import { objectsContainedInBox } from '../canvas/box_select';
   import { resolveAci, hexToCss } from '../canvas/aci-color';
@@ -334,33 +335,13 @@
     snap: OSnapCandidate['kind'] | null;
   } | null>(null);
 
-  /// Drag state for repositioning an already-placed approach marker
-  /// (Option C: hybrid pick + draggable). Captured on pointerdown
-  /// inside the marker's hit circle; released on pointerup.
-  let approachDrag = $state<{ opId: number; pointerId: number } | null>(null);
-
-  /// Drag state for repositioning a raster-engrave
-  /// placement image. `grabDX/DY` is the data-space offset between the
-  /// pointer and the source origin at grab time, so the origin tracks
-  /// the cursor without jumping. Committed live (coalesced into one undo
-  /// entry) on every move, mirroring the approach-marker drag.
-  let rasterDrag = $state<{
-    sourceId: number;
-    pointerId: number;
-    grabDX: number;
-    grabDY: number;
-  } | null>(null);
-
-  /// Drag state for repositioning a text layer's origin.
-  /// `grabDX/DY` is the pointer→origin offset at grab time so the origin
-  /// tracks the cursor. Committed live (coalesced — see
-  /// coalesceKeyForTextPatch) on every move, mirroring the raster drag.
-  let textDrag = $state<{
-    id: number;
-    pointerId: number;
-    grabDX: number;
-    grabDY: number;
-  } | null>(null);
+  /// Active live-commit pointer drags (approach marker / raster placement /
+  /// text origin / stock gizmo) + the parked stock-handle pre-commit. Owned
+  /// by lib/canvas/pointer-drag.svelte.ts, mirroring the ViewController /
+  /// TouchTracker split. At most one is active at a time; each commits live
+  /// (coalesced into one undo entry) on every move. Text patches coalesce
+  /// via coalesceKeyForTextPatch.
+  const drag = new PointerDragController();
 
   /// Cache of the decoded brightness image per relief source — see
   /// RasterImageCache (lib/canvas/render/raster.ts).
@@ -369,7 +350,7 @@
   /// Precomputed OSnap target collection. Rebuilt only when the
   /// imported geometry changes — never per pointermove.
   const osnapTargets = $derived<OSnapTargets>(
-    approachPickActive || approachDrag != null
+    approachPickActive || drag.approach != null
       ? precomputeOSnapTargets(project.geometryView)
       : { endpoints: [], midpoints: [], intersections: [], centers: [] },
   );
@@ -556,38 +537,11 @@
   const STOCK_HIT_PX = 22;
   /// Smallest stock dimension a resize drag may produce (mm).
   const STOCK_MIN_MM = 1;
-  /// Active stock-gizmo drag. `move` pans the offset (mode preserved);
-  /// resize kinds rewrite the box and switch to manual mode. `startBox`
-  /// is the world footprint at grab; `grab` is the world point first
-  /// touched; `startOffset` seeds the move delta.
-  let stockDrag = $state<{
-    kind: StockHandleKind;
-    pointerId: number;
-    startBox: WorldBox;
-    grab: { x: number; y: number };
-    startOffsetX: number;
-    startOffsetY: number;
-  } | null>(null);
-
-  /// A stock-handle press that hasn't yet committed to a resize/move drag
-  /// (ivac-0rbu). The handle hit radius (22 px) is larger than the geometry
-  /// tolerance, so a handle sitting over a small object used to swallow the
-  /// tap entirely. Instead we DEFER: a press over a handle parks here; it
-  /// promotes to a real `stockDrag` only once the finger moves past the tap
-  /// tolerance, and a stationary tap-and-release falls through to normal
-  /// (cycling) object selection at the press point — so the object beneath
-  /// the handle is reachable while a drag still resizes. `cx0/cy0` is the
-  /// press pixel; the rest is everything needed to build the `stockDrag`.
-  let pendingStockGrab: {
-    kind: StockHandleKind;
-    pointerId: number;
-    cx0: number;
-    cy0: number;
-    startBox: WorldBox;
-    grab: { x: number; y: number };
-    startOffsetX: number;
-    startOffsetY: number;
-  } | null = null;
+  // Stock-gizmo drag (`drag.stock`) and the deferred stock-handle press
+  // (`drag.pendingStock`, ivac-0rbu) are owned by the PointerDragController
+  // declared above. The press parks in `pendingStock` and only promotes to a
+  // real `stock` drag once the finger leaves the tap tolerance, so a small
+  // object under the 22 px handle stays reachable by a stationary tap.
 
   /// Current stock footprint in world mm (same source the renderer uses).
   function currentStockBox(): WorldBox {
@@ -661,16 +615,19 @@
     const intent = reducePointerMove({
       pinchActive: touch.pinch != null,
       promoteStock:
-        pendingStockGrab != null &&
-        e.pointerId === pendingStockGrab.pointerId &&
-        !withinTapTolerance({ x: pendingStockGrab.cx0, y: pendingStockGrab.cy0 }, { x: cx, y: cy }),
-      stockDragMatches: stockDrag != null && e.pointerId === stockDrag.pointerId,
+        drag.pendingStock != null &&
+        e.pointerId === drag.pendingStock.pointerId &&
+        !withinTapTolerance(
+          { x: drag.pendingStock.cx0, y: drag.pendingStock.cy0 },
+          { x: cx, y: cy },
+        ),
+      stockDragMatches: drag.stock != null && e.pointerId === drag.stock.pointerId,
       longPressWandered:
         touch.longPressStart != null && !withinTapTolerance(touch.longPressStart, { x: cx, y: cy }),
       approachPickActive,
-      approachDragMatches: approachDrag != null && e.pointerId === approachDrag.pointerId,
-      rasterDragMatches: rasterDrag != null && e.pointerId === rasterDrag.pointerId,
-      textDragMatches: textDrag != null && e.pointerId === textDrag.pointerId,
+      approachDragMatches: drag.approach != null && e.pointerId === drag.approach.pointerId,
+      rasterDragMatches: drag.raster != null && e.pointerId === drag.raster.pointerId,
+      textDragMatches: drag.text != null && e.pointerId === drag.text.pointerId,
       // Lazy: mirror onPointerDown's marker hit-test so the cursor flips to
       // `grab` BEFORE the user mousedowns — without it the marker is
       // draggable but invisibly so. Gated out while panning / box-selecting.
@@ -729,40 +686,33 @@
         // Promote a parked stock-handle press to a real drag once the finger
         // leaves the tap tolerance (ivac-0rbu) — below that it's still a
         // candidate tap that should select the object under the handle.
-        if (intent.promoteStock && pendingStockGrab) {
-          stockDrag = {
-            kind: pendingStockGrab.kind,
-            pointerId: pendingStockGrab.pointerId,
-            startBox: pendingStockGrab.startBox,
-            grab: pendingStockGrab.grab,
-            startOffsetX: pendingStockGrab.startOffsetX,
-            startOffsetY: pendingStockGrab.startOffsetY,
-          };
-          pendingStockGrab = null;
+        if (intent.promoteStock && drag.pendingStock) {
+          drag.promoteStock();
           canvas.style.cursor = 'grabbing';
         }
         // Live stock-gizmo drag (phone). Move pans the offset (mode kept);
         // resize rewrites the box and switches to manual. Each gesture
         // coalesces into one undo via the explicit setStock key.
-        if (stockDrag && e.pointerId === stockDrag.pointerId) {
+        const s = drag.stock;
+        if (s && e.pointerId === s.pointerId) {
           const cur = pxToData(cx, cy);
           if (cur) {
             // Round gizmo output to 0.01 mm so the stored stock dims stay
             // clean numbers (a raw drag yields long float tails).
             const r2 = (n: number) => Math.round(n * 100) / 100;
-            if (stockDrag.kind === 'move') {
+            if (s.kind === 'move') {
               project.setStock(
                 {
-                  offsetX: r2(stockDrag.startOffsetX + (cur.x - stockDrag.grab.x)),
-                  offsetY: r2(stockDrag.startOffsetY + (cur.y - stockDrag.grab.y)),
+                  offsetX: r2(s.startOffsetX + (cur.x - s.grab.x)),
+                  offsetY: r2(s.startOffsetY + (cur.y - s.grab.y)),
                 },
                 'setStock:gizmo-move',
               );
             } else {
               const nextBox = dragStockBox(
-                stockDrag.kind as StockResizeKind,
-                stockDrag.startBox,
-                stockDrag.grab,
+                s.kind as StockResizeKind,
+                s.startBox,
+                s.grab,
                 cur,
                 STOCK_MIN_MM,
               );
@@ -812,7 +762,7 @@
             : findOSnap(osnapTargets, data.x, data.y, tol, osnapSettings);
           const x = snap ? snap.x : data.x;
           const y = snap ? snap.y : data.y;
-          project.updateOperation(approachDrag!.opId, { approachPoint: [x, y] });
+          project.updateOperation(drag.approach!.opId, { approachPoint: [x, y] });
           approachPreview = { x, y, snap: snap?.kind ?? null };
         }
         canvas.style.cursor = 'grabbing';
@@ -824,8 +774,8 @@
         // entry); the overlay repaint tracks the new origin reactively.
         const data = pxToData(cx, cy);
         if (data) {
-          project.updateReliefSource(rasterDrag!.sourceId, {
-            origin: { x: data.x - rasterDrag!.grabDX, y: data.y - rasterDrag!.grabDY },
+          project.updateReliefSource(drag.raster!.sourceId, {
+            origin: { x: data.x - drag.raster!.grabDX, y: data.y - drag.raster!.grabDY },
           });
         }
         canvas.style.cursor = 'grabbing';
@@ -836,8 +786,8 @@
         // undo entry); the bg repaint tracks the new origin reactively.
         const data = pxToData(cx, cy);
         if (data) {
-          project.updateTextLayer(textDrag!.id, {
-            origin: { x: data.x - textDrag!.grabDX, y: data.y - textDrag!.grabDY },
+          project.updateTextLayer(drag.text!.id, {
+            origin: { x: data.x - drag.text!.grabDX, y: data.y - drag.text!.grabDY },
           });
         }
         canvas.style.cursor = 'grabbing';
@@ -908,11 +858,11 @@
     const intent = reducePointerUp({
       pinchMatches:
         touch.pinch != null && (e.pointerId === touch.pinch.idA || e.pointerId === touch.pinch.idB),
-      pendingStockMatches: pendingStockGrab != null && e.pointerId === pendingStockGrab.pointerId,
-      stockDragMatches: stockDrag != null && e.pointerId === stockDrag.pointerId,
-      approachDragMatches: approachDrag != null && e.pointerId === approachDrag.pointerId,
-      rasterDragMatches: rasterDrag != null && e.pointerId === rasterDrag.pointerId,
-      textDragMatches: textDrag != null && e.pointerId === textDrag.pointerId,
+      pendingStockMatches: drag.pendingStock != null && e.pointerId === drag.pendingStock.pointerId,
+      stockDragMatches: drag.stock != null && e.pointerId === drag.stock.pointerId,
+      approachDragMatches: drag.approach != null && e.pointerId === drag.approach.pointerId,
+      rasterDragMatches: drag.raster != null && e.pointerId === drag.raster.pointerId,
+      textDragMatches: drag.text != null && e.pointerId === drag.text.pointerId,
       panMatches: view.panDrag != null && e.pointerId === view.panDrag.pointerId,
       boxSelectCommittable: boxSelect != null && !boxSelect.armed,
     });
@@ -933,8 +883,8 @@
         // untouched (a handle tap over empty stock stays a no-op — we
         // don't clear the user's selection). A plain tap, so no box-select
         // arming (the pointer is already up).
-        const { cx0, cy0 } = pendingStockGrab!;
-        pendingStockGrab = null;
+        const { cx0, cy0 } = drag.pendingStock!;
+        drag.pendingStock = null;
         canvas.style.cursor = 'default';
         if (pixelHit(cx0, cy0) != null) {
           commitEntityTapSelection(cx0, cy0, {
@@ -946,20 +896,20 @@
         break;
       }
       case 'end-stock-drag':
-        stockDrag = null;
+        drag.stock = null;
         canvas.style.cursor = 'default';
         break;
       case 'end-approach-drag':
-        approachDrag = null;
+        drag.approach = null;
         canvas.style.cursor = 'default';
         approachPreview = null;
         break;
       case 'end-raster-drag':
-        rasterDrag = null;
+        drag.raster = null;
         canvas.style.cursor = 'default';
         break;
       case 'end-text-drag':
-        textDrag = null;
+        drag.text = null;
         canvas.style.cursor = 'default';
         // The 3D scene doesn't track text origin per-frame (it would mean
         // a GPU rebuild on every move); nudge it once so it picks up the
@@ -1238,7 +1188,7 @@
     // finger promotes to a pinch (handled below, which cancels the drag).
     //
     // ivac-0rbu: we DON'T start the resize on down. We park the press in
-    // `pendingStockGrab`; pointermove promotes it to a real `stockDrag`
+    // `drag.pendingStock`; pointermove promotes it to a real `drag.stock`
     // once the finger leaves the tap tolerance, and a stationary
     // tap-and-release (pointerup) falls through to object selection — so a
     // small object UNDER the handle is still reachable by tapping.
@@ -1246,7 +1196,7 @@
       const handle = stockHandleHit(cx, cy);
       if (handle) {
         const grab = pxToData(cx, cy) ?? { x: 0, y: 0 };
-        pendingStockGrab = {
+        drag.pendingStock = {
           kind: handle,
           pointerId: e.pointerId,
           cx0: cx,
@@ -1280,11 +1230,7 @@
         // the pinch), then diff finger movement from here.
         touch.cancelLongPress();
         boxSelect = null;
-        approachDrag = null;
-        rasterDrag = null;
-        textDrag = null;
-        stockDrag = null;
-        pendingStockGrab = null;
+        drag.clearAll();
         if (touch.beginPinch()) {
           for (const id of touch.pinchIds!) {
             try {
@@ -1419,12 +1365,12 @@
       case 'tab-miss':
         return;
       case 'approach-drag':
-        approachDrag = { opId: selectedOp!.id, pointerId: e.pointerId };
+        drag.approach = { opId: selectedOp!.id, pointerId: e.pointerId };
         grabPointer();
         return;
       case 'raster-drag':
         project.sel.selectedOpId = intent.grab.opId;
-        rasterDrag = {
+        drag.raster = {
           sourceId: intent.grab.sourceId,
           pointerId: e.pointerId,
           grabDX: intent.grab.grabDX,
@@ -1436,7 +1382,7 @@
         project.sel.selectedTextLayerId = intent.grab.id;
         project.clearSelection();
         project.selectFixture(null);
-        textDrag = { ...intent.grab, pointerId: e.pointerId };
+        drag.text = { ...intent.grab, pointerId: e.pointerId };
         grabPointer();
         return;
       case 'tab-toggle':
@@ -1685,7 +1631,7 @@
         themeVar('--stock-edge', '#888'),
         themeVar('--accent', '#2d6cdf'),
         themeVar('--bg-elevated', '#222'),
-        stockDrag?.kind ?? null,
+        drag.stock?.kind ?? null,
       );
     }
 
@@ -1846,7 +1792,7 @@
         ctx,
         project2,
         selectedOp.approachPoint ?? null,
-        approachPickActive || approachDrag != null ? approachPreview : null,
+        approachPickActive || drag.approach != null ? approachPreview : null,
         {
           marker: themeVar('--accent', '#3aa'),
           snap: themeVar('--success', '#3c3'),
