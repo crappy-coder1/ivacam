@@ -39,6 +39,7 @@
     type ToolTableView,
   } from '../state/tool_table';
   import { defaultToolForMode } from '../state/tool_mode_defaults';
+  import { HOLDER_PRESETS, applyPresetPatch } from '../state/tool_presets';
   import ToolCalibrationDialog from './ToolCalibrationDialog.svelte';
   import { effectiveDiameterHint, isCalibrationStale } from '../state/tool_wear';
   import {
@@ -350,85 +351,12 @@
     expanded = next;
   }
 
-  /// Pre-baked dimensions for common tool-holder taper sizes. Numbers are
-  /// the bounding-cylinder + bounding-cone of the typical ER nut + collet
-  /// stack mounted in a standard spindle. Conservative — actual hardware
-  /// varies a few mm across vendors. Picking the right preset is the
-  /// fastest way to populate the holder spec; users can always edit the
-  /// fields after.
-  ///
-  ///  - ER11 / ER16 / ER20: bounding cone of nut+spindle for the named
-  ///    collet size. Lengths are total stick-out from the spindle face.
-  ///  - Direct shank: no holder above the shank — just sets the shank
-  ///    diameter to the cutting diameter and clears the holder.
-  ///  - No holder: clears every holder field, restoring legacy behavior.
-  type Preset = {
-    label: string;
-    apply: (t: ToolEntry) => Partial<ToolEntry>;
-  };
-  const presets: Preset[] = [
-    {
-      label: 'ER11 (≤7 mm)',
-      apply: (t) => ({
-        fluteLengthMm: t.fluteLengthMm ?? 15,
-        shankDiameterMm: t.shankDiameterMm ?? Math.min(t.diameter, 6),
-        holder: {
-          kind: 'cone',
-          bottom_diameter_mm: 19,
-          top_diameter_mm: 30,
-          length_mm: 35,
-        },
-      }),
-    },
-    {
-      label: 'ER16 (≤10 mm)',
-      apply: (t) => ({
-        fluteLengthMm: t.fluteLengthMm ?? 20,
-        shankDiameterMm: t.shankDiameterMm ?? Math.min(t.diameter, 8),
-        holder: {
-          kind: 'cone',
-          bottom_diameter_mm: 28,
-          top_diameter_mm: 42,
-          length_mm: 45,
-        },
-      }),
-    },
-    {
-      label: 'ER20 (≤13 mm)',
-      apply: (t) => ({
-        fluteLengthMm: t.fluteLengthMm ?? 25,
-        shankDiameterMm: t.shankDiameterMm ?? Math.min(t.diameter, 12),
-        holder: {
-          kind: 'cone',
-          bottom_diameter_mm: 34,
-          top_diameter_mm: 50,
-          length_mm: 50,
-        },
-      }),
-    },
-    {
-      label: 'Direct shank',
-      apply: (t) => ({
-        fluteLengthMm: t.fluteLengthMm ?? 15,
-        shankDiameterMm: t.shankDiameterMm ?? t.diameter,
-        holder: undefined,
-      }),
-    },
-    {
-      label: 'No holder',
-      apply: () => ({
-        fluteLengthMm: undefined,
-        shankDiameterMm: undefined,
-        holder: undefined,
-      }),
-    },
-  ];
-
+  /// Apply a holder preset (by label) to draft row `idx`, merging its patch.
+  /// The preset table + the patch math live in the pure, unit-tested
+  /// tool_presets module; the dropdown reads HOLDER_PRESETS from there too.
   function applyPreset(idx: number, label: string) {
-    const p = presets.find((x) => x.label === label);
-    if (!p) return;
-    const cur = draft[idx];
-    const patch = p.apply(cur);
+    const patch = applyPresetPatch(draft[idx], label);
+    if (!patch) return;
     dd.draft = draft.map((t, i) => (i === idx ? { ...t, ...patch } : t));
   }
 
@@ -925,7 +853,7 @@
                   }}
                 >
                   <option value="">{t('tools.holder.preset.apply')}</option>
-                  {#each presets as p (p.label)}
+                  {#each HOLDER_PRESETS as p (p.label)}
                     <option value={p.label}>{p.label}</option>
                   {/each}
                 </select>
