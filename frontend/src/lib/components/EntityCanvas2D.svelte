@@ -31,7 +31,9 @@
   } from '../canvas/viewport';
   import { nearestTextLayer } from '../canvas/text-hit';
   import { ViewController } from '../canvas/view-controller.svelte';
-  import { withinTapTolerance, LONG_PRESS_MS, type PointerPos } from '../canvas/touch-gestures';
+  import { HoverState } from '../canvas/hover-state.svelte';
+  import { TouchTracker } from '../canvas/touch-tracker';
+  import { withinTapTolerance, LONG_PRESS_MS } from '../canvas/touch-gestures';
   import { objectsContainedInBox } from '../canvas/box_select';
   import { resolveAci, hexToCss } from '../canvas/aci-color';
   import { drawSegment } from '../canvas/render/segment';
@@ -260,8 +262,8 @@
     // (faint, under the interaction chrome) so the heavy bg layer stays
     // pure. Repaint when a source moves / resizes.
     void project.data.reliefSources;
-    void hoverIdx;
-    void hoverTextId;
+    void hover.objectIdx;
+    void hover.textId;
     void ghostTab;
     void boxSelect;
     void view.zoom;
@@ -380,15 +382,10 @@
   // Mouse → segment hit testing. We project each segment to canvas space
   // and pick the nearest one within `HIT_PIXEL_TOL`.
   const HIT_PIXEL_TOL = 8;
-  let hoverIdx = $state<number | null>(null);
-  /// Id of the text layer whose stroke the cursor is hovering (for
-  /// the hover highlight + grab cursor), or null. Text-layer analogue of
-  /// `hoverIdx`.
-  let hoverTextId = $state<number | null>(null);
-  /// Cursor world coordinates for the on-canvas HUD. Updated on
-  /// every pointermove (regardless of modal mode); cleared on
-  /// pointerleave. null until the first import + first move.
-  let cursorXY = $state<{ x: number; y: number } | null>(null);
+  /// Pointer-hover feedback: the object/text under the cursor (hover halo +
+  /// grab cursor) and the cursor world coords (on-canvas HUD). Owned by
+  /// lib/canvas/hover-state.svelte.ts, mirroring the ViewController split.
+  const hover = new HoverState();
   let lastTransform: { scale: number; offX: number; offY: number } | null = null;
   /// Last-computed AUTO-FIT (base) transform — the scale/offset the
   /// canvas would use with zoom=1 and no pan. Stored separately so the
@@ -404,18 +401,12 @@
   /// (wheel/pinch/pan/fit/import-reset) live there, not inline here.
   const view = new ViewController();
 
-  /// Touch gesture bookkeeping. These are plain (non-reactive)
-  /// fields: they drive the reactive view (`view.zoom` / `view.pan*`) via
-  /// pinch, but nothing renders them directly, so they don't need `$state`.
-  ///
-  /// `activePointers` maps every live touch pointerId → its last
-  /// canvas-relative position, so a second finger landing turns the pair
-  /// into a pinch/pan. `pinch` holds the prior two-finger frame the next
-  /// move diffs against. `longPress*` arm the hold→context-menu timer.
-  const activePointers = new Map<number, PointerPos>();
-  let pinch: { idA: number; idB: number; prevA: PointerPos; prevB: PointerPos } | null = null;
-  let longPressTimer: ReturnType<typeof setTimeout> | null = null;
-  let longPressStart: PointerPos | null = null;
+  /// Touch gesture bookkeeping (live pointer set, active pinch frame,
+  /// long-press hold timer). Plain (non-reactive): it drives the reactive
+  /// view (`view.zoom` / `view.pan*`) via pinch but nothing renders it
+  /// directly. Owned by lib/canvas/touch-tracker.ts, mirroring how
+  /// ViewController owns the pan/zoom state.
+  const touch = new TouchTracker();
 
   /// Keyboardless multi-select. On a touchscreen with no hardware
   /// keyboard, shift/ctrl-tap are unreachable, so this toggle makes a
@@ -423,16 +414,6 @@
   /// Surfaced as an overlay button on touch-capable devices only.
   let addToSelection = $state(false);
   const isTouchDevice = typeof navigator !== 'undefined' && (navigator.maxTouchPoints ?? 0) > 0;
-
-  /// Cancel a pending long-press hold (finger moved, lifted, or a second
-  /// finger arrived). Idempotent.
-  function cancelLongPress() {
-    if (longPressTimer != null) {
-      clearTimeout(longPressTimer);
-      longPressTimer = null;
-    }
-    longPressStart = null;
-  }
 
   /// Reset pan + zoom when the imported file changes (different filename
   /// or going from no-import to imported). Keeps mid-session zooms
@@ -666,11 +647,11 @@
     // every move regardless of modal mode — users want to read X/Y
     // while pan/zoom/select/picking. pxToData returns null if the
     // transform isn't staged yet (no imported drawing).
-    cursorXY = pxToData(cx, cy);
+    hover.cursor = pxToData(cx, cy);
     // Feed the live touch position into the gesture tracker so a live
     // pinch reads the fresh finger positions.
-    if (activePointers.has(e.pointerId)) {
-      activePointers.set(e.pointerId, { x: cx, y: cy });
+    if (touch.has(e.pointerId)) {
+      touch.track(e.pointerId, { x: cx, y: cy });
     }
 
     // The move handler is a priority pipeline with two cleanups interleaved
@@ -678,14 +659,14 @@
     // owns that fragile order as a pure, tested decision. We resolve the
     // predicates here and run the verbatim body the winning mode names.
     const intent = reducePointerMove({
-      pinchActive: pinch != null,
+      pinchActive: touch.pinch != null,
       promoteStock:
         pendingStockGrab != null &&
         e.pointerId === pendingStockGrab.pointerId &&
         !withinTapTolerance({ x: pendingStockGrab.cx0, y: pendingStockGrab.cy0 }, { x: cx, y: cy }),
       stockDragMatches: stockDrag != null && e.pointerId === stockDrag.pointerId,
       longPressWandered:
-        longPressStart != null && !withinTapTolerance(longPressStart, { x: cx, y: cy }),
+        touch.longPressStart != null && !withinTapTolerance(touch.longPressStart, { x: cx, y: cy }),
       approachPickActive,
       approachDragMatches: approachDrag != null && e.pointerId === approachDrag.pointerId,
       rasterDragMatches: rasterDrag != null && e.pointerId === rasterDrag.pointerId,
@@ -726,17 +707,21 @@
     // Interleaved cleanups (faithful to the original order): a held finger
     // that wandered past tap tolerance is a drag, not a hold, so cancel the
     // pending long-press menu; and leaving pick mode drops any staged preview.
-    if (intent.cancelLongPress) cancelLongPress();
+    if (intent.cancelLongPress) touch.cancelLongPress();
     if (intent.clearApproachPreview && approachPreview) approachPreview = null;
 
     switch (intent.mode) {
       case 'pinch': {
-        const a = activePointers.get(pinch!.idA);
-        const b = activePointers.get(pinch!.idB);
+        const a = touch.position(touch.pinch!.idA);
+        const b = touch.position(touch.pinch!.idB);
         if (a && b && lastBaseTransform) {
-          view.applyPinchFrame(lastBaseTransform, { a: pinch!.prevA, b: pinch!.prevB }, { a, b });
-          pinch!.prevA = { ...a };
-          pinch!.prevB = { ...b };
+          view.applyPinchFrame(
+            lastBaseTransform,
+            { a: touch.pinch!.prevA, b: touch.pinch!.prevB },
+            { a, b },
+          );
+          touch.pinch!.prevA = { ...a };
+          touch.pinch!.prevB = { ...b };
         }
         return;
       }
@@ -883,9 +868,7 @@
         const tdata = pxToData(cx, cy);
         const textHover = tdata ? textHitAtData(tdata.x, tdata.y) : null;
         const idx = textHover ? null : pixelHit(cx, cy);
-        if (idx !== hoverIdx) hoverIdx = idx;
-        const newHoverText = textHover ? textHover.id : null;
-        if (newHoverText !== hoverTextId) hoverTextId = newHoverText;
+        hover.setEntity(idx, textHover ? textHover.id : null);
         // Tab-placement mode — project cursor to the op's
         // closest source contour and stage a ghost tab. The ghost only
         // renders when the projection is within ~6 px of the cursor
@@ -913,9 +896,9 @@
     // Release touch tracking + end any active gesture. A quick
     // down→up cancels the long-press (it was a tap, not a hold).
     if (e.pointerType === 'touch') {
-      activePointers.delete(e.pointerId);
+      touch.untrack(e.pointerId);
     }
-    cancelLongPress();
+    touch.cancelLongPress();
 
     // The priority order of "which gesture is ending" lives in the pure
     // reducer (lib/canvas/pointer-up.ts); this handler resolves each
@@ -923,7 +906,8 @@
     // effects the intent names. Pointer-capture release is common to
     // every branch, so it runs once after the switch.
     const intent = reducePointerUp({
-      pinchMatches: pinch != null && (e.pointerId === pinch.idA || e.pointerId === pinch.idB),
+      pinchMatches:
+        touch.pinch != null && (e.pointerId === touch.pinch.idA || e.pointerId === touch.pinch.idB),
       pendingStockMatches: pendingStockGrab != null && e.pointerId === pendingStockGrab.pointerId,
       stockDragMatches: stockDrag != null && e.pointerId === stockDrag.pointerId,
       approachDragMatches: approachDrag != null && e.pointerId === approachDrag.pointerId,
@@ -937,7 +921,7 @@
       case 'end-pinch':
         // A finger leaving a pinch ends the gesture and drops any armed
         // box-select so the remaining finger's lift is a no-op.
-        pinch = null;
+        touch.pinch = null;
         boxSelect = null;
         break;
       case 'stock-tap': {
@@ -1057,12 +1041,10 @@
     );
   }
   function onPointerLeave() {
-    hoverIdx = null;
-    hoverTextId = null;
+    hover.clear();
     ghostTab = null;
-    cursorXY = null;
     // A finger dragged off the canvas can't complete a hold.
-    cancelLongPress();
+    touch.cancelLongPress();
     canvas.style.cursor = tabPlacementActive ? 'crosshair' : 'default';
   }
 
@@ -1111,7 +1093,7 @@
     // contextmenu event firing on the same hold would re-anchor it. The
     // long-press path cancels its timer, so by here any native event is
     // a real mouse right-click — just (re)open at the cursor.
-    cancelLongPress();
+    touch.cancelLongPress();
     const rect = canvas.getBoundingClientRect();
     openContextMenuAt(e.clientX - rect.left, e.clientY - rect.top);
   }
@@ -1260,7 +1242,7 @@
     // once the finger leaves the tap tolerance, and a stationary
     // tap-and-release (pointerup) falls through to object selection — so a
     // small object UNDER the handle is still reachable by tapping.
-    if (e.pointerType !== 'touch' || activePointers.size === 0) {
+    if (e.pointerType !== 'touch' || touch.size === 0) {
       const handle = stockHandleHit(cx, cy);
       if (handle) {
         const grab = pxToData(cx, cy) ?? { x: 0, y: 0 };
@@ -1274,7 +1256,7 @@
           startOffsetX: project.data.stock.offsetX ?? 0,
           startOffsetY: project.data.stock.offsetY ?? 0,
         };
-        if (e.pointerType === 'touch') activePointers.set(e.pointerId, { x: cx, y: cy });
+        if (e.pointerType === 'touch') touch.track(e.pointerId, { x: cx, y: cy });
         try {
           canvas.setPointerCapture(e.pointerId);
         } catch {
@@ -1291,29 +1273,20 @@
     // still becomes a long-press → context menu. Mouse / pen fall
     // straight through to the button-based paths below.
     if (e.pointerType === 'touch') {
-      activePointers.set(e.pointerId, { x: cx, y: cy });
-      if (activePointers.size >= 2) {
+      touch.track(e.pointerId, { x: cx, y: cy });
+      if (touch.size >= 2) {
         // Abandon whatever the first finger armed (selection already
         // happened on its down; a box-select / marker drag would fight
         // the pinch), then diff finger movement from here.
-        cancelLongPress();
+        touch.cancelLongPress();
         boxSelect = null;
         approachDrag = null;
         rasterDrag = null;
         textDrag = null;
         stockDrag = null;
         pendingStockGrab = null;
-        const entries = [...activePointers.entries()];
-        const first = entries[0];
-        const second = entries[1];
-        if (first && second) {
-          pinch = {
-            idA: first[0],
-            idB: second[0],
-            prevA: { ...first[1] },
-            prevB: { ...second[1] },
-          };
-          for (const id of [first[0], second[0]]) {
+        if (touch.beginPinch()) {
+          for (const id of touch.pinchIds!) {
             try {
               canvas.setPointerCapture(id);
             } catch {}
@@ -1326,8 +1299,7 @@
       // First finger down — arm the long-press hold. The selection
       // logic below still runs (tap-to-select on down); the timer just
       // overlays a context-menu open if the finger stays put.
-      cancelLongPress();
-      longPressStart = { x: cx, y: cy };
+      touch.cancelLongPress();
       // Snapshot the selection BEFORE the pointer-down selection logic
       // (below) runs. A long-press is meant to open the "new operation
       // from selection" menu — but on touch a press that lands just off a
@@ -1339,22 +1311,24 @@
         objs: [...project.sel.selectedObjects],
         textId: project.sel.selectedTextLayerId,
       };
-      longPressTimer = setTimeout(() => {
-        longPressTimer = null;
-        longPressStart = null;
-        // Fire only while exactly one finger is still down — a pinch
-        // would have cleared this. Open at the press position.
-        if (activePointers.size !== 1) return;
-        if (
-          project.sel.selectedObjects.size === 0 &&
-          project.sel.selectedTextLayerId == null &&
-          (selBefore.objs.length > 0 || selBefore.textId != null)
-        ) {
-          if (selBefore.objs.length > 0) project.selectObjects(selBefore.objs, 'replace');
-          project.sel.selectedTextLayerId = selBefore.textId;
-        }
-        openContextMenuAt(cx, cy);
-      }, LONG_PRESS_MS);
+      touch.armLongPress(
+        { x: cx, y: cy },
+        () => {
+          // Fire only while exactly one finger is still down — a pinch
+          // would have cleared this. Open at the press position.
+          if (touch.size !== 1) return;
+          if (
+            project.sel.selectedObjects.size === 0 &&
+            project.sel.selectedTextLayerId == null &&
+            (selBefore.objs.length > 0 || selBefore.textId != null)
+          ) {
+            if (selBefore.objs.length > 0) project.selectObjects(selBefore.objs, 'replace');
+            project.sel.selectedTextLayerId = selBefore.textId;
+          }
+          openContextMenuAt(cx, cy);
+        },
+        LONG_PRESS_MS,
+      );
     }
 
     // The branch ORDER (pan → pick → marker drag → raster → text → tab
@@ -1813,9 +1787,9 @@
     // Hover highlight for the text layer under the cursor (the
     // selected-layer highlight stays on the bg in drawTextPreview). Drawn
     // on the overlay so frequent hover repaints don't touch the bg layer.
-    if (hoverTextId != null && hoverTextId !== project.sel.selectedTextLayerId) {
-      const hoverLayer = project.data.textLayers.find((l) => l.id === hoverTextId);
-      const segs = hoverLayer ? previewSegmentsFor(hoverTextId, hoverLayer.origin) : null;
+    if (hover.textId != null && hover.textId !== project.sel.selectedTextLayerId) {
+      const hoverLayer = project.data.textLayers.find((l) => l.id === hover.textId);
+      const segs = hoverLayer ? previewSegmentsFor(hover.textId, hoverLayer.origin) : null;
       if (segs && segs.length > 0) {
         const hoverColor = themeVar('--accent-strong', '#6e9ce6');
         ctx.lineWidth = 1.6;
@@ -1832,7 +1806,7 @@
         objects: data.objects,
         visibleLayers: visibleLayersSnap,
         selectedObjects: new Set(project.sel.selectedObjects),
-        hoverObjectId: hoverIdx == null ? 0 : (data.objects?.[hoverIdx] ?? 0),
+        hoverObjectId: hover.objectIdx == null ? 0 : (data.objects?.[hover.objectIdx] ?? 0),
         objectToOps,
         selectedOpId: project.sel.selectedOpId,
         opColor: opSourceCss,
@@ -2025,9 +1999,9 @@
       {t('canvas.selection_hud', { count: project.sel.selectedEntities.size })}
     </div>
   {/if}
-  {#if cursorXY}
+  {#if hover.cursor}
     <div class="cursor-hud" aria-hidden="true">
-      x: {cursorXY.x.toFixed(2)} &nbsp; y: {cursorXY.y.toFixed(2)} mm
+      x: {hover.cursor.x.toFixed(2)} &nbsp; y: {hover.cursor.y.toFixed(2)} mm
       {#if shiftDown && (approachPickActive || tabPlacementActive)}
         <!-- Visible cue that Shift is suppressing snap.
              Without this the snap glyph just silently disappears and

@@ -39,7 +39,7 @@ const DEFAULT_MAX_LINES = 1000;
 /// under budget) is itself flagged below.
 const BUDGETS: Record<string, number> = {
   // Epic-tracked god-components under active decomposition (ivac-3xwn).
-  'lib/components/EntityCanvas2D.svelte': 2400, // 2356 — ivac-3xwn.3 landed the view slice
+  'lib/components/EntityCanvas2D.svelte': 2370, // 2330 — ivac-1hxn: TouchTracker + HoverState slices
   'App.svelte': 2200, // 2155 — ivac-3xwn.1
   'lib/state/project.svelte.ts': 1200, // 1144 — regrown state god-module (no child yet)
   // Large but stable / separately tracked components.
