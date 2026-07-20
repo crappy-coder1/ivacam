@@ -30,12 +30,8 @@
     type Rect,
   } from '../canvas/viewport';
   import { nearestTextLayer } from '../canvas/text-hit';
-  import {
-    applyPinch,
-    withinTapTolerance,
-    LONG_PRESS_MS,
-    type PointerPos,
-  } from '../canvas/touch-gestures';
+  import { ViewController } from '../canvas/view-controller.svelte';
+  import { withinTapTolerance, LONG_PRESS_MS, type PointerPos } from '../canvas/touch-gestures';
   import { objectsContainedInBox } from '../canvas/box_select';
   import { resolveAci, hexToCss } from '../canvas/aci-color';
   import { drawSegment } from '../canvas/render/segment';
@@ -131,7 +127,7 @@
   }
 
   // rAF-coalesced repaint scheduling for the reactive draw effects below.
-  // A pan/zoom drag mutates userPanX/Y/userZoom on every pointermove, and
+  // A pan/zoom drag mutates view.panX/panY/zoom on every pointermove, and
   // each change would otherwise synchronously re-stroke the whole imported
   // wireframe (O(segments) ctx ops). Instead the effects SCHEDULE a redraw
   // and at most one background + one overlay paint runs per animation
@@ -245,9 +241,9 @@
     // a pan (which already repaints this layer), so no new regression.
     void project.data.reliefSources;
     void project.data.operations;
-    void userZoom;
-    void userPanX;
-    void userPanY;
+    void view.zoom;
+    void view.panX;
+    void view.panY;
     scheduleBackground();
   });
 
@@ -268,9 +264,9 @@
     void hoverTextId;
     void ghostTab;
     void boxSelect;
-    void userZoom;
-    void userPanX;
-    void userPanY;
+    void view.zoom;
+    void view.panX;
+    void view.panY;
     scheduleOverlay();
   });
 
@@ -400,19 +396,17 @@
   /// over the same data-space point as the zoom multiplier changes.
   let lastBaseTransform: { scale: number; offX: number; offY: number } | null = null;
 
-  /// User-applied pan + zoom on top of the auto-fit transform. zoom = 1
-  /// + panX/panY = 0 → auto-fit (the default after every new import).
-  /// Wheel zooms around the cursor; middle-button drag pans; double-
-  /// click empty space resets both to default.
-  let userZoom = $state(1);
-  let userPanX = $state(0);
-  let userPanY = $state(0);
-  /// Active pan drag — started on middle-button down, ended on pointer up.
-  let panDrag = $state<{ startX: number; startY: number; pointerId: number } | null>(null);
+  /// User-applied pan + zoom on top of the auto-fit transform, plus the
+  /// active middle-button pan drag. zoom = 1 + pan = 0 → auto-fit (the
+  /// default after every new import). Wheel zooms around the cursor;
+  /// middle-button drag pans; double-click empty space resets to default.
+  /// Owned by lib/canvas/view-controller.svelte.ts — the transitions
+  /// (wheel/pinch/pan/fit/import-reset) live there, not inline here.
+  const view = new ViewController();
 
   /// Touch gesture bookkeeping. These are plain (non-reactive)
-  /// fields: they drive the reactive `userZoom/Pan*` fields, but nothing
-  /// renders them directly, so they don't need `$state`.
+  /// fields: they drive the reactive view (`view.zoom` / `view.pan*`) via
+  /// pinch, but nothing renders them directly, so they don't need `$state`.
   ///
   /// `activePointers` maps every live touch pointerId → its last
   /// canvas-relative position, so a second finger landing turns the pair
@@ -442,16 +436,10 @@
 
   /// Reset pan + zoom when the imported file changes (different filename
   /// or going from no-import to imported). Keeps mid-session zooms
-  /// intact across normal redraws.
-  let _lastImportedKey: string | null = null;
+  /// intact across normal redraws. The change-tracking lives in the
+  /// controller; this effect just feeds it the live import key.
   $effect(() => {
-    const key = project.transformedImport?.filename ?? null;
-    if (key !== _lastImportedKey) {
-      _lastImportedKey = key;
-      userZoom = 1;
-      userPanX = 0;
-      userPanY = 0;
-    }
+    view.resetOnImportChange(project.transformedImport?.filename ?? null);
   });
 
   /// FreeCAD-style box-select state. Captured on pointerdown over
@@ -714,7 +702,7 @@
           selOp &&
           (selOp.kind === 'profile' || selOp.kind === 'pocket') &&
           selOp.approachPoint &&
-          !panDrag &&
+          !view.panDrag &&
           !boxSelect
         ) {
           const data = pxToData(cx, cy);
@@ -728,7 +716,7 @@
         }
         return false;
       },
-      panActive: panDrag != null,
+      panActive: view.panDrag != null,
       boxDragEngaged:
         boxSelect != null &&
         (!boxSelect.armed ||
@@ -746,15 +734,7 @@
         const a = activePointers.get(pinch!.idA);
         const b = activePointers.get(pinch!.idB);
         if (a && b && lastBaseTransform) {
-          const next = applyPinch(
-            { zoom: userZoom, panX: userPanX, panY: userPanY },
-            lastBaseTransform,
-            { a: pinch!.prevA, b: pinch!.prevB },
-            { a, b },
-          );
-          userZoom = next.zoom;
-          userPanX = next.panX;
-          userPanY = next.panY;
+          view.applyPinchFrame(lastBaseTransform, { a: pinch!.prevA, b: pinch!.prevB }, { a, b });
           pinch!.prevA = { ...a };
           pinch!.prevB = { ...b };
         }
@@ -883,14 +863,9 @@
         return;
       }
       case 'pan': {
-        // Active pan drag: translate the user-pan offsets by the cursor
-        // delta. Each move is RELATIVE so we anchor on the previous frame's
-        // screen position, then update the anchor for the next frame.
-        const dx = e.clientX - panDrag!.startX;
-        const dy = e.clientY - panDrag!.startY;
-        userPanX += dx;
-        userPanY += dy;
-        panDrag = { ...panDrag!, startX: e.clientX, startY: e.clientY };
+        // Active pan drag: the controller translates the user-pan offsets
+        // by the cursor delta since the previous frame, then re-anchors.
+        view.movePan(e.clientX, e.clientY);
         return;
       }
       case 'box-drag': {
@@ -954,7 +929,7 @@
       approachDragMatches: approachDrag != null && e.pointerId === approachDrag.pointerId,
       rasterDragMatches: rasterDrag != null && e.pointerId === rasterDrag.pointerId,
       textDragMatches: textDrag != null && e.pointerId === textDrag.pointerId,
-      panMatches: panDrag != null && e.pointerId === panDrag.pointerId,
+      panMatches: view.panDrag != null && e.pointerId === view.panDrag.pointerId,
       boxSelectCommittable: boxSelect != null && !boxSelect.armed,
     });
 
@@ -1008,7 +983,7 @@
         forceTextPreviewRefresh();
         break;
       case 'end-pan':
-        panDrag = null;
+        view.endPan();
         canvas.style.cursor = 'default';
         break;
       case 'commit-box': {
@@ -1042,24 +1017,7 @@
     if (!lastBaseTransform) return;
     e.preventDefault();
     const rect = canvas.getBoundingClientRect();
-    const cx = e.clientX - rect.left;
-    const cy = e.clientY - rect.top;
-    const { scale: baseScale, offX: baseOffX, offY: baseOffY } = lastBaseTransform;
-    const oldScale = baseScale * userZoom;
-    const oldOffX = baseOffX + userPanX;
-    const oldOffY = baseOffY + userPanY;
-    // Data-space point under the cursor right now.
-    const dataX = (cx - oldOffX) / oldScale;
-    const dataY = (oldOffY - cy) / oldScale;
-    const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-    const nextZoom = Math.max(0.05, Math.min(80, userZoom * factor));
-    const newScale = baseScale * nextZoom;
-    // Solve for offset that keeps (dataX, dataY) under the cursor.
-    const newOffX = cx - dataX * newScale;
-    const newOffY = cy + dataY * newScale;
-    userZoom = nextZoom;
-    userPanX = newOffX - baseOffX;
-    userPanY = newOffY - baseOffY;
+    view.wheelZoom(lastBaseTransform, e.clientX - rect.left, e.clientY - rect.top, e.deltaY);
   }
 
   /// Double-click on empty space = reset pan + zoom to auto-fit.
@@ -1074,9 +1032,7 @@
   /// empty space, and the keyboard `F` / `Home` shortcuts. Pulls the
   /// canvas back to its auto-fit baseline (no user pan, no user zoom).
   function fitView() {
-    userZoom = 1;
-    userPanX = 0;
-    userPanY = 0;
+    view.reset();
     drawBackground();
   }
 
@@ -1461,7 +1417,7 @@
 
     switch (intent.kind) {
       case 'pan':
-        panDrag = { startX: e.clientX, startY: e.clientY, pointerId: e.pointerId };
+        view.startPan(e.clientX, e.clientY, e.pointerId);
         grabPointer();
         return;
       case 'approach-commit': {
@@ -1681,11 +1637,7 @@
     offY: number;
     project2: (x: number, y: number) => [number, number];
   } {
-    const t = computeViewportTransform(
-      bbox,
-      { w, h },
-      { zoom: userZoom, panX: userPanX, panY: userPanY },
-    );
+    const t = computeViewportTransform(bbox, { w, h }, view.userView);
     lastBaseTransform = { scale: t.baseScale, offX: t.baseOffX, offY: t.baseOffY };
     lastTransform = { scale: t.scale, offX: t.offX, offY: t.offY };
     return { scale: t.scale, offX: t.offX, offY: t.offY, project2: t.project2 };

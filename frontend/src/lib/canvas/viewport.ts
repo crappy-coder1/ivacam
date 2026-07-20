@@ -66,6 +66,44 @@ export function computeViewportTransform(
   return { scale, offX, offY, baseScale, baseOffX, baseOffY, project2 };
 }
 
+/// Wheel-zoom multiplier per notch (scroll up = zoom IN by this factor).
+export const ZOOM_STEP = 1.15;
+/// User-zoom clamp. 1 = auto-fit; the canvas never zooms out past 0.05×
+/// or in past 80× the fit scale.
+export const ZOOM_MIN = 0.05;
+export const ZOOM_MAX = 80;
+
+/// Cursor-pivot wheel zoom. Given the auto-fit `base` transform, the
+/// current user view, the cursor's canvas-pixel position, and a wheel
+/// `deltaY` (< 0 = scroll up = zoom in), return the next user view whose
+/// pan keeps the data-space point under the cursor fixed across the zoom.
+///
+/// Pure: the component owns the DOM (`getBoundingClientRect`,
+/// `preventDefault`) and hands in plain numbers. When the zoom clamps at
+/// ZOOM_MIN/MAX the anchor is intentionally NOT re-solved (the pan uses
+/// the clamped scale) — faithful to the original inline math.
+export function zoomAroundCursor(
+  base: { scale: number; offX: number; offY: number },
+  view: UserView,
+  cursorX: number,
+  cursorY: number,
+  deltaY: number,
+): UserView {
+  const oldScale = base.scale * view.zoom;
+  const oldOffX = base.offX + view.panX;
+  const oldOffY = base.offY + view.panY;
+  // Data-space point under the cursor right now.
+  const dataX = (cursorX - oldOffX) / oldScale;
+  const dataY = (oldOffY - cursorY) / oldScale;
+  const factor = deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
+  const nextZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, view.zoom * factor));
+  const newScale = base.scale * nextZoom;
+  // Solve for the offset that keeps (dataX, dataY) under the cursor.
+  const newOffX = cursorX - dataX * newScale;
+  const newOffY = cursorY + dataY * newScale;
+  return { zoom: nextZoom, panX: newOffX - base.offX, panY: newOffY - base.offY };
+}
+
 /// An axis-aligned rectangle in data space.
 export interface Rect {
   minX: number;

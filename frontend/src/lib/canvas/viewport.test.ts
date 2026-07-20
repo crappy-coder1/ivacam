@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { computeViewportTransform, placementsBBox } from './viewport';
+import {
+  computeViewportTransform,
+  placementsBBox,
+  zoomAroundCursor,
+  ZOOM_MIN,
+  ZOOM_MAX,
+  ZOOM_STEP,
+  type UserView,
+} from './viewport';
 import type { BBox } from '../api/types';
 
 const SQUARE_BBOX: BBox = { min_x: 0, min_y: 0, max_x: 100, max_y: 100 };
@@ -67,6 +75,57 @@ describe('computeViewportTransform', () => {
     expect(Number.isFinite(t.scale)).toBe(true);
     expect(Number.isFinite(t.offX)).toBe(true);
     expect(Number.isFinite(t.offY)).toBe(true);
+  });
+});
+
+describe('zoomAroundCursor (ivac-3xwn.3)', () => {
+  const BASE = { scale: 2, offX: 100, offY: 300 };
+
+  /// Data-space point under a canvas pixel for a given base + user view —
+  /// the invariant the cursor-pivot zoom must preserve.
+  function dataUnderCursor(view: UserView, cx: number, cy: number): [number, number] {
+    const scale = BASE.scale * view.zoom;
+    const offX = BASE.offX + view.panX;
+    const offY = BASE.offY + view.panY;
+    return [(cx - offX) / scale, (offY - cy) / scale];
+  }
+
+  it('scroll up (deltaY < 0) multiplies the zoom by ZOOM_STEP', () => {
+    const next = zoomAroundCursor(BASE, { zoom: 1, panX: 0, panY: 0 }, 250, 150, -100);
+    expect(next.zoom).toBeCloseTo(ZOOM_STEP);
+  });
+
+  it('scroll down (deltaY > 0) divides the zoom by ZOOM_STEP', () => {
+    const next = zoomAroundCursor(BASE, { zoom: 1, panX: 0, panY: 0 }, 250, 150, 100);
+    expect(next.zoom).toBeCloseTo(1 / ZOOM_STEP);
+  });
+
+  it('keeps the data point under the cursor fixed across the zoom', () => {
+    const view: UserView = { zoom: 1, panX: 0, panY: 0 };
+    const before = dataUnderCursor(view, 250, 150);
+    const next = zoomAroundCursor(BASE, view, 250, 150, -100);
+    const after = dataUnderCursor(next, 250, 150);
+    expect(after[0]).toBeCloseTo(before[0]);
+    expect(after[1]).toBeCloseTo(before[1]);
+  });
+
+  it('preserves the anchor from an already panned + zoomed view', () => {
+    const view: UserView = { zoom: 3, panX: -40, panY: 25 };
+    const before = dataUnderCursor(view, 310, 90);
+    const next = zoomAroundCursor(BASE, view, 310, 90, 100);
+    const after = dataUnderCursor(next, 310, 90);
+    expect(after[0]).toBeCloseTo(before[0]);
+    expect(after[1]).toBeCloseTo(before[1]);
+  });
+
+  it('clamps zoom-in at ZOOM_MAX', () => {
+    const next = zoomAroundCursor(BASE, { zoom: ZOOM_MAX, panX: 0, panY: 0 }, 250, 150, -100);
+    expect(next.zoom).toBe(ZOOM_MAX);
+  });
+
+  it('clamps zoom-out at ZOOM_MIN', () => {
+    const next = zoomAroundCursor(BASE, { zoom: ZOOM_MIN, panX: 0, panY: 0 }, 250, 150, 100);
+    expect(next.zoom).toBe(ZOOM_MIN);
   });
 });
 
