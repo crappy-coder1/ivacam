@@ -225,6 +225,131 @@ fn bayer_indices(n: usize) -> Vec<u32> {
     m
 }
 
+/// Streaming row-by-row equivalent of [`PowerCurve::power_grid`], for the
+/// laser raster driver's huge-engrave path (z9zh). Rather than materialize
+/// the whole `cols × rows` power grid, it produces **one power row at a
+/// time** with `O(cols)` working memory: `get_row(y, buf)` must fill `buf`
+/// with the `cols` raw (un-clamped) brightness values of resampled row `y`
+/// — exactly what a per-row slice of `resample`'s output would hold — and
+/// `emit(y, powers)` receives that row's `S`-power values. `emit` returns
+/// `false` to abort early (cancellation); processing then stops.
+///
+/// The output is **byte-identical** to slicing [`PowerCurve::power_grid`]'s
+/// result row-by-row — including Floyd–Steinberg, whose left-to-right /
+/// top-to-bottom error diffusion is preserved by carrying only the
+/// downward (`3/5/1`-weight) error in a single `cols`-wide buffer while the
+/// same-row `7/16` weight stays within the working row. A unit test pins
+/// this equivalence. Position-independent curves (Linear / Threshold /
+/// Bayer) are trivially per-row; only Floyd–Steinberg couples across rows,
+/// and it couples only to the immediately following row, so `O(cols)`
+/// state suffices.
+pub(crate) fn stream_power_rows<G, E>(
+    curve: &PowerCurve,
+    cols: usize,
+    rows: usize,
+    mut get_row: G,
+    mut emit: E,
+) where
+    G: FnMut(usize, &mut Vec<f32>),
+    E: FnMut(usize, &[u32]) -> bool,
+{
+    if cols == 0 || rows == 0 {
+        return;
+    }
+    let mut work: Vec<f32> = Vec::with_capacity(cols);
+    let mut out: Vec<u32> = vec![0u32; cols];
+    match *curve {
+        PowerCurve::Linear { min, max } => {
+            for y in 0..rows {
+                get_row(y, &mut work);
+                for x in 0..cols {
+                    out[x] = lerp_power(min, max, work[x].clamp(0.0, 1.0));
+                }
+                if !emit(y, &out) {
+                    return;
+                }
+            }
+        }
+        PowerCurve::Threshold { level, power } => {
+            for y in 0..rows {
+                get_row(y, &mut work);
+                for x in 0..cols {
+                    out[x] = if work[x].clamp(0.0, 1.0) < level {
+                        power
+                    } else {
+                        0
+                    };
+                }
+                if !emit(y, &out) {
+                    return;
+                }
+            }
+        }
+        PowerCurve::Bayer { matrix_size, power } => {
+            let n = match matrix_size {
+                2 | 4 | 8 => matrix_size as usize,
+                _ => 4,
+            };
+            let matrix = bayer_thresholds(n);
+            for y in 0..rows {
+                get_row(y, &mut work);
+                for x in 0..cols {
+                    let t = matrix[(y % n) * n + (x % n)];
+                    out[x] = if work[x].clamp(0.0, 1.0) < t {
+                        power
+                    } else {
+                        0
+                    };
+                }
+                if !emit(y, &out) {
+                    return;
+                }
+            }
+        }
+        PowerCurve::FloydSteinberg { level, power } => {
+            // `err_next` carries the downward-diffused error (the 3/5/1
+            // weights) into the row below; the 7/16 weight stays inside
+            // `work`. One `cols`-wide buffer suffices because F–S only
+            // couples to the immediately-following row.
+            let mut err_next = vec![0.0f32; cols];
+            for y in 0..rows {
+                get_row(y, &mut work);
+                // Fold in the above-row error, then zero the buffer so the
+                // same pass can re-accumulate this row's downward error.
+                // (Two passes, not one: a merged walk would let pixel x-1's
+                // 1/16 downward push land in row y instead of y+1.)
+                for x in 0..cols {
+                    work[x] = work[x].clamp(0.0, 1.0) + err_next[x];
+                    err_next[x] = 0.0;
+                }
+                let has_below = y + 1 < rows;
+                for x in 0..cols {
+                    let old = work[x];
+                    let black = old < level;
+                    let quant = if black { 0.0 } else { 1.0 };
+                    out[x] = if black { power } else { 0 };
+                    let err = old - quant;
+                    if x + 1 < cols {
+                        work[x + 1] += err * (7.0 / 16.0);
+                    }
+                    if has_below {
+                        if x > 0 {
+                            err_next[x - 1] += err * (3.0 / 16.0);
+                        }
+                        err_next[x] += err * (5.0 / 16.0);
+                        if x + 1 < cols {
+                            err_next[x + 1] += err * (1.0 / 16.0);
+                        }
+                    }
+                }
+                if !emit(y, &out) {
+                    return;
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -343,5 +468,93 @@ mod tests {
         };
         assert!(c.power_grid(&[0.0, 1.0, 0.0], 2, 2).is_empty());
         assert!(c.power_grid(&[], 0, 0).is_empty());
+    }
+
+    /// Assemble the streaming generator's rows into a flat grid.
+    fn stream_to_grid(c: &PowerCurve, brightness: &[f32], cols: usize, rows: usize) -> Vec<u32> {
+        let mut grid = vec![0u32; cols * rows];
+        stream_power_rows(
+            c,
+            cols,
+            rows,
+            |y, buf| {
+                buf.clear();
+                buf.extend_from_slice(&brightness[y * cols..(y + 1) * cols]);
+            },
+            |y, powers| {
+                grid[y * cols..(y + 1) * cols].copy_from_slice(powers);
+                true
+            },
+        );
+        grid
+    }
+
+    #[test]
+    fn stream_power_rows_matches_power_grid() {
+        // The streaming (O(cols)) raster path MUST be byte-identical to the
+        // whole-grid `power_grid` for EVERY curve — the huge-engrave emit
+        // relies on it. Floyd–Steinberg is the load-bearing case: its
+        // cross-row error diffusion has to survive being fed one row at a
+        // time. Exercise several shapes incl. non-square and single row/col.
+        let curves = [
+            PowerCurve::Linear { min: 40, max: 900 },
+            PowerCurve::Threshold {
+                level: 0.5,
+                power: 700,
+            },
+            PowerCurve::FloydSteinberg {
+                level: 0.5,
+                power: 1000,
+            },
+            PowerCurve::Bayer {
+                matrix_size: 4,
+                power: 500,
+            },
+            PowerCurve::Bayer {
+                matrix_size: 8,
+                power: 500,
+            },
+        ];
+        // A gradient with structure so F–S actually diffuses (not all solid).
+        let shapes = [(7usize, 5usize), (1, 6), (6, 1), (16, 16), (13, 9)];
+        for (cols, rows) in shapes {
+            let field: Vec<f32> = (0..cols * rows)
+                .map(|i| ((i * 37 % 100) as f32) / 100.0)
+                .collect();
+            for c in &curves {
+                let reference = c.power_grid(&field, cols, rows);
+                let streamed = stream_to_grid(c, &field, cols, rows);
+                assert_eq!(
+                    streamed, reference,
+                    "streaming != whole-grid for {c:?} at {cols}×{rows}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn stream_power_rows_abort_stops_early() {
+        // Returning false from `emit` halts the walk — the driver uses this
+        // to surface a mid-op cancel on a genuinely huge engrave.
+        let c = PowerCurve::Linear { min: 0, max: 1000 };
+        let field = vec![0.5f32; 4 * 10];
+        let mut seen = 0usize;
+        stream_power_rows(
+            &c,
+            4,
+            10,
+            |y, buf| {
+                buf.clear();
+                buf.extend_from_slice(&field[y * 4..(y + 1) * 4]);
+            },
+            |_, _| {
+                seen += 1;
+                seen < 3 // stop after emitting rows 0,1,2
+            },
+        );
+        assert_eq!(
+            seen, 3,
+            "abort should halt after the row that returns false"
+        );
     }
 }

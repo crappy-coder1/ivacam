@@ -14,18 +14,22 @@
 //! boustrophedon), and an overscan lead-in/-out so the head reaches feed
 //! before it crosses the first burning pixel. Laser-only.
 
-use crate::cam::raster::RasterLink;
+use crate::cam::raster::{stream_power_rows, RasterLink};
 use crate::cam::setup::Setup;
 use crate::cam::surface_mill::ScanDirection;
 use crate::gcode::PostProcessor;
 use crate::geometry::Point2;
-use crate::pipeline::{CancelToken, PipelineError, PipelineWarning};
+use crate::pipeline::{cancelled, CancelToken, PipelineError, PipelineWarning};
 use crate::project::MachineMode;
 use crate::project::{Op, OpKind, Project, ReliefSource};
 
-/// Hard ceiling on resampled pixel count — beyond this the line-buffered
-/// post would balloon memory. A real >16 Mpx engrave wants the streaming
-/// emit (streaming follow-up); until then we warn and skip rather than OOM.
+/// Pixel-count ceiling for the **AlongY** (vertical) scan path only.
+/// Vertical scanlines walk image *columns*, which needs random access to
+/// every row at once (and Floyd–Steinberg is intrinsically row-major), so
+/// that path materializes the whole `cols × rows` power grid and warns +
+/// skips past this cap rather than risk a huge transient allocation. The
+/// default **AlongX** (horizontal) path streams row-by-row at `O(cols)`
+/// peak memory through [`stream_power_rows`] and is *not* capped (z9zh).
 const MAX_RASTER_PIXELS: usize = 16_000_000;
 
 fn find_source(project: &Project, id: u32) -> Option<&ReliefSource> {
@@ -89,17 +93,146 @@ fn resample(
     (out, new_cols, new_rows)
 }
 
+/// Fill `out` with the `new_cols` raw (un-clamped) brightness values of
+/// resampled row `ny` — the streaming counterpart of one row of
+/// [`resample`]'s output. Uses the identical nearest-neighbour index math
+/// (and the same `identity` short-circuit for `pitch ≤ 0` / within 1 µm of
+/// `cell`) so the streamed AlongX path is byte-identical to the whole-grid
+/// path. `PowerCurve`'s clamping happens downstream in [`stream_power_rows`],
+/// exactly where `power_grid` clamps, so this must NOT clamp.
+fn resample_row(
+    src: &[f32],
+    in_cols: usize,
+    in_rows: usize,
+    cell: f64,
+    target_pitch: f64,
+    new_cols: usize,
+    ny: usize,
+    out: &mut Vec<f32>,
+) {
+    out.clear();
+    let identity =
+        target_pitch <= 0.0 || (target_pitch - cell).abs() < 1e-6 || in_cols == 0 || in_rows == 0;
+    let sy = if identity {
+        ny
+    } else {
+        (((ny as f64 + 0.5) * target_pitch / cell) as usize).min(in_rows - 1)
+    };
+    for nx in 0..new_cols {
+        let sx = if identity {
+            nx
+        } else {
+            (((nx as f64 + 0.5) * target_pitch / cell) as usize).min(in_cols - 1)
+        };
+        out.push(src[sy * in_cols + sx]);
+    }
+}
+
+/// Per-op scanline geometry shared by both emit paths. `over` is the
+/// overscan lead-in/-out distance (constant across scanlines).
+struct ScanGeom {
+    /// True for AlongY (vertical scanlines, sweeping Y); false for AlongX.
+    scan_y: bool,
+    pitch: f64,
+    /// Cross-axis origin: X for AlongY scanlines, Y for AlongX.
+    fixed_origin: f64,
+    /// Sweep-axis origin: Y for AlongY, X for AlongX.
+    sweep_origin: f64,
+    over: f64,
+    bidirectional: bool,
+}
+
+/// Emit one scanline: reposition (beam off), optional overscan lead-in,
+/// the run-length-grouped burning spans, and optional lead-out. `line` is
+/// the scanline index; `line_powers[k]` is the `S`-power of the k-th pixel
+/// along the sweep. Updates `final_pt` to the head's resting point.
+///
+/// This is the single emit implementation both the streaming (AlongX) and
+/// whole-grid (AlongY) paths call, so their output is byte-identical
+/// modulo the pixel-to-scanline mapping each feeds in.
+fn emit_scanline<P: PostProcessor>(
+    post: &mut P,
+    g: &ScanGeom,
+    line: usize,
+    line_powers: &[u32],
+    final_pt: &mut Point2,
+) {
+    let line_len = line_powers.len();
+    let fixed = g.fixed_origin + line as f64 * g.pitch;
+    let reverse = g.bidirectional && (line % 2 == 1);
+    let order: Vec<usize> = if reverse {
+        (0..line_len).rev().collect()
+    } else {
+        (0..line_len).collect()
+    };
+    // Run-length group into (power, far-boundary-index) spans.
+    let mut spans: Vec<(u32, usize)> = Vec::new();
+    let mut i = 0;
+    while i < order.len() {
+        let p = line_powers[order[i]];
+        let mut j = i;
+        while j + 1 < order.len() && line_powers[order[j + 1]] == p {
+            j += 1;
+        }
+        let last = order[j];
+        // forward: pixel `k` spans boundaries [k, k+1] ⇒ far edge k+1;
+        // reverse: the far edge is the lower boundary `k`.
+        let end_b = if reverse { last } else { last + 1 };
+        spans.push((p, end_b));
+        i = j + 1;
+    }
+
+    let boundary = |b: usize| g.sweep_origin + b as f64 * g.pitch;
+    let world = |fixed: f64, sweep: f64| -> (f64, f64) {
+        if g.scan_y {
+            (fixed, sweep)
+        } else {
+            (sweep, fixed)
+        }
+    };
+    let dir = if reverse { -1.0 } else { 1.0 };
+    let lead = boundary(if reverse { line_len } else { 0 });
+    let start = lead + dir * g.over;
+
+    // Reposition with the beam off (M5 over the rapid), then re-arm.
+    post.laser_off();
+    let (sx, sy) = world(fixed, start);
+    post.move_to(Some(sx), Some(sy), None);
+    // Overscan lead-in at S0 so the head is at feed before burning.
+    if g.over > 0.0 {
+        post.laser_on(0);
+        let (lx, ly) = world(fixed, lead);
+        post.linear(Some(lx), Some(ly), None);
+    }
+    for (p, end_b) in spans {
+        post.laser_on(p);
+        let (ex, ey) = world(fixed, boundary(end_b));
+        post.linear(Some(ex), Some(ey), None);
+        *final_pt = Point2::new(ex, ey);
+    }
+    // Overscan lead-out at S0.
+    if g.over > 0.0 {
+        post.laser_on(0);
+        let (tx, ty) = world(
+            fixed,
+            boundary(if reverse { 0 } else { line_len }) + dir * g.over,
+        );
+        post.linear(Some(tx), Some(ty), None);
+        *final_pt = Point2::new(tx, ty);
+    }
+}
+
 /// Emit a laser raster-engrave op. No-op when the source is missing /
 /// empty or the machine isn't a laser (the `would_emit` gate normally
-/// screens those out); over-large grids warn and skip.
-// `unnecessary_wraps` — the Result<(), _> return is never an Err
-// today, but the uniform op-driver signature (sibling run_*_op fns all
-// return Result, dispatched polymorphically) keeps the wrapper.
-#[allow(
-    clippy::too_many_arguments,
-    clippy::too_many_lines,
-    clippy::unnecessary_wraps
-)]
+/// screens those out).
+///
+/// Two emit paths (z9zh): **AlongX** (the default horizontal scan) streams
+/// image rows one at a time through [`stream_power_rows`], so peak memory
+/// is `O(cols)` and there is no pixel cap — a genuinely huge engrave rides
+/// the streaming gcode sink straight to the output. **AlongY** (vertical)
+/// walks image columns, which needs the whole power grid resident, so it
+/// materializes it and stays behind [`MAX_RASTER_PIXELS`] (warn + skip).
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub(in crate::pipeline) fn run_raster_op<P: PostProcessor>(
     op: &Op,
     project: &Project,
@@ -107,7 +240,7 @@ pub(in crate::pipeline) fn run_raster_op<P: PostProcessor>(
     post: &mut P,
     last_pos: &mut Point2,
     warnings: &mut Vec<PipelineWarning>,
-    _cancel: Option<&CancelToken>,
+    cancel: Option<&CancelToken>,
 ) -> Result<(), PipelineError> {
     let OpKind::RasterEngrave {
         source_id,
@@ -140,37 +273,10 @@ pub(in crate::pipeline) fn run_raster_op<P: PostProcessor>(
     let cell = if source.cell > 0.0 { source.cell } else { 1.0 };
     let in_cols = source.cols as usize;
     let in_rows = source.rows as usize;
-    // Enforce the emit cap against the PROJECTED resample dims, before
-    // `resample` allocates the grid — a tiny resolution_mm would otherwise
-    // balloon the allocation past the cap the guard is meant to enforce.
+    // Projected resample dims, computed WITHOUT allocating (a tiny
+    // resolution_mm would otherwise balloon the grid before any guard runs).
     let (cols, rows) = resampled_dims(in_cols, in_rows, cell, *resolution_mm);
-    if cols
-        .checked_mul(rows)
-        .map_or(true, |n| n > MAX_RASTER_PIXELS)
-    {
-        warnings.push(PipelineWarning::for_op(
-            op.id,
-            "raster_too_large",
-            format!(
-                "raster op '{}' resamples to {cols}×{rows} pixels, over the {MAX_RASTER_PIXELS}-pixel emit cap. Lower the resolution (larger resolution_mm) or crop the image; streaming emit for huge rasters is a follow-up.",
-                op.name
-            ),
-        )
-        .with_param("op_name", op.name.as_str())
-        .with_param("cols", cols)
-        .with_param("rows", rows)
-        .with_param("max_pixels", MAX_RASTER_PIXELS));
-        return Ok(());
-    }
-    let (brightness, cols, rows) = resample(src_brightness, in_cols, in_rows, cell, *resolution_mm);
-
-    // Per-pixel power, computed once over the whole grid (Floyd–Steinberg
-    // diffuses across rows, so the row walk must see the full result).
-    let powers = power_curve.power_grid(&brightness, cols, rows);
-    // Brightness isn't needed past the power grid; free it before the emit
-    // loop so a large raster doesn't hold both grids live during emit.
-    drop(brightness);
-    if powers.is_empty() {
+    if cols == 0 || rows == 0 {
         return Ok(());
     }
 
@@ -188,91 +294,101 @@ pub(in crate::pipeline) fn run_raster_op<P: PostProcessor>(
     let oy = source.origin.y;
     let feed = setup.tool.rate_h.max(1);
     let scan_y = matches!(scan_direction, ScanDirection::AlongY);
-    let (num_lines, line_len) = if scan_y { (cols, rows) } else { (rows, cols) };
-    let over = overscan_factor.max(0.0) * line_len as f64 * pitch;
+    // AlongX: one scanline per image row, sweeping across cols.
+    // AlongY: one scanline per image column, sweeping down rows.
+    let line_len = if scan_y { rows } else { cols };
+    let geom = ScanGeom {
+        scan_y,
+        pitch,
+        fixed_origin: if scan_y { ox } else { oy },
+        sweep_origin: if scan_y { oy } else { ox },
+        over: overscan_factor.max(0.0) * line_len as f64 * pitch,
+        bidirectional: matches!(link, RasterLink::Bidirectional),
+    };
 
-    // Power of the k-th pixel along scanline `line`.
-    let power_at = |line: usize, k: usize| -> u32 {
-        if scan_y {
-            powers[k * cols + line] // (col = line, row = k)
-        } else {
-            powers[line * cols + k] // (row = line, col = k)
-        }
-    };
-    // Fixed cross-axis coord of a scanline (X for AlongY, Y for AlongX).
-    let fixed_origin = if scan_y { ox } else { oy };
-    let line_fixed = |line: usize| fixed_origin + line as f64 * pitch;
-    // Sweep-axis coord of boundary index b (origin oy for AlongY, ox else).
-    let sweep_origin = if scan_y { oy } else { ox };
-    let boundary = |b: usize| sweep_origin + b as f64 * pitch;
-    // Assemble a world point from (fixed cross-axis, sweep) coords.
-    let world = |fixed: f64, sweep: f64| -> (f64, f64) {
-        if scan_y {
-            (fixed, sweep)
-        } else {
-            (sweep, fixed)
-        }
-    };
+    // AlongY can't stream (column walk needs random row access; F–S is
+    // row-major), so it materializes the whole grid and stays behind the
+    // cap. Check BEFORE emitting the op header so a skipped op emits nothing.
+    if scan_y
+        && cols
+            .checked_mul(rows)
+            .map_or(true, |n| n > MAX_RASTER_PIXELS)
+    {
+        warnings.push(PipelineWarning::for_op(
+            op.id,
+            "raster_too_large",
+            format!(
+                "raster op '{}' resamples to {cols}×{rows} pixels, over the {MAX_RASTER_PIXELS}-pixel cap for vertical (AlongY) scanning. Lower the resolution (larger resolution_mm), crop the image, or switch to horizontal (AlongX) scanning — AlongX streams unbounded.",
+                op.name
+            ),
+        )
+        .with_param("op_name", op.name.as_str())
+        .with_param("cols", cols)
+        .with_param("rows", rows)
+        .with_param("max_pixels", MAX_RASTER_PIXELS));
+        return Ok(());
+    }
 
     post.comment(&format!("OP {} raster engrave", op.id));
     post.laser_arm(); // M3 S0 — armed cold
     post.feedrate(feed);
     let mut final_pt = Point2::new(ox, oy);
 
-    for line in 0..num_lines {
-        let fixed = line_fixed(line);
-        let reverse = matches!(link, RasterLink::Bidirectional) && (line % 2 == 1);
-        let order: Vec<usize> = if reverse {
-            (0..line_len).rev().collect()
-        } else {
-            (0..line_len).collect()
-        };
-        // Run-length group into (power, far-boundary-index) spans.
-        let mut spans: Vec<(u32, usize)> = Vec::new();
-        let mut i = 0;
-        while i < order.len() {
-            let p = power_at(line, order[i]);
-            let mut j = i;
-            while j + 1 < order.len() && power_at(line, order[j + 1]) == p {
-                j += 1;
+    if scan_y {
+        // AlongY: whole grid (cap-guarded above); walk columns. Per-pixel
+        // power computed once over the full grid (Floyd–Steinberg diffuses
+        // across rows, so a column walk must see the full result).
+        let (brightness, _, _) = resample(src_brightness, in_cols, in_rows, cell, *resolution_mm);
+        let powers = power_curve.power_grid(&brightness, cols, rows);
+        // Brightness isn't needed past the power grid; free it before emit.
+        drop(brightness);
+        if powers.is_empty() {
+            post.laser_off();
+            *last_pos = final_pt;
+            return Ok(());
+        }
+        let mut col: Vec<u32> = vec![0u32; rows];
+        for line in 0..cols {
+            if cancelled(cancel) {
+                return Err(PipelineError::Cancelled);
             }
-            let last = order[j];
-            // forward: pixel `k` spans boundaries [k, k+1] ⇒ far edge k+1;
-            // reverse: the far edge is the lower boundary `k`.
-            let end_b = if reverse { last } else { last + 1 };
-            spans.push((p, end_b));
-            i = j + 1;
+            for (k, slot) in col.iter_mut().enumerate() {
+                *slot = powers[k * cols + line];
+            }
+            emit_scanline(post, &geom, line, &col, &mut final_pt);
         }
-
-        let dir = if reverse { -1.0 } else { 1.0 };
-        let lead = boundary(if reverse { line_len } else { 0 });
-        let start = lead + dir * over;
-
-        // Reposition with the beam off (M5 over the rapid), then re-arm.
-        post.laser_off();
-        let (sx, sy) = world(fixed, start);
-        post.move_to(Some(sx), Some(sy), None);
-        // Overscan lead-in at S0 so the head is at feed before burning.
-        if over > 0.0 {
-            post.laser_on(0);
-            let (lx, ly) = world(fixed, lead);
-            post.linear(Some(lx), Some(ly), None);
-        }
-        for (p, end_b) in spans {
-            post.laser_on(p);
-            let (ex, ey) = world(fixed, boundary(end_b));
-            post.linear(Some(ex), Some(ey), None);
-            final_pt = Point2::new(ex, ey);
-        }
-        // Overscan lead-out at S0.
-        if over > 0.0 {
-            post.laser_on(0);
-            let (tx, ty) = world(
-                fixed,
-                boundary(if reverse { 0 } else { line_len }) + dir * over,
-            );
-            post.linear(Some(tx), Some(ty), None);
-            final_pt = Point2::new(tx, ty);
+    } else {
+        // AlongX: stream image rows; O(cols) peak memory, no pixel cap. Each
+        // row's powers are produced lazily and emitted as its scanline, so a
+        // whole-program raster never materializes the grid.
+        let mut aborted = false;
+        stream_power_rows(
+            power_curve,
+            cols,
+            rows,
+            |ny, buf| {
+                resample_row(
+                    src_brightness,
+                    in_cols,
+                    in_rows,
+                    cell,
+                    *resolution_mm,
+                    cols,
+                    ny,
+                    buf,
+                );
+            },
+            |line, line_powers| {
+                if cancelled(cancel) {
+                    aborted = true;
+                    return false;
+                }
+                emit_scanline(post, &geom, line, line_powers, &mut final_pt);
+                true
+            },
+        );
+        if aborted {
+            return Err(PipelineError::Cancelled);
         }
     }
 
@@ -330,5 +446,32 @@ mod tests {
         let (c, r) = resampled_dims(2, 2, 1.0, 0.0001);
         assert_eq!((c, r), (20_000, 20_000));
         assert!(c.checked_mul(r).is_some_and(|n| n > MAX_RASTER_PIXELS));
+    }
+
+    #[test]
+    fn resample_row_assembles_to_resample() {
+        // The streaming AlongX path pulls one resampled row at a time via
+        // `resample_row`; concatenated, those rows must be byte-identical to
+        // the whole-grid `resample` (else streamed gcode would drift from
+        // the buffered path). Cover the identity short-circuit, an upsample,
+        // and a downsample.
+        let b: Vec<f32> = (0..24).map(|i| i as f32 / 24.0).collect();
+        for (in_cols, in_rows, cell, pitch) in [
+            (6usize, 4usize, 0.1, 0.1),
+            (6, 4, 0.1, 0.2),
+            (6, 4, 0.1, 0.05),
+        ] {
+            let (whole, nc, nr) = resample(&b, in_cols, in_rows, cell, pitch);
+            let mut assembled = Vec::new();
+            let mut row = Vec::new();
+            for ny in 0..nr {
+                resample_row(&b, in_cols, in_rows, cell, pitch, nc, ny, &mut row);
+                assembled.extend_from_slice(&row);
+            }
+            assert_eq!(
+                assembled, whole,
+                "resample_row != resample at cell={cell}, pitch={pitch}"
+            );
+        }
     }
 }

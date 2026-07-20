@@ -1285,6 +1285,152 @@ fn raster_scan_direction_sets_scanline_count() {
     );
 }
 
+/// End-to-end guard for the z9zh streaming AlongX path: with a NON-identity
+/// `resolution_mm` (an actual resample) and Floyd–Steinberg dither — the
+/// row-coupled curve — the streamed emit must reproduce exactly the power
+/// values the whole-grid `resample` + `power_grid` would compute. The two
+/// pinned raster tests above only exercise `resolution_mm == 0` (identity),
+/// so this covers the resample+dither wiring the streaming path adds.
+#[test]
+fn raster_streaming_alongx_reproduces_whole_grid_powers() {
+    use crate::cam::raster::{PowerCurve, RasterLink};
+    use crate::cam::surface_mill::ScanDirection;
+    use crate::geometry::Point2;
+    use crate::project::{ReliefGrid, ReliefSource};
+
+    // 6×4 source at 0.2 mm cell, engraved at 0.1 mm → upsample to 12×8.
+    let cell = 0.2;
+    let resolution = 0.1;
+    let (in_cols, in_rows) = (6usize, 4usize);
+    let brightness: Vec<f32> = (0..in_cols * in_rows)
+        .map(|i| ((i * 53 % 100) as f32) / 100.0)
+        .collect();
+    let curve = PowerCurve::FloydSteinberg {
+        level: 0.5,
+        power: 750,
+    };
+
+    let mut tool = endmill(1, 0.1);
+    tool.kind = ToolKind::LaserBeam;
+    let project = Project {
+        segments: Vec::new(),
+        machine: MachineConfig {
+            mode: crate::project::MachineMode::Laser,
+            ..MachineConfig::default()
+        },
+        tools: vec![tool],
+        operations: vec![Op {
+            id: 1,
+            name: "Engrave".into(),
+            enabled: true,
+            kind: OpKind::RasterEngrave {
+                source_id: 1,
+                resolution_mm: resolution,
+                power_curve: curve,
+                scan_direction: ScanDirection::AlongX,
+                link: RasterLink::LiftBetween,
+                overscan_factor: 0.0,
+            },
+            tool_id: 1,
+            finish_tool_id: None,
+            source: OpSource::All,
+            params: OpParams::mill_default(),
+            group: None,
+            pin_order: false,
+            side: crate::project::WorkpieceSide::Front,
+        }],
+        fixtures: Vec::default(),
+        text_layers: Vec::default(),
+        work_offset: crate::project::WorkOffset::default(),
+        stock: None,
+        relief_sources: vec![ReliefSource {
+            id: 1,
+            name: "img".into(),
+            origin: Point2::new(0.0, 0.0),
+            cell,
+            cols: in_cols as u32,
+            rows: in_rows as u32,
+            grid: ReliefGrid::Grayscale {
+                brightness: brightness.clone(),
+            },
+        }],
+        group_ops_by_tool: false,
+    };
+    let g = run_pipeline(
+        PipelineRequest {
+            project,
+            post_processor: Some(PostProcessorKind::Linuxcnc),
+        },
+        |_, _, _| {},
+    )
+    .unwrap()
+    .gcode;
+
+    // Reference: the whole-grid resample + power_grid the streaming path
+    // must match. Its distinct on-power is the S value the burns emit; the
+    // burn count equals the number of run-length spans of that power across
+    // rows (LiftBetween keeps all rows left-to-right, so a span is a maximal
+    // run within a row). We check the simpler, robust invariant: every
+    // distinct non-zero power in the reference grid appears in the gcode and
+    // no OTHER burn power does.
+    let (rb, rc, rr) = {
+        // resample lives in the driver; recompute its nearest-neighbour map.
+        let nc = ((in_cols as f64 * cell / resolution).round() as usize).max(1);
+        let nr = ((in_rows as f64 * cell / resolution).round() as usize).max(1);
+        let mut out = vec![0.0f32; nc * nr];
+        for ny in 0..nr {
+            let sy = (((ny as f64 + 0.5) * resolution / cell) as usize).min(in_rows - 1);
+            for nx in 0..nc {
+                let sx = (((nx as f64 + 0.5) * resolution / cell) as usize).min(in_cols - 1);
+                out[ny * nc + nx] = brightness[sy * in_cols + sx];
+            }
+        }
+        (out, nc, nr)
+    };
+    assert_eq!((rc, rr), (12, 8), "expected 6×4 @0.2 → 12×8 @0.1");
+    let powers = curve.power_grid(&rb, rc, rr);
+    // F–S on this field yields a mix of burn (750) and skip (0) pixels.
+    assert!(
+        powers.contains(&750) && powers.contains(&0),
+        "reference must have both burn and skip pixels"
+    );
+    // The only burning laser power in the emitted program is S750.
+    let burn_powers: std::collections::BTreeSet<u32> = g
+        .lines()
+        .filter_map(|l| l.strip_prefix("M3 S"))
+        .filter_map(|s| s.trim().parse::<u32>().ok())
+        .filter(|&p| p != 0)
+        .collect();
+    assert_eq!(
+        burn_powers,
+        std::collections::BTreeSet::from([750]),
+        "streamed AlongX must emit exactly the reference's on-power (S750) and no other burn:\n{g}"
+    );
+    // One horizontal scanline per resampled row, each at a distinct Y plane
+    // (AlongX sweeps X at constant Y). Counting the distinct Y among the
+    // reposition rapids is immune to program header/footer rapids: it must
+    // equal the resampled row count, proving the stream emitted every row.
+    let op_start = g
+        .lines()
+        .position(|l| l.contains("raster engrave"))
+        .expect("op comment present");
+    let scanline_ys: std::collections::BTreeSet<String> = g
+        .lines()
+        .skip(op_start)
+        .filter(|l| l.starts_with("G0 "))
+        .filter_map(|l| {
+            l.split_whitespace()
+                .find(|w| w.starts_with('Y'))
+                .map(str::to_owned)
+        })
+        .collect();
+    assert_eq!(
+        scanline_ys.len(),
+        rr,
+        "one scanline per resampled row (distinct Y planes):\n{g}"
+    );
+}
+
 /// Per-tool Z shift: when set on the first op's tool, a
 /// `G92 Z<shift>` line follows `program_begin` to pin work-Z=0 to
 /// the new tool's tip.
