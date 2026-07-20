@@ -30,6 +30,7 @@ export type { AppSettings };
 import type { OpEntry, OpKind } from './op_types';
 import * as importOps from './import-ops';
 import * as fileOps from './project-file-ops';
+import * as machineOps from './project-machine-ops';
 
 // Pure-TypeScript data shapes live in project-types.ts so vitest specs
 // and non-Svelte helpers can import them without booting the rune
@@ -169,11 +170,7 @@ import { lineCrossesBBox } from '../canvas/selection-geometry';
 import { computeFootprint } from '../sim/driver';
 import { augmentWithStockOutline } from './stock-outline';
 import { buildOpEntry } from './op_defaults';
-import { assessModeSwitch } from './mode_switch';
-import { modeNotice } from './mode_notice.svelte';
-import { defaultToolForMode } from './tool_mode_defaults';
 import { effectiveModes } from './tool_family';
-import { profilePayload } from './machine_profiles';
 
 /// Memoised bundled-font fetch — the DejaVu Sans bytes used as the
 /// default font for imported DXF TEXT/MTEXT entities. Resolved once
@@ -207,8 +204,6 @@ import {
   addReliefSourceCommand,
   addTextLayerCommand,
   addToolCommand,
-  applyMachineProfileCommand,
-  assignToolToOpsCommand,
   deleteOperationCommand,
   deleteReliefSourceCommand,
   deleteTextLayerCommand,
@@ -219,9 +214,6 @@ import {
   replaceToolsCommand,
   selectObjectsCommand,
   setGroupOpsByToolCommand,
-  setMachineCommand,
-  setStockCommand,
-  setWorkOffsetCommand,
   toggleTabPlacementCommand,
   updateFixtureCommand,
   updateOperationCommand,
@@ -1001,121 +993,50 @@ export class ProjectState {
 
   // ── machine / stock ──────────────────────────────────────────────────
 
+  /// Undoable machine-config swap; clears cached gcode + runs the
+  /// mode-switch staleness assessment — see state/project-machine-ops.ts.
   setMachine(next: MachineSettings) {
-    const prevModes = effectiveModes(this.data.machine);
-    this.history.exec(setMachineCommand(next), this.target());
-    // Machine change invalidates the cached gcode: work area / units /
-    // post-processor dialect / rapid feeds all feed into the run, so a
-    // toolpath generated against the prior machine isn't safe to draw
-    // against the new envelope or download into the new dialect's file.
-    // The user has to regen; clearing here lets the GcodePanel + Scene3D
-    // empty-state messaging show the stale-vs-fresh distinction
-    // immediately instead of silently lying.
-    this.gen.generated = null;
-    // Mode / capability change: surface ops now referencing
-    // incompatible tools (or a library with nothing the machine can
-    // run) as ONE non-modal notice. Never rewrites anything itself;
-    // never blocks the toggle. A switch back to a config where
-    // everything fits clears the notice (assess returns null).
-    // Compared on the EFFECTIVE mode set so dropping a capability
-    // (mill+plasma → plasma-only) triggers the same check a primary-
-    // mode flip does.
-    const nextModes = effectiveModes(next);
-    const modesChanged =
-      nextModes.length !== prevModes.length || nextModes.some((m) => !prevModes.includes(m));
-    if (modesChanged) {
-      modeNotice.current = assessModeSwitch(next, this.data.operations, this.data.tools);
-    }
+    machineOps.setMachine(this, next);
   }
 
-  /// The mode-switch notice's "assign to all" action: point every
-  /// affected op at `toolId`, or — when the library has no compatible
-  /// tool (`toolId == null`) — create the mode's default tool and
-  /// assign that. One undoable transaction via the command bus.
+  /// The mode-switch notice's "assign to all" action — see
+  /// state/project-machine-ops.ts.
   assignToolToOps(opIds: readonly number[], toolId: number | null) {
-    if (opIds.length === 0) return;
-    if (toolId == null) {
-      const nextId = this.data.tools.reduce((m, t) => Math.max(m, t.id), 0) + 1;
-      const tool = defaultToolForMode(this.data.machine.mode, nextId);
-      this.history.exec(assignToolToOpsCommand(opIds, tool.id, tool), this.target());
-    } else {
-      this.history.exec(assignToolToOpsCommand(opIds, toolId), this.target());
-    }
+    machineOps.assignToolToOps(this, opIds, toolId);
   }
 
-  /// The mode-switch notice's seed action for a singleton mode with an
-  /// empty compatible set: add the mode's default tool (torch / beam /
-  /// knife) to the library. Undoable like any tool-library edit.
+  /// The mode-switch notice's seed action for a singleton mode — see
+  /// state/project-machine-ops.ts.
   seedDefaultToolForMode() {
-    const nextId = this.data.tools.reduce((m, t) => Math.max(m, t.id), 0) + 1;
-    this.history.exec(
-      addToolCommand(defaultToolForMode(this.data.machine.mode, nextId)),
-      this.target(),
-    );
+    machineOps.seedDefaultToolForMode(this);
   }
 
-  /// Switch the project to a workspace machine profile: its machine
-  /// config + tool library replace the project's working copies and
-  /// the profile reference moves, all as one undoable step. Runs the
-  /// same staleness + mode-switch assessment as a manual machine edit
-  /// — the right library coming along doesn't guarantee the existing
-  /// ops fit the new machine.
+  /// Switch the project to a workspace machine profile (config + tools
+  /// + reference, one undoable step) — see state/project-machine-ops.ts.
   applyMachineProfile(profile: import('./workspace').MachineProfile) {
-    const prevModes = effectiveModes(this.data.machine);
-    const { machine, tools } = profilePayload(profile);
-    this.history.exec(applyMachineProfileCommand(machine, tools, profile.id), this.target());
-    this.gen.generated = null;
-    const nextModes = effectiveModes(machine);
-    const modesChanged =
-      nextModes.length !== prevModes.length || nextModes.some((m) => !prevModes.includes(m));
-    if (modesChanged) {
-      modeNotice.current = assessModeSwitch(machine, this.data.operations, this.data.tools);
-    }
+    machineOps.applyMachineProfile(this, profile);
   }
 
-  /// Detach the project from its machine profile: machine + tools stay
-  /// exactly as they are (they become project-local again); only the
-  /// reference clears, so edits stop mirroring back to the profile.
+  /// Detach the project from its machine profile — see
+  /// state/project-machine-ops.ts.
   detachMachineProfile() {
-    if (this.data.machineProfileId == null) return;
-    this.history.exec(
-      applyMachineProfileCommand(
-        JSON.parse(JSON.stringify(this.data.machine)) as MachineSettings,
-        JSON.parse(JSON.stringify(this.data.tools)) as ToolEntry[],
-        null,
-      ),
-      this.target(),
-    );
+    machineOps.detachMachineProfile(this);
   }
 
+  /// Undoable stock-config edit — see state/project-machine-ops.ts.
   setStock(patch: Partial<StockConfig>, coalesceKey?: string) {
-    if (Object.keys(patch).length === 0) return;
-    this.history.exec(setStockCommand(patch, coalesceKey), this.target());
+    machineOps.setStock(this, patch, coalesceKey);
   }
 
-  /// Undoable WorkOffset edit. Routes through the command bus so the
-  /// X/Y/Z spinners + WCS picker in StockPanel + the warnings-panel
-  /// Apply-Fix button all coalesce into history entries identical to
-  /// the stock-dim flow.
+  /// Undoable WorkOffset edit — see state/project-machine-ops.ts.
   setWorkOffset(patch: Partial<WorkOffset>) {
-    if (Object.keys(patch).length === 0) return;
-    this.history.exec(setWorkOffsetCommand(patch), this.target());
+    machineOps.setWorkOffset(this, patch);
   }
 
-  /// Snap the WCS origin to the geometry/stock footprint's bottom-left
-  /// corner — the single source of truth behind the
-  /// `stock_origin_outside_geometry_bbox` Apply-Fix action (desktop
-  /// GenerateBar + phone PhoneWarnings both call this). Reads
-  /// `stockSizingImport` so it also works for text-only projects, where
-  /// `transformedImport` is null. Undoable via `setWorkOffset`; callers
-  /// trigger a re-generate afterwards.
+  /// Snap the WCS origin to the footprint's bottom-left corner — see
+  /// state/project-machine-ops.ts.
   snapWorkOffsetToFootprint(): void {
-    const fp = computeFootprint(
-      this.stockSizingImport,
-      this.data.stock,
-      this.data.machine.workArea,
-    );
-    this.setWorkOffset({ x_mm: fp.minX, y_mm: fp.minY });
+    machineOps.snapWorkOffsetToFootprint(this);
   }
 
   /// Per-import file-transform patch. Undoable, spinner
