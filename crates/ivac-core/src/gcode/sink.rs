@@ -74,16 +74,30 @@
 //! buffered entry on `;`, which needs the whole buffer the streaming mode
 //! does not retain.
 //!
-//! # Known limitation (`ivac-3j1p.4` follow-up)
+//! # Oversized-op cache bypass (`ivac-3j1p.4`)
 //!
 //! A single pathologically large op — e.g. one laser-raster op that emits the
-//! entire program as one `G1`-per-pixel body — still buffers that op's whole
-//! tee, so peak stays O(that op). True O(1) there needs a cache **bypass** for
-//! oversized ops (stream straight through, skip the snapshot) or a seek-based
-//! re-read. Tracked as a follow-up; out of scope for the common many-ops case
-//! this mode makes O(1).
+//! entire program as one `G1`-per-pixel body — would otherwise buffer that op's
+//! whole tee, so peak would stay O(that op). The tee is therefore **capped** at
+//! [`DEFAULT_STREAM_TEE_CAP_LINES`]: when an op's body crosses the budget the
+//! sink sets [`op_overflowed`](GcodeSink::op_overflowed), drops the retained
+//! tail, and keeps streaming the op's bytes straight through. The emit loop
+//! reads `op_overflowed` and skips caching that op (an O(op) cache entry is
+//! exactly what streaming avoids), so peak memory is bounded to the cap even
+//! for one giant op, and the output stays byte-identical. Output bytes are
+//! never gated by the cap — only the cache tee is.
 
 use std::io::{self, Write};
+
+/// Default per-op tee budget for a streaming sink (`ivac-3j1p.4`): the maximum
+/// number of lines the bounded per-op tee retains before it gives up caching
+/// the current op. Sits well ABOVE any legitimate large op (a dense
+/// relief/raster op is typically at most a few hundred thousand lines — all
+/// still cacheable) yet far BELOW a pathological whole-program op (e.g. a
+/// 16M-pixel raster emitting ~16M `G1`-per-pixel lines as one op): the tee then
+/// peaks at ~this many `String`s (order 80 MB) instead of O(program). See
+/// [`GcodeSink::op_overflowed`].
+pub(crate) const DEFAULT_STREAM_TEE_CAP_LINES: usize = 1 << 20; // 1,048,576
 
 /// Write one program line to `w`, prefixing the `\n` *separator* for
 /// every line after the first (`first == false`). The single trailing
@@ -118,6 +132,15 @@ struct StreamState {
     /// [`GcodeSink::clone_from`] translates an absolute marker into a `tail`
     /// offset by subtracting this.
     tail_start: usize,
+    /// Max lines the per-op `tail` retains before giving up (`ivac-3j1p.4`).
+    /// When the current op's tee exceeds this, `overflowed` is set and the
+    /// tail is dropped — the op still streams through, it just won't be
+    /// cached. Bounds peak memory to the cap for a pathological single op.
+    tail_cap: usize,
+    /// Whether the CURRENT op's body blew past `tail_cap`. Set in
+    /// [`StreamState::push`], read by [`GcodeSink::op_overflowed`], reset by
+    /// [`GcodeSink::checkpoint`] at each op boundary.
+    overflowed: bool,
     /// Whether any line has reached `writer` yet, driving the `\n` separator
     /// so the stream is byte-identical to `join("\n") + "\n"`.
     wrote_any: bool,
@@ -140,7 +163,19 @@ impl StreamState {
         }
         self.wrote_any = true;
         self.total += 1;
-        self.tail.push(line);
+        // Tee into the current op's body for the op cache — but only up to
+        // `tail_cap`. An op that blows the budget (a pathological
+        // whole-program raster) stops being retained: it still streams
+        // through byte-for-byte, it just won't be cached (the emit loop skips
+        // store_op_cache when `overflowed`), so peak memory is bounded to the
+        // cap instead of O(op). See ivac-3j1p.4.
+        if !self.overflowed {
+            self.tail.push(line);
+            if self.tail.len() > self.tail_cap {
+                self.overflowed = true;
+                self.tail = Vec::new(); // drop the body + free its capacity
+            }
+        }
     }
 }
 
@@ -198,13 +233,25 @@ impl GcodeSink {
     /// `writer`. The writer is expected to be buffered by the caller (e.g. a
     /// [`std::io::BufWriter`]) — the sink issues one `write_all` per line and
     /// does not batch. Finalize with [`finish_stream`](Self::finish_stream).
+    /// Uses the default per-op tee budget ([`DEFAULT_STREAM_TEE_CAP_LINES`]).
     pub(crate) fn streaming(writer: Box<dyn Write + Send>) -> Self {
+        Self::streaming_with_cap(writer, DEFAULT_STREAM_TEE_CAP_LINES)
+    }
+
+    /// Like [`streaming`](Self::streaming) but with an explicit per-op tee
+    /// budget — an op emitting more than `tail_cap` lines stops being retained
+    /// for the cache (see [`op_overflowed`](Self::op_overflowed)). Threaded
+    /// from the streaming posts so a test can force overflow with a tiny cap
+    /// instead of a million-line fixture (`ivac-3j1p.4`).
+    pub(crate) fn streaming_with_cap(writer: Box<dyn Write + Send>, tail_cap: usize) -> Self {
         Self {
             mode: Mode::Streaming(StreamState {
                 writer,
                 total: 0,
                 tail: Vec::new(),
                 tail_start: 0,
+                tail_cap,
+                overflowed: false,
                 wrote_any: false,
                 err: None,
             }),
@@ -246,7 +293,11 @@ impl GcodeSink {
                 }
             }
             Mode::Streaming(s) => {
-                if start >= s.total {
+                // An overflowed op dropped its tail — its full body is no
+                // longer retained, and the emit loop already skips caching it
+                // (see `op_overflowed`), so this is never reached for one. Be
+                // defensive: return empty rather than a truncated body.
+                if start >= s.total || s.overflowed {
                     return Vec::new();
                 }
                 debug_assert!(
@@ -293,6 +344,22 @@ impl GcodeSink {
         if let Mode::Streaming(s) = &mut self.mode {
             s.tail_start = s.total;
             s.tail.clear();
+            // New op: cacheable again until it (maybe) blows the cap.
+            s.overflowed = false;
+        }
+    }
+
+    /// Whether the CURRENT op's body overflowed the bounded per-op tee
+    /// (streaming only — a buffered sink retains the whole program and never
+    /// overflows). The pipeline emit loop reads this right before caching an
+    /// op: an overflowed op's full body is no longer retained to clone, and an
+    /// O(op) cache entry is exactly what streaming avoids, so the loop skips
+    /// `store_op_cache` for it (it re-streams fresh next time). Reset by
+    /// [`checkpoint`](Self::checkpoint) at each op boundary (`ivac-3j1p.4`).
+    pub(crate) fn op_overflowed(&self) -> bool {
+        match &self.mode {
+            Mode::Buffered(_) => false,
+            Mode::Streaming(s) => s.overflowed,
         }
     }
 
@@ -627,6 +694,88 @@ mod tests {
         assert_eq!(s.len(), 3);
         let err = s.finish_stream().expect_err("deferred error must surface");
         assert_eq!(err.kind(), io::ErrorKind::Other);
+    }
+
+    /// Push every line through a streaming sink with an explicit tiny cap,
+    /// `finish_stream`, and return the bytes — the capped analogue of
+    /// [`stream_bytes`], for the oversized-op tee-cap tests (ivac-3j1p.4).
+    fn stream_bytes_capped(lines: &[&str], cap: usize) -> Vec<u8> {
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let mut s = GcodeSink::streaming_with_cap(Box::new(SharedBuf(buf.clone())), cap);
+        for l in lines {
+            s.push((*l).to_string());
+        }
+        s.finish_stream().unwrap();
+        let out = buf.lock().unwrap().clone();
+        out
+    }
+
+    #[test]
+    fn tee_cap_overflow_does_not_change_output_bytes() {
+        // The load-bearing property: capping the per-op tee bounds MEMORY, not
+        // OUTPUT. An op emitting well past the cap still streams byte-identical
+        // to the buffered join — the cap only drops the cache tee, never a
+        // written line.
+        let lines: Vec<String> = (0..10).map(|i| format!("G1 X{i}")).collect();
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        assert_eq!(
+            stream_bytes_capped(&refs, 3),
+            sink_of(&refs).finish().as_bytes(),
+            "a 10-line op over a 3-line cap must still emit the buffered bytes",
+        );
+    }
+
+    #[test]
+    fn tee_overflows_past_the_cap_and_drops_the_body() {
+        // Within one op, crossing the cap flips op_overflowed() and the
+        // retained tail is dropped (so clone_from can't return a truncated
+        // body — the emit loop skips caching it).
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let mut s = GcodeSink::streaming_with_cap(Box::new(SharedBuf(buf)), 2);
+        s.checkpoint();
+        let m = s.len();
+        s.push("a0".into());
+        s.push("a1".into());
+        assert!(!s.op_overflowed(), "2 lines is within the 2-line cap");
+        s.push("a2".into()); // 3 > 2 → overflow
+        assert!(s.op_overflowed(), "the 3rd line must overflow a 2-line cap");
+        assert!(
+            s.clone_from(m).is_empty(),
+            "an overflowed op's body is dropped, so clone_from is empty",
+        );
+    }
+
+    #[test]
+    fn checkpoint_resets_overflow_for_the_next_op() {
+        // Overflow is per-op: the boundary checkpoint clears it so the next
+        // (in-budget) op tees + caches normally.
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let mut s = GcodeSink::streaming_with_cap(Box::new(SharedBuf(buf)), 2);
+
+        // Op A overflows (3 > 2).
+        s.checkpoint();
+        s.push("A0".into());
+        s.push("A1".into());
+        s.push("A2".into());
+        assert!(s.op_overflowed());
+
+        // Op B, under the cap: checkpoint clears overflow and B's body is
+        // clonable (cacheable) again.
+        s.checkpoint();
+        let m_b = s.len();
+        s.push("B0".into());
+        assert!(
+            !s.op_overflowed(),
+            "checkpoint must reset the per-op overflow"
+        );
+        assert_eq!(s.clone_from(m_b), vec!["B0".to_string()]);
+    }
+
+    #[test]
+    fn buffered_never_overflows() {
+        // A buffered sink retains the whole program and has no cap — so the
+        // emit loop's guard never suppresses interactive caching.
+        assert!(!sink_of(&["a", "b", "c"]).op_overflowed());
     }
 
     #[test]

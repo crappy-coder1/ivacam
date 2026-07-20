@@ -114,6 +114,19 @@ impl Post {
             inner: linuxcnc::Post::streaming(writer),
         }
     }
+
+    /// Like [`streaming`](Self::streaming) but with an explicit per-op tee
+    /// budget, delegating to the inner post (`ivac-3j1p.4`). The streaming
+    /// emit loop uses the default cap; a test can pass a tiny cap to force the
+    /// oversized-op cache bypass.
+    pub(crate) fn streaming_with_cap(
+        writer: Box<dyn std::io::Write + Send>,
+        tail_cap: usize,
+    ) -> Self {
+        Self {
+            inner: linuxcnc::Post::streaming_with_cap(writer, tail_cap),
+        }
+    }
 }
 
 impl PostProcessor for Post {
@@ -336,6 +349,9 @@ impl PostProcessor for Post {
     }
     fn checkpoint(&mut self) {
         self.inner.checkpoint();
+    }
+    fn out_op_overflowed(&self) -> bool {
+        self.inner.out_op_overflowed()
     }
     fn reset_state(&mut self) {
         self.inner.reset_state();

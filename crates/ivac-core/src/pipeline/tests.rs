@@ -6988,6 +6988,61 @@ mod streaming_gcode {
         assert_eq!(String::from_utf8(streamed).unwrap(), buffered);
     }
 
+    /// Stream `a_project()` with an explicit tee cap into a fresh op-cache,
+    /// returning (streamed bytes, cache entry count) — the ivac-3j1p.4 harness.
+    fn streamed_with_cap(kind: PostProcessorKind, cap: usize) -> (Vec<u8>, usize) {
+        let cache = crate::pipeline_cache::PipelineCache::new(200);
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        stream_gcode_to_writer_capped(
+            PipelineRequest {
+                project: a_project(),
+                post_processor: Some(kind),
+            },
+            Box::new(SharedBuf(buf.clone())),
+            cap,
+            &cache,
+        )
+        .expect("capped streaming pipeline runs");
+        let bytes = buf.lock().unwrap().clone();
+        (bytes, cache.len())
+    }
+
+    #[test]
+    fn oversized_op_streams_byte_identically_but_is_not_cached() {
+        // A tiny cap makes every cutting op overflow its bounded tee. The
+        // ivac-3j1p.4 guarantees: (1) the streamed program is STILL
+        // byte-identical to buffered — capping bounds memory, not output; and
+        // (2) an overflowed op is NOT cached (its body is dropped and an O(op)
+        // cache entry is exactly what streaming avoids), so the fresh cache
+        // ends empty.
+        let buffered = buffered_gcode(PostProcessorKind::Linuxcnc);
+        let (streamed, cached_entries) = streamed_with_cap(PostProcessorKind::Linuxcnc, 2);
+        assert_eq!(
+            String::from_utf8(streamed).unwrap(),
+            buffered,
+            "an overflowing op must still stream the buffered bytes",
+        );
+        assert_eq!(
+            cached_entries, 0,
+            "both ops overflowed the 2-line cap, so neither is cached",
+        );
+    }
+
+    #[test]
+    fn under_cap_ops_are_cached_normally() {
+        // Control for the test above: with the default (huge) cap no op
+        // overflows, so the same two ops both land in the cache. This pins the
+        // CAP as the thing that gates caching — not some unrelated skip.
+        let (_, cached_entries) = streamed_with_cap(
+            PostProcessorKind::Linuxcnc,
+            crate::gcode::sink::DEFAULT_STREAM_TEE_CAP_LINES,
+        );
+        assert_eq!(
+            cached_entries, 2,
+            "both distinct ops fit under the default cap and are cached",
+        );
+    }
+
     #[test]
     fn hpgl_streaming_is_rejected() {
         // HPGL re-derives its program from the whole buffer at finish(), so

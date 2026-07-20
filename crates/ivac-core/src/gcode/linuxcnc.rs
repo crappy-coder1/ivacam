@@ -51,6 +51,21 @@ impl Post {
         }
     }
 
+    /// Like [`streaming`](Self::streaming) but with an explicit per-op tee
+    /// budget (`ivac-3j1p.4`). The pipeline's streaming emit loop calls this
+    /// with [`DEFAULT_STREAM_TEE_CAP_LINES`](crate::gcode::sink::DEFAULT_STREAM_TEE_CAP_LINES);
+    /// a test can pass a tiny cap to force the oversized-op cache bypass
+    /// without a million-line fixture.
+    pub(crate) fn streaming_with_cap(
+        writer: Box<dyn std::io::Write + Send>,
+        tail_cap: usize,
+    ) -> Self {
+        Self {
+            sink: GcodeSink::streaming_with_cap(writer, tail_cap),
+            ..Self::default()
+        }
+    }
+
     fn write(&mut self, line: impl Into<String>) {
         let raw: String = line.into();
         let prefix = line_number_prefix(&mut self.state);
@@ -804,6 +819,9 @@ impl PostProcessor for Post {
     }
     fn checkpoint(&mut self) {
         self.sink.checkpoint();
+    }
+    fn out_op_overflowed(&self) -> bool {
+        self.sink.op_overflowed()
     }
     fn reset_state(&mut self) {
         self.state.last_x = None;

@@ -417,6 +417,18 @@ pub trait PostProcessor {
     /// streaming-gcode evolution (`ivac-3j1p`).
     fn checkpoint(&mut self) {}
 
+    /// Whether the current op's body overflowed a **streaming** post's bounded
+    /// per-op tee (`ivac-3j1p.4`). The pipeline emit loop reads this right
+    /// before caching an op: an overflowed op's full body is no longer
+    /// retained to clone, and streaming deliberately avoids an O(op) cache
+    /// entry, so the loop skips `store_op_cache` for it (the op re-streams
+    /// fresh next time). Always `false` for buffered posts (the default),
+    /// which retain the whole program and never overflow — so interactive
+    /// caching is unaffected.
+    fn out_op_overflowed(&self) -> bool {
+        false
+    }
+
     /// Reset the delta-encoding state so the next emitted move writes
     /// every coordinate explicitly (no `last_x`-based suppression).
     /// Used at op boundaries by the per-op pipeline cache so each op's

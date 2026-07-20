@@ -709,8 +709,48 @@ pub fn stream_gcode_to_writer(
 ) -> Result<StreamGcodeOutcome, StreamGcodeError> {
     let (prep, mut warnings) = prepare_stream(request)?;
     let stats_collector = std::cell::RefCell::new((0usize, 0usize, 0usize));
-    run_stream_emit(&prep, &stats_collector, &mut warnings, writer)?;
+    run_stream_emit(
+        &prep,
+        &stats_collector,
+        &mut warnings,
+        writer,
+        crate::gcode::sink::DEFAULT_STREAM_TEE_CAP_LINES,
+        Some(global_cache()),
+    )?;
 
+    let (total_closed, total_offsets, _) = *stats_collector.borrow();
+    Ok(StreamGcodeOutcome {
+        stats: PipelineStats {
+            object_count: prep.objects.len(),
+            closed_object_count: total_closed,
+            offset_count: total_offsets,
+        },
+        warnings,
+    })
+}
+
+/// Test-only streaming entry that threads an explicit per-op tee cap and a
+/// caller-supplied op-cache, so a test can force the oversized-op cache bypass
+/// (`ivac-3j1p.4`) with a tiny cap and inspect exactly which ops got cached —
+/// without a million-line fixture or racing on the shared `global_cache()`.
+/// Otherwise identical to [`stream_gcode_to_writer`].
+#[cfg(test)]
+pub(crate) fn stream_gcode_to_writer_capped(
+    request: PipelineRequest,
+    writer: Box<dyn std::io::Write + Send>,
+    tee_cap: usize,
+    cache: &PipelineCache,
+) -> Result<StreamGcodeOutcome, StreamGcodeError> {
+    let (prep, mut warnings) = prepare_stream(request)?;
+    let stats_collector = std::cell::RefCell::new((0usize, 0usize, 0usize));
+    run_stream_emit(
+        &prep,
+        &stats_collector,
+        &mut warnings,
+        writer,
+        tee_cap,
+        Some(cache),
+    )?;
     let (total_closed, total_offsets, _) = *stats_collector.borrow();
     Ok(StreamGcodeOutcome {
         stats: PipelineStats {
@@ -774,7 +814,14 @@ pub fn stream_gcode_with_preview(
     // boxed tee, so the toolpath comes back through `handle` once the emit
     // scope drops it.
     let (tee, handle) = preview::InterpretingTee::new(writer);
-    run_stream_emit(&prep, &stats_collector, &mut warnings, Box::new(tee))?;
+    run_stream_emit(
+        &prep,
+        &stats_collector,
+        &mut warnings,
+        Box::new(tee),
+        crate::gcode::sink::DEFAULT_STREAM_TEE_CAP_LINES,
+        Some(global_cache()),
+    )?;
     let (toolpath, gcode_index) = handle
         .take()
         .expect("streaming post (and the tee it owns) dropped before read-back");
@@ -873,6 +920,8 @@ fn run_stream_emit(
     stats_collector: &std::cell::RefCell<(usize, usize, usize)>,
     warnings: &mut Vec<PipelineWarning>,
     writer: Box<dyn std::io::Write + Send>,
+    tee_cap: usize,
+    cache: Option<&PipelineCache>,
 ) -> Result<(), StreamGcodeError> {
     let post_tag = prep.post_kind.cache_tag();
     let progress = |_: &str, _: f64, _: &str| {};
@@ -892,15 +941,19 @@ fn run_stream_emit(
                 warnings,
                 &mut no_events,
                 None,
-                Some(global_cache()),
+                cache,
                 post_tag,
             )?;
             p.finish_stream()?;
         }};
     }
     match prep.post_kind {
-        PostProcessorKind::Linuxcnc => stream_with_post!(linuxcnc::Post::streaming(writer)),
-        PostProcessorKind::Grbl => stream_with_post!(grbl::Post::streaming(writer)),
+        PostProcessorKind::Linuxcnc => {
+            stream_with_post!(linuxcnc::Post::streaming_with_cap(writer, tee_cap))
+        }
+        PostProcessorKind::Grbl => {
+            stream_with_post!(grbl::Post::streaming_with_cap(writer, tee_cap))
+        }
         // Rejected in prepare_stream; the arm keeps the match total.
         PostProcessorKind::Hpgl => return Err(StreamGcodeError::Unsupported(prep.post_kind)),
     }
@@ -1909,19 +1962,28 @@ where
             s.0 += closed_count_emitted;
             s.1 += offset_count_emitted;
         }
+        // A streaming post whose bounded per-op tee overflowed on this op (an
+        // oversized op — e.g. a whole-program raster body) no longer holds the
+        // full body to clone, and an O(op) cache entry is exactly what the
+        // streaming mode avoids. Skip caching it; it re-streams fresh next
+        // time. Buffered posts never overflow (out_op_overflowed() == false),
+        // so interactive Generate + its caching stay byte-identical
+        // (ivac-3j1p.4).
         if let (Some(c), Some(key)) = (cache, cache_key) {
-            store_op_cache(
-                c,
-                key,
-                post,
-                body_marker,
-                closed_count_emitted,
-                offset_count_emitted,
-                internal_swap_emitted,
-                last_pos,
-                warnings,
-                warn_start,
-            );
+            if !post.out_op_overflowed() {
+                store_op_cache(
+                    c,
+                    key,
+                    post,
+                    body_marker,
+                    closed_count_emitted,
+                    offset_count_emitted,
+                    internal_swap_emitted,
+                    last_pos,
+                    warnings,
+                    warn_start,
+                );
+            }
         }
         // End-of-op tool bookkeeping (see next_prev_tool_id).
         prev_tool_id = Some(next_prev_tool_id(op, internal_swap_emitted));
