@@ -195,6 +195,22 @@ cd crates/ivac-tauri
 cargo tauri build            # produces a release bundle for your platform
 ```
 
+> **Moved the checkout since your last build?** Physically relocating the
+> repo (e.g. renaming a parent directory) bakes the old absolute path into
+> the Tauri crates' build-script output, so `cargo tauri build` — and the
+> [Android build](#android-tauri-mobile) below — die with `failed to read
+> plugin permissions: …/out/permissions/…/app_hide.toml: No such file or
+> directory`. Repair it surgically and re-run:
+>
+> ```sh
+> scripts/fix-stale-target-paths.sh   # add --check to detect only; a no-op when nothing is stale
+> ```
+>
+> It drops only the `tauri` / plugin / `ivac-tauri` fingerprints + build-script
+> output, so cargo regenerates the permission ACL at the live path on the next
+> build. The `webkit2gtk` / `wry` native bindings are left compiled, so the slow
+> C-FFI stack is **not** rebuilt.
+
 Outputs land under `target/release/bundle/`:
 
 | Platform | Artifact                                                   |
