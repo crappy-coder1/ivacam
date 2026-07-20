@@ -11,7 +11,7 @@ import type {
 } from '../api/types';
 import { History } from './history';
 import { computeUnsavedWork } from './unsaved';
-import { invalidatePreview, previewSegmentsFor, previewVersion } from './text_preview.svelte';
+import { previewSegmentsFor, previewVersion } from './text_preview.svelte';
 import { GeneratedState, type PipelineNoteEvent } from './generated.svelte';
 import { SelectionState, type PickMode, type SelectionMode } from './selection.svelte';
 
@@ -32,6 +32,7 @@ import * as importOps from './import-ops';
 import * as fileOps from './project-file-ops';
 import * as machineOps from './project-machine-ops';
 import * as selectionOps from './project-selection-ops';
+import * as entityOps from './project-entity-ops';
 
 // Pure-TypeScript data shapes live in project-types.ts so vitest specs
 // and non-Svelte helpers can import them without booting the rune
@@ -170,52 +171,17 @@ import { augmentWithStockOutline } from './stock-outline';
 import { buildOpEntry } from './op_defaults';
 import { effectiveModes } from './tool_family';
 
-/// Memoised bundled-font fetch — the DejaVu Sans bytes used as the
-/// default font for imported DXF TEXT/MTEXT entities. Resolved once
-/// per session and shared across every TextLayer created from
-/// `imported.text_entities`. Returns base64 because that's the form
-/// TextFontSource carries.
-let _defaultFontBytesB64: Promise<string | null> | null = null;
-function loadDefaultFontBytesB64(): Promise<string | null> {
-  if (_defaultFontBytesB64) return _defaultFontBytesB64;
-  _defaultFontBytesB64 = (async () => {
-    try {
-      const res = await fetch('/fonts/DejaVuSans.ttf');
-      if (!res.ok) return null;
-      const buf = new Uint8Array(await res.arrayBuffer());
-      let binary = '';
-      const chunk = 0x8000;
-      for (let i = 0; i < buf.length; i += chunk) {
-        binary += String.fromCharCode(...buf.subarray(i, i + chunk));
-      }
-      return btoa(binary);
-    } catch {
-      return null;
-    }
-  })();
-  return _defaultFontBytesB64;
-}
-
 import {
-  addFixtureCommand,
   addOperationCommand,
-  addReliefSourceCommand,
-  addTextLayerCommand,
   addToolCommand,
   deleteOperationCommand,
-  deleteReliefSourceCommand,
-  deleteTextLayerCommand,
   deleteToolCommand,
   duplicateOperationCommand,
-  removeFixtureCommand,
   reorderOperationCommand,
   replaceToolsCommand,
   setGroupOpsByToolCommand,
   toggleTabPlacementCommand,
-  updateFixtureCommand,
   updateOperationCommand,
-  updateReliefSourceCommand,
-  updateTextLayerCommand,
   type CommandTarget,
 } from './commands';
 
@@ -503,6 +469,8 @@ export class ProjectState {
 
   // ── fixtures ─────────────────────────────────────────────────────────
 
+  /// Add a fixture (auto-named, auto-selected) — see
+  /// state/project-entity-ops.ts.
   addFixture(
     kind: FixtureKind,
     origin: [number, number],
@@ -510,31 +478,15 @@ export class ProjectState {
     z_top: number,
     name?: string,
   ): Fixture {
-    const nextId = this.data.fixtures.reduce((m, f) => Math.max(m, f.id), 0) + 1;
-    const f: Fixture = {
-      id: nextId,
-      name: name ?? defaultFixtureName(kind, nextId),
-      kind,
-      origin,
-      z_bottom,
-      z_top,
-      color: DEFAULT_FIXTURE_COLOR,
-    };
-    this.history.exec(addFixtureCommand(f), this.target());
-    this.sel.selectedFixtureId = f.id;
-    return f;
+    return entityOps.addFixture(this, kind, origin, z_bottom, z_top, name);
   }
 
   updateFixture(id: number, patch: Partial<Fixture>) {
-    if (Object.keys(patch).length === 0) return;
-    if (!this.data.fixtures.some((f) => f.id === id)) return;
-    this.history.exec(updateFixtureCommand(id, patch), this.target());
+    entityOps.updateFixture(this, id, patch);
   }
 
   removeFixture(id: number) {
-    if (!this.data.fixtures.some((f) => f.id === id)) return;
-    this.history.exec(removeFixtureCommand(id), this.target());
-    if (this.sel.selectedFixtureId === id) this.sel.selectedFixtureId = null;
+    entityOps.removeFixture(this, id);
   }
 
   selectFixture(id: number | null) {
@@ -742,121 +694,44 @@ export class ProjectState {
     if (this.sel.selectedOpId === id) this.sel.selectedOpId = null;
   }
 
-  /// Insert a text layer with the given configuration; `id` and the
-  /// default `name` are filled in if absent. Returns the inserted
-  /// layer (with the assigned id). Undoable.
+  /// Insert a text layer (auto-id, auto-name) — see
+  /// state/project-entity-ops.ts.
   addTextLayer(
     seed: Omit<TextLayer, 'id' | 'name'> & Partial<Pick<TextLayer, 'id' | 'name'>>,
   ): TextLayer {
-    const nextId = seed.id ?? this.data.textLayers.reduce((m, t) => Math.max(m, t.id), 0) + 1;
-    const previewText = seed.text.split(/\r?\n/, 1)[0] ?? '';
-    const truncated = previewText.length > 20 ? `${previewText.slice(0, 20)}…` : previewText;
-    const defaultName = `${seed.kind} — "${truncated}"`;
-    const layer: TextLayer = { ...seed, id: nextId, name: seed.name ?? defaultName };
-    this.history.exec(addTextLayerCommand(layer), this.target());
-    return layer;
+    return entityOps.addTextLayer(this, seed);
   }
 
-  /// Insert a relief surface source (e.g. a decoded grayscale
-  /// image). `id` is assigned if absent. Returns the inserted source.
-  /// Undoable.
+  /// Insert a relief surface source (auto-id) — see
+  /// state/project-entity-ops.ts.
   addReliefSource(
     seed: Omit<ReliefSource, 'id'> & Partial<Pick<ReliefSource, 'id'>>,
   ): ReliefSource {
-    const nextId = seed.id ?? this.data.reliefSources.reduce((m, s) => Math.max(m, s.id), 0) + 1;
-    const source: ReliefSource = { ...seed, id: nextId };
-    this.history.exec(addReliefSourceCommand(source), this.target());
-    return source;
+    return entityOps.addReliefSource(this, seed);
   }
 
   updateReliefSource(id: number, patch: Partial<ReliefSource>) {
-    if (Object.keys(patch).length === 0) return;
-    if (!this.data.reliefSources.some((s) => s.id === id)) return;
-    this.history.exec(updateReliefSourceCommand(id, patch), this.target());
+    entityOps.updateReliefSource(this, id, patch);
   }
 
   removeReliefSource(id: number) {
-    if (!this.data.reliefSources.some((s) => s.id === id)) return;
-    this.history.exec(deleteReliefSourceCommand(id), this.target());
+    entityOps.removeReliefSource(this, id);
   }
 
   updateTextLayer(id: number, patch: Partial<TextLayer>) {
-    if (Object.keys(patch).length === 0) return;
-    if (!this.data.textLayers.some((t) => t.id === id)) return;
-    this.history.exec(updateTextLayerCommand(id, patch), this.target());
+    entityOps.updateTextLayer(this, id, patch);
   }
 
-  /// Convert any `imported.text_entities` from the most recent setImported
-  /// call into editable `TextLayer` entries. Each entity gets the bundled
-  /// DejaVu Sans by default so the user sees the text immediately; they
-  /// can swap fonts later from the sidebar. No-op when nothing was
-  /// imported or no TEXT/MTEXT entities were present.
+  /// Convert imported DXF TEXT/MTEXT entities into editable text layers
+  /// — see state/project-entity-ops.ts.
   async convertImportedTextEntities(): Promise<void> {
-    const entry = this.data.imports[0];
-    if (!entry) return;
-    const entities = entry.source.text_entities;
-    if (!entities || entities.length === 0) return;
-    const bytes_b64 = await loadDefaultFontBytesB64();
-    if (!bytes_b64) return;
-    this.history.beginTransaction('Import text entities');
-    try {
-      for (const e of entities) {
-        const isMtext = e.kind === 'MTEXT';
-        this.addTextLayer({
-          kind: isMtext ? 'MTEXT' : 'TEXT',
-          text: e.text,
-          fontSource: { kind: 'bundled', path: '/fonts/DejaVuSans.ttf', bytes_b64 },
-          sizeMm: e.size_mm,
-          origin: { x: e.origin[0], y: e.origin[1] },
-          rotationDeg: e.rotation_deg ?? 0,
-          letterSpacingMm: 0,
-          lineSpacingMm: 0,
-          alignment: 'left',
-          widthScale: 1.0,
-          singleLine: false,
-        });
-      }
-      this.history.commitTransaction();
-    } catch (err) {
-      this.history.cancelTransaction(this.target());
-      throw err;
-    }
-    // Consume the queue so subsequent addImported() calls don't try
-    // to convert the same entities again into duplicate TextLayers.
-    // Plain mutation (not a command): this is bookkeeping after the
-    // text-layer-add commands above, not user-undoable state.
-    const cur = this.data.imports[0];
-    if (cur) {
-      this.data.imports = [
-        { ...cur, source: { ...cur.source, text_entities: [] } },
-        ...this.data.imports.slice(1),
-      ];
-    }
+    return entityOps.convertImportedTextEntities(this);
   }
 
+  /// Remove a text layer, cascade-deleting ops that source its synthetic
+  /// geometry layer — see state/project-entity-ops.ts.
   removeTextLayer(id: number) {
-    if (!this.data.textLayers.some((t) => t.id === id)) return;
-    const syntheticLayer = `__text_${id}`;
-    // Drop the cached preview segments so the canvas doesn't keep
-    // painting glyphs from a layer that no longer exists.
-    invalidatePreview(id);
-    // Cascade-delete any ops whose source targets the text layer's
-    // synthetic geometry layer — leaving them around would make the
-    // pipeline raise "no segments on layer __text_<id>".
-    const dependentOps = this.data.operations.filter(
-      (o) => Array.isArray(o.sourceLayers) && o.sourceLayers.includes(syntheticLayer),
-    );
-    if (dependentOps.length > 0) {
-      this.history.beginTransaction('Delete text');
-      for (const op of dependentOps) {
-        this.history.exec(deleteOperationCommand(op.id), this.target());
-      }
-      this.history.exec(deleteTextLayerCommand(id), this.target());
-      this.history.commitTransaction();
-    } else {
-      this.history.exec(deleteTextLayerCommand(id), this.target());
-    }
-    if (this.sel.selectedTextLayerId === id) this.sel.selectedTextLayerId = null;
+    entityOps.removeTextLayer(this, id);
   }
 
   /// Deep-clone the op and insert it immediately after the original.
