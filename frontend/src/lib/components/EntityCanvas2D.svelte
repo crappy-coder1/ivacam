@@ -1142,22 +1142,12 @@
     });
   }
 
-  /// Right-click context menu. `null` = closed. Open menu lists the
-  /// same op kinds as the Add-operation picker; clicking an entry
-  /// creates an op whose source is the current canvas selection, all
-  /// wrapped in one undoable transaction.
-  let ctxMenu = $state<{ x: number; y: number; dataX: number; dataY: number } | null>(null);
-
-  /// Per-tab popover. Opens on right-click over an existing
-  /// tab; carries the canvas-space position to anchor the popover
-  /// + the (opId, placementIdx) it edits. Clamped to canvas bounds
-  /// at render time so a tab near the edge doesn't open off-screen.
-  let tabPopover = $state<{
-    x: number;
-    y: number;
-    opId: number;
-    placementIdx: number;
-  } | null>(null);
+  /// The context-menu + tab-popover child owns its own open/close state; the
+  /// parent drives it imperatively — open on right-click / long-press, dismiss
+  /// on outside-click / Escape — through this ref (ivac-3xwn.2). The parent
+  /// still resolves the open decision's inputs (transform, hit-test, selection)
+  /// since the child never touches `project`. See EntityContextMenu.svelte.
+  let ctxMenuRef = $state<ReturnType<typeof EntityContextMenu>>();
 
   function onContextMenu(e: MouseEvent) {
     e.preventDefault();
@@ -1175,61 +1165,26 @@
   /// long-press so both reach the same tab-popover / op-picker /
   /// "set text origin here" actions.
   function openContextMenuAt(cx: number, cy: number) {
-    // Right-click over an existing tab opens the per-tab
-    // popover BEFORE falling through to the op-picker context menu.
-    const hit = findTabAtPixel(cx, cy);
-    if (hit) {
-      // Anchor at the cursor; the `use:clampPopup` action (measure-based)
-      // keeps the popover inside the canvas once it mounts — no hardcoded
-      // footprint estimate needed (matches how `ctxMenu` anchors below).
-      tabPopover = { x: cx, y: cy, opId: hit.opId, placementIdx: hit.placementIdx };
-      ctxMenu = null;
-      return;
-    }
-    // With nothing selected (no objects, no text layer) the menu is just
-    // the "select something to add an operation" hint — show it at most
-    // once per session (shared with the 3D pane) instead of nagging on
-    // every empty right-click. A right-click over a tab (handled above)
-    // or with a real selection still opens its menu every time.
-    if (
-      project.sel.selectedTextLayerId == null &&
-      project.sel.selectedObjects.size === 0 &&
-      !consumeSelectHint()
-    ) {
-      ctxMenu = null;
-      tabPopover = null;
-      return;
-    }
-    // Convert canvas pixels → data-space mm so menu actions (like
-    // "Set text origin here") can plant their target at the cursor
-    // without redoing the projection math.
-    const t = lastTransform;
-    const dataX = t ? (cx - t.offX) / t.scale : 0;
-    const dataY = t ? (t.offY - cy) / t.scale : 0;
-    ctxMenu = { x: cx, y: cy, dataX, dataY };
+    // The child runs the pure open decision (tab popover vs op menu vs
+    // suppressed-empty-hint); the parent just resolves the inputs it owns —
+    // the tab hit-test, the live selection, the lazy once-per-session hint,
+    // and the transform for the pixel → data-space projection.
+    ctxMenuRef?.open(cx, cy, {
+      tabHit: findTabAtPixel(cx, cy),
+      hasTextSelected: project.sel.selectedTextLayerId != null,
+      hasObjsSelected: project.sel.selectedObjects.size > 0,
+      consumeSelectHint,
+      transform: lastTransform,
+    });
   }
 
-  /// Set the currently-selected text layer's origin to the position
-  /// the user right-clicked at. No-op when no text layer is selected.
-  function setTextOriginHere() {
-    if (!ctxMenu) return;
+  /// Set the currently-selected text layer's origin to the data-space
+  /// position the user right-clicked at (passed up from the context menu).
+  /// No-op when no text layer is selected.
+  function setTextOrigin(dataX: number, dataY: number) {
     const id = project.sel.selectedTextLayerId;
-    if (id == null) {
-      ctxMenu = null;
-      return;
-    }
-    const x = ctxMenu.dataX;
-    const y = ctxMenu.dataY;
-    ctxMenu = null;
-    project.updateTextLayer(id, { origin: { x, y } });
-  }
-
-  function closeCtxMenu() {
-    ctxMenu = null;
-  }
-
-  function closeTabPopover() {
-    tabPopover = null;
+    if (id == null) return;
+    project.updateTextLayer(id, { origin: { x: dataX, y: dataY } });
   }
 
   /// Find an op's tab placement under the cursor (canvas-space).
@@ -1270,18 +1225,20 @@
     const next = removeTabPlacement(op.tabPlacements ?? [], placementIdx);
     if (!next) return;
     project.updateOperation(opId, { tabPlacements: next });
-    tabPopover = null;
+    // The child closes its own popover after the delete.
   }
 
   function onCtxKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape' && tabPopover) {
-      tabPopover = null;
-      e.preventDefault();
-      return;
-    }
-    if (e.key === 'Escape' && ctxMenu) {
-      ctxMenu = null;
-      e.preventDefault();
+    if (e.key === 'Escape') {
+      // The child dismisses the popover / menu and reports which. A closed
+      // popover CONSUMES Escape (return); a closed menu only preventDefaults so
+      // the lower Escape handlers below (approach-picker, box-select) still run.
+      const dismissed = ctxMenuRef?.handleEscape();
+      if (dismissed === 'popover') {
+        e.preventDefault();
+        return;
+      }
+      if (dismissed === 'menu') e.preventDefault();
     }
     // F / Home reset the 2D view to its auto-fit baseline.
     // Mirrors the new `.fit-btn` overlay button and the 3D pane's
@@ -1318,33 +1275,19 @@
   }
 
   function onCtxDocClick(e: MouseEvent) {
-    // Cheap bail when neither the context menu nor the tab popover
-    // is open — the global onclick from <svelte:window> fires on
-    // every document click and we don't want to walk the DOM with
-    // `closest` per click when there's nothing to dismiss.
-    if (!ctxMenu && !tabPopover) return;
-    const target = e.target as HTMLElement | null;
-    if (tabPopover) {
-      if (!(target && target.closest('.tab-popover'))) {
-        tabPopover = null;
-      }
-    }
-    if (!ctxMenu) return;
-    if (target && target.closest('.ctx-menu')) return;
-    ctxMenu = null;
+    // The child owns the outside-click dismissal (it holds the open state and
+    // self-bails cheaply when nothing is open). Wired to <svelte:window>.
+    ctxMenuRef?.handleDocClick(e);
   }
 
   function pickFromCtx(kind: PickerKind) {
     const sel = [...project.sel.selectedObjects];
-    if (sel.length === 0) {
-      ctxMenu = null;
-      return;
-    }
+    if (sel.length === 0) return;
     createOpFromSelection(project, kind, pickerLabel(kind), sel);
     // Bounce the sidebar to Operations so the freshly-added op
-    // row is visible without a second click on the sidebar.
+    // row is visible without a second click on the sidebar. The child
+    // closes its own menu after the pick.
     onActivateSidebarPane?.('operations');
-    ctxMenu = null;
   }
 
   function onPointerDown(e: PointerEvent) {
@@ -2162,16 +2105,13 @@
     </div>
   {/if}
   <EntityContextMenu
-    {ctxMenu}
-    {tabPopover}
+    bind:this={ctxMenuRef}
     operations={project.data.operations}
     hasTextSelected={project.sel.selectedTextLayerId != null}
     hasObjsSelected={project.sel.selectedObjects.size > 0}
     onPatchTab={patchTabOverride}
     onDeleteTab={deleteTabPlacement}
-    onCloseTabPopover={closeTabPopover}
-    onSetTextOrigin={setTextOriginHere}
-    onCloseMenu={closeCtxMenu}
+    onSetTextOrigin={setTextOrigin}
     onPick={pickFromCtx}
   />
   <!-- Fit-to-view affordance mirroring Scene3D's .fit-btn.

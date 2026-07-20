@@ -1,9 +1,14 @@
 <script lang="ts">
-  /// Presentational canvas context menu + per-tab popover, extracted from
-  /// EntityCanvas2D.svelte (ivac-3xwn.2, Cluster B). Pure view: it owns no
-  /// state and never touches the `project` singleton — the parent keeps the
-  /// ctxMenu/tabPopover state, the open decision, and global dismiss
-  /// (Escape / outside-click) wiring, and passes plain snapshots + callbacks.
+  /// Canvas context menu + per-tab popover for EntityCanvas2D (ivac-3xwn.2,
+  /// Cluster B). Owns its OWN ephemeral open/close state (ctxMenu, tabPopover)
+  /// and its dismissal (outside-click, Escape); the parent drives it through
+  /// imperative handles (`open` / `handleDocClick` / `handleEscape` /
+  /// `closeAll`) via `bind:this` and never sees the state.
+  ///
+  /// It still never touches the `project` singleton: the parent resolves the
+  /// open ENV (tab hit-test, selection booleans, transform, the lazy hint) and
+  /// passes plain data + callbacks in; project mutations route back out through
+  /// onPatchTab / onDeleteTab / onSetTextOrigin / onPick.
   ///
   /// IMPORTANT (offsetParent): rendered inline where the parent's `{#if}`
   /// blocks used to be, inside `.canvas-host`. Svelte adds no wrapper element,
@@ -12,11 +17,15 @@
   import { isContourOp, type OpEntry } from '../state/project.svelte';
   import OpKindPicker, { type PickerKind } from './OpKindPicker.svelte';
   import { clampPopup } from '../canvas/clamp-popup';
+  import {
+    reduceContextMenuOpen,
+    type CtxMenuState,
+    type TabPopoverState,
+    type CtxOpenEnv,
+  } from '../canvas/context-menu';
   import { t } from '../i18n';
 
   interface Props {
-    ctxMenu: { x: number; y: number; dataX: number; dataY: number } | null;
-    tabPopover: { x: number; y: number; opId: number; placementIdx: number } | null;
     operations: readonly OpEntry[];
     hasTextSelected: boolean;
     hasObjsSelected: boolean;
@@ -26,43 +35,124 @@
       patch: { widthOverrideMm?: number | undefined; heightOverrideMm?: number | undefined },
     ) => void;
     onDeleteTab: (opId: number, placementIdx: number) => void;
-    onCloseTabPopover: () => void;
-    onSetTextOrigin: () => void;
-    onCloseMenu: () => void;
+    /// Plant the selected text layer's origin at the data-space position the
+    /// user right-clicked (the menu carries dataX/dataY). Parent no-ops when no
+    /// text layer is selected.
+    onSetTextOrigin: (dataX: number, dataY: number) => void;
     onPick: (kind: PickerKind) => void;
   }
 
   const {
-    ctxMenu,
-    tabPopover,
     operations,
     hasTextSelected,
     hasObjsSelected,
     onPatchTab,
     onDeleteTab,
-    onCloseTabPopover,
     onSetTextOrigin,
-    onCloseMenu,
     onPick,
   }: Props = $props();
+
+  /// Right-click context menu. `null` = closed. Lists the same op kinds as the
+  /// Add-operation picker; clicking an entry creates an op from the current
+  /// selection. Carries the cursor's data-space position for "set text origin".
+  let ctxMenu = $state<CtxMenuState | null>(null);
+
+  /// Per-tab popover. Opens on right-click over an existing tab; carries the
+  /// canvas-space anchor + the (opId, placementIdx) it edits. Clamped to canvas
+  /// bounds at render time so a tab near the edge doesn't open off-screen.
+  let tabPopover = $state<TabPopoverState | null>(null);
+
+  /// Open at a canvas-relative pixel position. The parent resolves the env (it
+  /// owns the transform + hit-tests); this runs the pure decision and applies
+  /// it — each result fully sets both bits of state (the unnamed one clears).
+  export function open(cx: number, cy: number, env: CtxOpenEnv) {
+    const r = reduceContextMenuOpen(cx, cy, env);
+    if (r.kind === 'tab') {
+      tabPopover = r.tabPopover;
+      ctxMenu = null;
+    } else if (r.kind === 'menu') {
+      ctxMenu = r.ctxMenu;
+      tabPopover = null;
+    } else {
+      ctxMenu = null;
+      tabPopover = null;
+    }
+  }
+
+  export function closeAll() {
+    ctxMenu = null;
+    tabPopover = null;
+  }
+
+  /// Outside-click dismissal — wired to the parent's `<svelte:window onclick>`.
+  /// Self-contained: bails cheaply when nothing is open, else walks the DOM so
+  /// a click INSIDE the popover / menu doesn't dismiss it.
+  export function handleDocClick(e: MouseEvent) {
+    if (!ctxMenu && !tabPopover) return;
+    const target = e.target as HTMLElement | null;
+    if (tabPopover && !(target && target.closest('.tab-popover'))) {
+      tabPopover = null;
+    }
+    if (!ctxMenu) return;
+    if (target && target.closest('.ctx-menu')) return;
+    ctxMenu = null;
+  }
+
+  /// Escape dismissal. Returns what it closed so the parent's multi-purpose
+  /// keydown can mirror the original fall-through: closing the popover CONSUMES
+  /// the key (parent returns), closing the menu only preventDefaults (parent
+  /// lets lower Escape handlers — approach-picker, box-select — still run).
+  export function handleEscape(): 'popover' | 'menu' | null {
+    if (tabPopover) {
+      tabPopover = null;
+      return 'popover';
+    }
+    if (ctxMenu) {
+      ctxMenu = null;
+      return 'menu';
+    }
+    return null;
+  }
 
   function parseOverride(raw: string): number | undefined {
     if (raw === '') return undefined;
     const v = parseFloat(raw);
     return isNaN(v) ? undefined : v;
   }
+
+  /// Menu "set text origin here": hand the data-space cursor to the parent,
+  /// then close (the parent no-ops if no text layer is selected).
+  function setTextOrigin() {
+    if (!ctxMenu) return;
+    onSetTextOrigin(ctxMenu.dataX, ctxMenu.dataY);
+    ctxMenu = null;
+  }
+
+  /// Op-picker click: create the op from selection (parent), then close.
+  function pick(kind: PickerKind) {
+    onPick(kind);
+    ctxMenu = null;
+  }
+
+  /// Delete this tab placement (parent), then close the popover.
+  function deleteTab() {
+    if (!tabPopover) return;
+    onDeleteTab(tabPopover.opId, tabPopover.placementIdx);
+    tabPopover = null;
+  }
 </script>
 
 {#if tabPopover}
-  {@const op = operations.find((o) => o.id === tabPopover.opId)}
-  {@const placement = op && isContourOp(op) ? op.tabPlacements?.[tabPopover.placementIdx] : null}
+  {@const tp = tabPopover}
+  {@const op = operations.find((o) => o.id === tp.opId)}
+  {@const placement = op && isContourOp(op) ? op.tabPlacements?.[tp.placementIdx] : null}
   {#if op && isContourOp(op) && placement}
     <div
       class="tab-popover"
-      style:left={`${tabPopover.x}px`}
-      style:top={`${tabPopover.y}px`}
+      style:left={`${tp.x}px`}
+      style:top={`${tp.y}px`}
       role="dialog"
-      use:clampPopup={tabPopover}
+      use:clampPopup={tp}
     >
       <div class="tab-popover-header">{t('canvas.tab_popover.header', { id: op.id })}</div>
       <label class="tab-popover-row">
@@ -74,7 +164,7 @@
           placeholder={String(op.tabWidth ?? 10)}
           value={placement.widthOverrideMm ?? ''}
           oninput={(e) =>
-            onPatchTab(tabPopover.opId, tabPopover.placementIdx, {
+            onPatchTab(tp.opId, tp.placementIdx, {
               widthOverrideMm: parseOverride((e.target as HTMLInputElement).value),
             })}
         />
@@ -89,55 +179,53 @@
           placeholder={String(op.tabHeight ?? 1)}
           value={placement.heightOverrideMm ?? ''}
           oninput={(e) =>
-            onPatchTab(tabPopover.opId, tabPopover.placementIdx, {
+            onPatchTab(tp.opId, tp.placementIdx, {
               heightOverrideMm: parseOverride((e.target as HTMLInputElement).value),
             })}
         />
         <span class="unit">mm</span>
       </label>
-      <button
-        type="button"
-        class="tab-popover-delete"
-        onclick={() => onDeleteTab(tabPopover.opId, tabPopover.placementIdx)}
+      <button type="button" class="tab-popover-delete" onclick={deleteTab}
         >{t('canvas.tab_popover.delete')}</button
       >
       <button
         type="button"
         class="tab-popover-close"
         aria-label={t('common.close')}
-        onclick={onCloseTabPopover}>×</button
+        onclick={() => (tabPopover = null)}>×</button
       >
     </div>
   {/if}
 {/if}
 {#if ctxMenu}
+  {@const cm = ctxMenu}
   {#if !hasTextSelected && !hasObjsSelected}
     <div
       class="ctx-menu empty"
-      style:left={`${ctxMenu.x}px`}
-      style:top={`${ctxMenu.y}px`}
+      style:left={`${cm.x}px`}
+      style:top={`${cm.y}px`}
       role="menu"
-      use:clampPopup={ctxMenu}
+      use:clampPopup={cm}
     >
       <p class="ctx-hint">
         {t('canvas.ctx.empty_hint')}
       </p>
-      <button type="button" onclick={onCloseMenu}>{t('canvas.ctx.dismiss')}</button>
+      <button type="button" onclick={() => (ctxMenu = null)}>{t('canvas.ctx.dismiss')}</button>
     </div>
   {:else}
     <div
       class="ctx-menu"
-      style:left={`${ctxMenu.x}px`}
-      style:top={`${ctxMenu.y}px`}
+      style:left={`${cm.x}px`}
+      style:top={`${cm.y}px`}
       role="menu"
-      use:clampPopup={ctxMenu}
+      use:clampPopup={cm}
     >
       {#if hasTextSelected}
         <div class="ctx-header">{t('canvas.ctx.text_layer')}</div>
         <button
           type="button"
           class="ctx-item"
-          onclick={onSetTextOrigin}
+          onclick={setTextOrigin}
           title={t('canvas.ctx.set_text_origin.title')}
         >
           {t('canvas.ctx.set_text_origin')}
@@ -148,7 +236,7 @@
       {/if}
       {#if hasObjsSelected}
         <div class="ctx-header">{t('canvas.ctx.new_op_from_selection')}</div>
-        <OpKindPicker {onPick} />
+        <OpKindPicker onPick={pick} />
       {/if}
     </div>
   {/if}
