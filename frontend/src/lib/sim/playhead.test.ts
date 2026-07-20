@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { playheadToSegment } from './playhead';
+import { playheadToSegment, toolpathArcLengths } from './playhead';
+
+// A toolpath move with just the endpoints toolpathArcLengths reads.
+const move = (from: [number, number, number], to: [number, number, number]) => ({
+  from: { x: from[0], y: from[1], z: from[2] },
+  to: { x: to[0], y: to[1], z: to[2] },
+});
 
 // playheadToSegment is the one load-bearing preview-math function on
 // the TS side (arc-length lookup → segment index + parametric segT, used by
@@ -80,5 +86,44 @@ describe('playheadToSegment', () => {
     const pos = playheadToSegment(0.6, cl, 10);
     expect(pos.segIdx).toBe(1);
     expect(pos.segT).toBeCloseTo(0.5, 12);
+  });
+});
+
+describe('toolpathArcLengths', () => {
+  it('returns the empty-path shape for a zero-length toolpath', () => {
+    expect(toolpathArcLengths([])).toEqual({ cumLen: null, totalLen: 0 });
+  });
+
+  it('accumulates 3D segment lengths', () => {
+    // 3-4-5 triangle move (len 5) then a 2mm Z lift (len 2).
+    const { cumLen, totalLen } = toolpathArcLengths([
+      move([0, 0, 0], [3, 4, 0]),
+      move([3, 4, 0], [3, 4, 2]),
+    ]);
+    expect(Array.from(cumLen!)).toEqual([5, 7]);
+    expect(totalLen).toBe(7);
+  });
+
+  it('counts a zero-length move as a flat step in the cumulative array', () => {
+    const { cumLen, totalLen } = toolpathArcLengths([
+      move([0, 0, 0], [1, 0, 0]),
+      move([1, 0, 0], [1, 0, 0]), // dwell / duplicate point
+      move([1, 0, 0], [1, 0, 1]),
+    ]);
+    expect(Array.from(cumLen!)).toEqual([1, 1, 2]);
+    expect(totalLen).toBe(2);
+  });
+
+  it('round-trips with playheadToSegment: playhead 1 lands on the last segment end', () => {
+    const { cumLen, totalLen } = toolpathArcLengths([
+      move([0, 0, 0], [2, 0, 0]),
+      move([2, 0, 0], [2, 0, 8]),
+    ]);
+    // Midpoint of the total 10mm path → 5mm → 3mm into segment 1 (spans
+    // [2,10]) → segT 3/8.
+    const mid = playheadToSegment(0.5, cumLen, totalLen);
+    expect(mid.segIdx).toBe(1);
+    expect(mid.segT).toBeCloseTo(3 / 8, 12);
+    expect(playheadToSegment(1, cumLen, totalLen)).toEqual({ segIdx: 1, segT: 1 });
   });
 });

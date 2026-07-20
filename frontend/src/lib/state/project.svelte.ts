@@ -34,6 +34,7 @@ import * as machineOps from './project-machine-ops';
 import * as selectionOps from './project-selection-ops';
 import * as entityOps from './project-entity-ops';
 import * as operationOps from './project-operation-ops';
+import * as generateOps from './project-generate-ops';
 
 // Pure-TypeScript data shapes live in project-types.ts so vitest specs
 // and non-Svelte helpers can import them without booting the rune
@@ -423,7 +424,7 @@ export class ProjectState {
   }
 
   setSimDiagnostics(d: SimDiagnostics | null) {
-    this.gen.simDiagnostics = d;
+    generateOps.setSimDiagnostics(this, d);
   }
 
   /// Persist `settings` to localStorage. Cheap (one JSON.stringify on a
@@ -525,53 +526,18 @@ export class ProjectState {
     selectionOps.clearSelection(this);
   }
 
+  /// Store a single-program generate result (precomputes toolpath
+  /// arc-length, clears sim/dirty/error, resets playhead) — see
+  /// state/project-generate-ops.ts.
   setGenerated(r: GenerateResponse) {
-    this.gen.generated = r;
-    // Single-program run clears any prior two-sided back program so a
-    // single-sided regenerate can't leave a stale back behind.
-    this.gen.generatedBack = null;
-    this.gen.generatedVersion += 1;
-    // Pre-compute cumulative arc length over the toolpath so playback
-    // can advance by physical distance instead of segment count. See
-    // `playheadToSegment` for the inverse lookup.
-    const tp = r.toolpath;
-    if (tp.length > 0) {
-      const cum = new Float64Array(tp.length);
-      let acc = 0;
-      for (let i = 0; i < tp.length; i++) {
-        const s = tp[i];
-        const dx = s.to.x - s.from.x;
-        const dy = s.to.y - s.from.y;
-        const dz = s.to.z - s.from.z;
-        acc += Math.hypot(dx, dy, dz);
-        cum[i] = acc;
-      }
-      this.gen.toolpathCumLen = cum;
-      this.gen.toolpathTotalLen = acc;
-    } else {
-      this.gen.toolpathCumLen = null;
-      this.gen.toolpathTotalLen = 0;
-    }
-    // A fresh toolpath invalidates the previous heightfield-sim run: its
-    // warnings (collisions, rapid-through-material) described the OLD
-    // program. Clear them so they don't linger against the new toolpath;
-    // the 3D pane's sim re-runs (keyed on generatedVersion) and repopulates
-    // when it's visible. Without this, a stale critical sim warning kept
-    // showing in the warning chip after a fix-and-regenerate.
-    this.gen.simDiagnostics = null;
-    this.data.dirty = false;
-    this.error = null;
-    this.playhead = 1.0;
+    generateOps.setGenerated(this, r);
   }
 
-  /// Store a two-sided (flip-stock) result: the FRONT program becomes the
-  /// primary `generated` (all existing consumers see it), and the BACK
-  /// program is held alongside for the Front/Back gcode tabs + dual-surface
-  /// preview. Delegates the front-program bookkeeping to `setGenerated`
-  /// (which first clears `generatedBack`), then sets the back.
+  /// Store a two-sided (flip-stock) result — front becomes the primary
+  /// `generated`, back is held alongside — see
+  /// state/project-generate-ops.ts.
   setGeneratedTwoSided(r: TwoSidedGenerateResponse) {
-    this.setGenerated(r.front);
-    this.gen.generatedBack = r.back ?? null;
+    generateOps.setGeneratedTwoSided(this, r);
   }
 
   setError(err: string | WiacError) {
@@ -582,36 +548,32 @@ export class ProjectState {
     this.error = null;
   }
 
-  /// Pipeline-state lifecycle helpers. Most delegate to
-  /// the generated-state slice; `failGenerate` lives here because it
-  /// crosses slices (error + pipelineState reset).
+  // ── generate / pipeline lifecycle ────────────────────────────────────
+  // Thin delegators over state/project-generate-ops.ts (which forwards to
+  // the gen slice, plus the cross-slice error/dirty/playhead resets).
+
   beginGenerate() {
-    this.error = null;
-    this.gen.beginGenerate();
+    generateOps.beginGenerate(this);
   }
 
   notePipelineEvent(ev: PipelineNoteEvent) {
-    this.gen.notePipelineEvent(ev);
+    generateOps.notePipelineEvent(this, ev);
   }
 
   finishGenerate() {
-    this.gen.finishGenerate();
+    generateOps.finishGenerate(this);
   }
 
   cancelGenerate() {
-    this.gen.cancelGenerate();
+    generateOps.cancelGenerate(this);
   }
 
-  /// Pipeline failure path. Routes the error through setError and
-  /// snaps the generate slice back to idle. Spans two slices, so
-  /// stays on the parent rather than living on either.
   failGenerate(err: string | WiacError) {
-    this.setError(err);
-    this.gen.pipelineState = 'idle';
+    generateOps.failGenerate(this, err);
   }
 
   endGenerate() {
-    this.gen.endGenerate();
+    generateOps.endGenerate(this);
   }
 
   toggleLayer(name: string) {

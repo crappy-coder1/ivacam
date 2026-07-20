@@ -2,6 +2,40 @@
 /// project.svelte.ts so vitest can import it without booting the Svelte
 /// rune runtime.
 
+/// Minimal structural view of a toolpath move — just the two endpoints
+/// [`toolpathArcLengths`] needs. Kept local (rather than importing the
+/// generated `ToolpathSegment`) so this module stays free of the API
+/// types; `GenerateResponse['toolpath']` satisfies it structurally.
+interface ToolpathMove {
+  from: { x: number; y: number; z: number };
+  to: { x: number; y: number; z: number };
+}
+
+/// Cumulative 3D arc length over a toolpath — the forward companion to
+/// [`playheadToSegment`]. Precomputed once per generate (see
+/// `setGenerated`) so playback can advance by physical distance instead
+/// of segment count. `cumLen[i]` is the summed length through segment
+/// `i`; `totalLen` is the grand total. An empty toolpath yields
+/// `{ cumLen: null, totalLen: 0 }` — exactly the shape
+/// `playheadToSegment` reads as "nothing to traverse".
+export function toolpathArcLengths(toolpath: readonly ToolpathMove[]): {
+  cumLen: Float64Array | null;
+  totalLen: number;
+} {
+  if (toolpath.length === 0) return { cumLen: null, totalLen: 0 };
+  const cum = new Float64Array(toolpath.length);
+  let acc = 0;
+  for (let i = 0; i < toolpath.length; i++) {
+    const s = toolpath[i];
+    const dx = s.to.x - s.from.x;
+    const dy = s.to.y - s.from.y;
+    const dz = s.to.z - s.from.z;
+    acc += Math.hypot(dx, dy, dz);
+    cum[i] = acc;
+  }
+  return { cumLen: cum, totalLen: acc };
+}
+
 /// Map `playhead ∈ [0,1]` (fraction of total arc length) to a segment
 /// index + parametric position within that segment. Returns
 /// `{ segIdx, segT }` where `segT ∈ [0,1]` is the fractional distance
