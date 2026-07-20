@@ -23,11 +23,66 @@
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use ttf_parser::{Face, OutlineBuilder};
+use skrifa::instance::{LocationRef, Size};
+use skrifa::outline::{DrawSettings, OutlinePen};
+use skrifa::string::StringId;
+use skrifa::{FontRef, GlyphId, MetadataProvider};
 
 use crate::errors::Error;
 use crate::geometry::{Point2, Segment};
 use crate::project::{text_layer_synthetic_layer, TextAlignment, TextLayer, TextLayerKind};
+
+/// Thin wrapper over a parsed [`skrifa::FontRef`] exposing just the
+/// glyph-outline + metrics accessors the text renderer needs, so the
+/// tessellation below reads the same as it did against the (now retired)
+/// ttf-parser `Face`. Sub-views (charmap / glyph metrics / outlines) are
+/// cheap to reconstruct, so they're derived on demand rather than cached.
+struct Face<'a> {
+    font: FontRef<'a>,
+    units_per_em: u16,
+}
+
+impl<'a> Face<'a> {
+    fn parse(bytes: &'a [u8], index: u32) -> Result<Self, skrifa::raw::ReadError> {
+        let font = FontRef::from_index(bytes, index)?;
+        let units_per_em = font
+            .metrics(Size::unscaled(), LocationRef::default())
+            .units_per_em;
+        Ok(Self { font, units_per_em })
+    }
+
+    fn units_per_em(&self) -> u16 {
+        self.units_per_em
+    }
+
+    fn glyph_index(&self, ch: char) -> Option<GlyphId> {
+        self.font.charmap().map(ch)
+    }
+
+    /// Horizontal advance in font units (unscaled hmtx). The caller scales
+    /// by `height / units_per_em`. Kept as `f64` so no float→int cast is
+    /// needed on the hot per-glyph path.
+    fn glyph_hor_advance(&self, gid: GlyphId) -> Option<f64> {
+        self.font
+            .glyph_metrics(Size::unscaled(), LocationRef::default())
+            .advance_width(gid)
+            .map(f64::from)
+    }
+
+    fn outline_glyph(&self, gid: GlyphId, pen: &mut impl OutlinePen) {
+        if let Some(glyph) = self.font.outline_glyphs().get(gid) {
+            let _ = glyph.draw(
+                DrawSettings::unhinted(Size::unscaled(), LocationRef::default()),
+                pen,
+            );
+        }
+    }
+
+    /// All localized strings recorded under `id`, as owned UTF-8.
+    fn strings(&self, id: StringId) -> impl Iterator<Item = String> + '_ {
+        self.font.localized_strings(id).map(|s| s.to_string())
+    }
+}
 
 /// Serde codec for the `font_bytes` field shared by [`RenderTextRequest`]
 /// and [`TextLayer`]. Serializes the byte vector as a base64 string — ~3×
@@ -158,7 +213,7 @@ pub fn render_text_layer_api(layer: &TextLayer) -> crate::Result<RenderTextLayer
         Error::misconfigured(format!("ttf parse: {e}"))
             .with_hint("Pick a different font for this text layer.")
     })?;
-    let single_line = is_single_line_font(&face);
+    let single_line = is_single_line_face(&face);
     let family_name = face_family_name(&face);
     let segments = render_text_layer(layer)?;
     Ok(RenderTextLayerResponse {
@@ -201,7 +256,7 @@ pub fn render_text_api(req: &RenderTextRequest) -> crate::Result<RenderTextRespo
         Error::misconfigured(format!("ttf parse: {e}"))
             .with_hint("Pick a different font or install one.")
     })?;
-    let single_line = is_single_line_font(&face);
+    let single_line = is_single_line_face(&face);
     let family_name = face_family_name(&face);
     let segments = render_text(
         &req.font_bytes,
@@ -219,14 +274,7 @@ pub fn render_text_api(req: &RenderTextRequest) -> crate::Result<RenderTextRespo
 }
 
 fn face_family_name(face: &Face) -> Option<String> {
-    for entry in face.names() {
-        if entry.name_id == ttf_parser::name_id::FAMILY {
-            if let Some(s) = entry.to_string() {
-                return Some(s);
-            }
-        }
-    }
-    None
+    face.strings(StringId::FAMILY_NAME).next()
 }
 
 /// Outline-builder accumulator. Splits cubic/quadratic Béziers into line
@@ -280,7 +328,7 @@ impl<'a> Walker<'a> {
     }
 }
 
-impl OutlineBuilder for Walker<'_> {
+impl OutlinePen for Walker<'_> {
     fn move_to(&mut self, x: f32, y: f32) {
         self.finish_contour();
         let p = self.point(x, y);
@@ -374,7 +422,7 @@ pub fn render_text(
     })?;
     let units = f64::from(face.units_per_em().max(1));
     let scale = height / units;
-    let single_line = is_single_line_font(&face);
+    let single_line = is_single_line_face(&face);
     let mut pen = origin;
     let mut out = Vec::new();
     // Intern once so every emitted Segment shares the layer Arc.
@@ -400,7 +448,7 @@ pub fn render_text(
                 push_polyline_closed(c, &layer_arc, color, &mut out);
             }
         }
-        let advance = f64::from(face.glyph_hor_advance(glyph_id).unwrap_or(0)) * scale;
+        let advance = face.glyph_hor_advance(glyph_id).unwrap_or(0.0) * scale;
         pen.x += advance;
     }
     Ok(out)
@@ -429,7 +477,7 @@ pub fn render_text_layer(layer: &TextLayer) -> crate::Result<Vec<Segment>> {
         Error::misconfigured(format!("ttf parse: {e}"))
             .with_hint("Pick a different font for this text layer.")
     })?;
-    let single_line = is_single_line_font(&face);
+    let single_line = is_single_line_face(&face);
     let units = f64::from(face.units_per_em().max(1));
     let scale = layer.size_mm / units;
     // Intern once. The text-layer synthetic name is the same for
@@ -498,7 +546,7 @@ pub fn render_text_layer(layer: &TextLayer) -> crate::Result<Vec<Segment>> {
                     push_polyline_closed(c, &layer_name, color, &mut out);
                 }
             }
-            let advance = f64::from(face.glyph_hor_advance(glyph_id).unwrap_or(0)) * scale;
+            let advance = face.glyph_hor_advance(glyph_id).unwrap_or(0.0) * scale;
             pen.x += advance * x_scale + layer.letter_spacing_mm;
         }
     }
@@ -531,7 +579,7 @@ fn measure_line_width(
     let mut count = 0usize;
     for ch in line.chars() {
         let advance = if let Some(gid) = face.glyph_index(ch) {
-            f64::from(face.glyph_hor_advance(gid).unwrap_or(0)) * scale
+            face.glyph_hor_advance(gid).unwrap_or(0.0) * scale
         } else {
             size_mm * 0.4
         };
@@ -676,7 +724,16 @@ fn push_polyline_unclosed(
 ///    their `family_name` / `full_name` / `postscript_name`: "single-line",
 ///    "single line", "stick", "engrave", "hershey", "`OSIFont`", etc.
 #[must_use]
-pub fn is_single_line_font(face: &Face) -> bool {
+pub fn is_single_line_font(font_bytes: &[u8]) -> bool {
+    let Ok(face) = Face::parse(font_bytes, 0) else {
+        return false;
+    };
+    is_single_line_face(&face)
+}
+
+/// Single-line classifier over an already-parsed [`Face`] — the internal
+/// entry the render paths call so they don't re-parse the font bytes.
+fn is_single_line_face(face: &Face) -> bool {
     const SAMPLE_CHARS: [char; 12] = ['A', 'V', 'X', 'Y', 'Z', 'M', 'N', 'K', 'i', 'l', 'j', '7'];
     if family_name_says_single_line(face) {
         return true;
@@ -745,20 +802,15 @@ fn family_name_says_single_line(face: &Face) -> bool {
         "one-line",
     ];
     for table_id in [
-        ttf_parser::name_id::FAMILY,
-        ttf_parser::name_id::FULL_NAME,
-        ttf_parser::name_id::POST_SCRIPT_NAME,
-        ttf_parser::name_id::TYPOGRAPHIC_FAMILY,
+        StringId::FAMILY_NAME,
+        StringId::FULL_NAME,
+        StringId::POSTSCRIPT_NAME,
+        StringId::TYPOGRAPHIC_FAMILY_NAME,
     ] {
-        for entry in face.names() {
-            if entry.name_id != table_id {
-                continue;
-            }
-            if let Some(name) = entry.to_string() {
-                let lc = name.to_ascii_lowercase();
-                if needle.iter().any(|n| lc.contains(n)) {
-                    return true;
-                }
+        for name in face.strings(table_id) {
+            let lc = name.to_ascii_lowercase();
+            if needle.iter().any(|n| lc.contains(n)) {
+                return true;
             }
         }
     }
@@ -859,9 +911,8 @@ mod tests {
     #[test]
     fn rhss_is_detected_as_single_line() {
         let bytes = std::fs::read(fixture("RhSS.ttf")).expect("RhSS.ttf");
-        let face = Face::parse(&bytes, 0).expect("parse");
         assert!(
-            is_single_line_font(&face),
+            is_single_line_font(&bytes),
             "RhSS should auto-detect as single-line"
         );
     }
@@ -870,9 +921,8 @@ mod tests {
     fn dejavu_sans_is_not_single_line() {
         // Regular display font: closed glyph contours, no retraced strokes.
         let bytes = std::fs::read(fixture("DejaVuSans.ttf")).expect("DejaVuSans.ttf");
-        let face = Face::parse(&bytes, 0).expect("parse");
         assert!(
-            !is_single_line_font(&face),
+            !is_single_line_font(&bytes),
             "DejaVuSans should NOT auto-detect as single-line"
         );
     }

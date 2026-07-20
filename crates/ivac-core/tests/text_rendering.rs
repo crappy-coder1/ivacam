@@ -37,8 +37,6 @@ fn rhss_engraving_produces_fewer_segments_than_outline_font() {
 fn detection_round_trip_via_face_parse() {
     let rhss = std::fs::read(font_dir().join("RhSS.ttf")).unwrap();
     let dejavu = std::fs::read(font_dir().join("DejaVuSans.ttf")).unwrap();
-    let rhss_face = ttf_parser::Face::parse(&rhss, 0).unwrap();
-    let dejavu_face = ttf_parser::Face::parse(&dejavu, 0).unwrap();
-    assert!(is_single_line_font(&rhss_face));
-    assert!(!is_single_line_font(&dejavu_face));
+    assert!(is_single_line_font(&rhss));
+    assert!(!is_single_line_font(&dejavu));
 }

@@ -27,7 +27,10 @@ cavalier_contours = "0.7"
 # without a C++ stdlib, so the pocket cascade ships in every transport.
 clipper2-rust = "1"
 schemars = { version = "0.8", features = ["preserve_order"] }
-ttf-parser = "0.25"
+# Font (TTF/OTF) → glyph-outline extraction for the AddText renderer.
+# Google fontations; the maintained successor to the unmaintained
+# ttf-parser (RUSTSEC-2026-0192). Builds for wasm32-unknown-unknown.
+skrifa = "0.36"
 # usvg canonicalises an SVG document to a tree of paths with absolute
 # transforms applied. We disable its `text` / system-fonts pull so our
 # wasm bundle doesn't grow needlessly — the SVG importer treats <text>
@@ -39,7 +42,6 @@ seahash = "4"
 lru = { version = "0.16", default-features = false }
 
 [dev-dependencies]
-ttf-parser = "0.25"
 criterion = { version = "0.5", default-features = false, features = ["plotters", "cargo_bench_support"] }
 
 [[bench]]
