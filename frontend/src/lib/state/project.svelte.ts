@@ -33,6 +33,7 @@ import * as fileOps from './project-file-ops';
 import * as machineOps from './project-machine-ops';
 import * as selectionOps from './project-selection-ops';
 import * as entityOps from './project-entity-ops';
+import * as operationOps from './project-operation-ops';
 
 // Pure-TypeScript data shapes live in project-types.ts so vitest specs
 // and non-Svelte helpers can import them without booting the rune
@@ -168,22 +169,8 @@ export { isContourOp, isPathOp } from './op_types';
 
 import { computeFootprint } from '../sim/driver';
 import { augmentWithStockOutline } from './stock-outline';
-import { buildOpEntry } from './op_defaults';
-import { effectiveModes } from './tool_family';
 
-import {
-  addOperationCommand,
-  addToolCommand,
-  deleteOperationCommand,
-  deleteToolCommand,
-  duplicateOperationCommand,
-  reorderOperationCommand,
-  replaceToolsCommand,
-  setGroupOpsByToolCommand,
-  toggleTabPlacementCommand,
-  updateOperationCommand,
-  type CommandTarget,
-} from './commands';
+import { type CommandTarget } from './commands';
 
 export class ProjectState {
   /// Project-data slice. Owns `imported`,
@@ -307,18 +294,10 @@ export class ProjectState {
   /// playhead → segment mapping uses `toolpathCumLen` below.
   playhead = $state(1.0);
 
-  /// Undoable UI entry point for the tool-grouping toggle. The plain
-  /// write lives on the data slice for command apply/revert and
-  /// load/clear paths, which manage dirty + generated + history
-  /// themselves. Routes through
-  /// the command bus (so Ctrl+Z reverses it) and invalidates the cached
-  /// toolpath — the reorder changes emitted-program order, so a toolpath
-  /// generated against the prior setting isn't safe to draw/download.
+  /// Undoable tool-grouping toggle (clears cached gcode) — see
+  /// state/project-operation-ops.ts.
   setGroupOpsByTool(v: boolean) {
-    if (this.data.groupOpsByTool === v) return;
-    this.history.exec(setGroupOpsByToolCommand(v), this.target());
-    this.gen.generated = null;
-    this.gen.toolpathCumLen = null;
+    operationOps.setGroupOpsByTool(this, v);
   }
 
   /// True when discarding the current project would lose work the user
@@ -459,12 +438,10 @@ export class ProjectState {
     this.saveSettings();
   }
 
-  /// Click-toggle a tab placement on an op. `toleranceT` is
-  /// the parameter-space distance under which a click on an existing
-  /// nearby tab removes it (Estlcam-style toggle). Single undoable
-  /// history entry per click.
+  /// Click-toggle a tab placement on an op (Estlcam-style) — see
+  /// state/project-operation-ops.ts.
   toggleTabPlacement(opId: number, placement: { objectId: number; t: number }, toleranceT: number) {
-    this.history.exec(toggleTabPlacementCommand(opId, placement, toleranceT), this.target());
+    operationOps.toggleTabPlacement(this, opId, placement, toleranceT);
   }
 
   // ── fixtures ─────────────────────────────────────────────────────────
@@ -667,31 +644,14 @@ export class ProjectState {
 
   // ── operation helpers ────────────────────────────────────────────────
 
+  /// Add an op of `kind` (auto-id, pinned to the canvas selection,
+  /// auto-selected) — see state/project-operation-ops.ts.
   addOperation(kind: OpKind): OpEntry {
-    // The per-kind default field set lives in the pure `buildOpEntry`
-    // registry (op_defaults.ts) so it's one source of truth, unit-tested
-    // without the rune runtime. This method only gathers the live context
-    // and runs the result through the command bus. When the user has
-    // objects selected on the canvas, geometry kinds pin to that set (most
-    // users select first, then click "+ Pocket"); empty selection keeps the
-    // All default.
-    const op = buildOpEntry(kind, {
-      nextId: this.data.operations.reduce((m, o) => Math.max(m, o.id), 0) + 1,
-      tools: this.data.tools,
-      reliefSources: this.data.reliefSources,
-      selectionIds: [...this.sel.selectedObjects],
-      objectMeta: this.transformedImport?.object_meta ?? [],
-      modes: effectiveModes(this.data.machine),
-    });
-    this.history.exec(addOperationCommand(op), this.target());
-    this.sel.selectedOpId = op.id;
-    return op;
+    return operationOps.addOperation(this, kind);
   }
 
   removeOperation(id: number) {
-    if (!this.data.operations.some((o) => o.id === id)) return;
-    this.history.exec(deleteOperationCommand(id), this.target());
-    if (this.sel.selectedOpId === id) this.sel.selectedOpId = null;
+    operationOps.removeOperation(this, id);
   }
 
   /// Insert a text layer (auto-id, auto-name) — see
@@ -734,62 +694,36 @@ export class ProjectState {
     entityOps.removeTextLayer(this, id);
   }
 
-  /// Deep-clone the op and insert it immediately after the original.
-  /// Returns the new op or null if `id` is unknown.
+  /// Deep-clone an op and insert it after the original (auto-selected) —
+  /// see state/project-operation-ops.ts.
   duplicateOperation(id: number): OpEntry | null {
-    const src = this.data.operations.find((o) => o.id === id);
-    if (!src) return null;
-    const nextId = this.data.operations.reduce((m, o) => Math.max(m, o.id), 0) + 1;
-    // JSON-roundtrip clone: Svelte 5 `$state` proxies make
-    // structuredClone throw DataCloneError in production builds — the
-    // dup button would die with an uncaught exception and look dead.
-    const copy: OpEntry = {
-      ...(JSON.parse(JSON.stringify(src)) as OpEntry),
-      id: nextId,
-      name: `${src.name} (copy)`,
-    };
-    this.history.exec(duplicateOperationCommand(id, copy, id), this.target());
-    this.sel.selectedOpId = copy.id;
-    return copy;
+    return operationOps.duplicateOperation(this, id);
   }
 
   updateOperation(id: number, patch: Partial<OpEntry>) {
-    if (Object.keys(patch).length === 0) return;
-    if (!this.data.operations.some((o) => o.id === id)) return;
-    this.history.exec(updateOperationCommand(id, patch), this.target());
+    operationOps.updateOperation(this, id, patch);
   }
 
-  /// Reorder. Skipped when source and target index are the same so a
-  /// stray drag-and-drop with no actual move doesn't dirty the project.
-  /// (A real reorder still flips dirty so the status badge surfaces it,
-  /// but the previously-generated gcode stays on screen until the user
-  /// clicks Generate again.)
+  /// Reorder an op (no-op when the index is unchanged) — see
+  /// state/project-operation-ops.ts.
   reorderOperation(id: number, toIndex: number) {
-    const cur = this.data.operations.findIndex((o) => o.id === id);
-    if (cur < 0) return;
-    const clamped = Math.max(0, Math.min(toIndex, this.data.operations.length - 1));
-    if (clamped === cur) return;
-    this.history.exec(reorderOperationCommand(id, clamped), this.target());
+    operationOps.reorderOperation(this, id, toIndex);
   }
-
-  // (op grouping removed — ops are a flat list)
 
   // ── tool library ─────────────────────────────────────────────────────
 
-  /// Replace the entire tool library in one undoable step. Used by the
-  /// Tool library dialog's commit button.
+  /// Replace the entire tool library in one undoable step — see
+  /// state/project-operation-ops.ts.
   replaceTools(nextTools: ToolEntry[]) {
-    if (nextTools.length === 0) return;
-    this.history.exec(replaceToolsCommand(nextTools), this.target());
+    operationOps.replaceTools(this, nextTools);
   }
 
   addTool(tool: ToolEntry) {
-    this.history.exec(addToolCommand(tool), this.target());
+    operationOps.addTool(this, tool);
   }
 
   removeTool(id: number) {
-    if (!this.data.tools.some((t) => t.id === id)) return;
-    this.history.exec(deleteToolCommand(id), this.target());
+    operationOps.removeTool(this, id);
   }
 
   // ── machine / stock ──────────────────────────────────────────────────
