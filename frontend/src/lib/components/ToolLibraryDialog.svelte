@@ -7,7 +7,6 @@
     project,
     type ToolEntry,
     type ToolKind,
-    type CoolantMode,
     type HolderShape,
   } from '../state/project.svelte';
   import { untrack } from 'svelte';
@@ -25,6 +24,7 @@
   import { seedInventoryFromProject, syncStockedFromInventory } from '../state/tool_inventory';
   import { isAutoToolName, suggestToolName } from '../state/tool_naming';
   import ToolRowExpandedEditor from './ToolRowExpandedEditor.svelte';
+  import ToolRowSummary from './ToolRowSummary.svelte';
   import {
     applyToolTableView,
     EMPTY_TOOL_VIEW,
@@ -37,16 +37,7 @@
   import { defaultToolForMode } from '../state/tool_mode_defaults';
   import { applyPresetPatch } from '../state/tool_presets';
   import ToolCalibrationDialog from './ToolCalibrationDialog.svelte';
-  import {
-    diameterInvalid,
-    speedInvalid,
-    feedInvalid,
-    plungeInvalid,
-    rowInvalid,
-    fieldApplies,
-    fieldDisabledReason,
-    kindNeedsExpansion,
-  } from '../state/tool_validation';
+  import { rowInvalid, kindNeedsExpansion } from '../state/tool_validation';
 
   interface Props {
     open: boolean;
@@ -368,13 +359,7 @@
   // dialog, the disabled-reason tooltips, and any other UI surface that
   // names a tool kind read from the same source.
   const kindLabels = KIND_DISPLAY_LABELS;
-  const coolantLabels: Record<CoolantMode, () => string> = {
-    off: () => t('tools.coolant.off'),
-    mist: () => t('tools.coolant.mist'),
-    flood: () => t('tools.coolant.flood'),
-  };
   const kindOptions = Object.keys(kindLabels) as ToolKind[];
-  const coolantOptions = Object.keys(coolantLabels) as CoolantMode[];
 </script>
 
 {#snippet shell()}
@@ -557,212 +542,15 @@
       </div>
       {#each paged.rows as { tool, i } (tool.id)}
         <div class="row" class:highlight={highlightedId === tool.id} data-tool-id={tool.id}>
-          <span class="id">
-            <button
-              class="expand"
-              type="button"
-              aria-expanded={expanded.has(tool.id)}
-              aria-label={expanded.has(tool.id)
-                ? t('tools.row.expand.collapse.aria', { id: tool.id })
-                : t('tools.row.expand.expand.aria', { id: tool.id })}
-              title={expanded.has(tool.id)
-                ? t('tools.row.expand.collapse.title')
-                : t('tools.row.expand.expand.title')}
-              onclick={() => toggleExpanded(tool.id)}
-              >{expanded.has(tool.id) ? '▾' : '▸'} {tool.id}</button
-            >
-          </span>
-          <input
-            type="text"
-            value={tool.name}
-            placeholder={suggestToolName(tool)}
-            title={t('tools.row.name.title')}
-            oninput={(e) => updateField(i, 'name', (e.currentTarget as HTMLInputElement).value)}
+          <ToolRowSummary
+            {tool}
+            expanded={expanded.has(tool.id)}
+            canDelete={draft.length > 1}
+            onUpdateField={(key, value) => updateField(i, key, value)}
+            onKindChange={(kind) => onKindChange(i, kind)}
+            onToggleExpanded={() => toggleExpanded(tool.id)}
+            onRemove={() => removeAt(i)}
           />
-          <select
-            value={tool.kind}
-            onchange={(e) =>
-              onKindChange(i, (e.currentTarget as HTMLSelectElement).value as ToolKind)}
-          >
-            {#each kindOptions as k (k)}
-              <option value={k}>{kindLabels[k]}</option>
-            {/each}
-          </select>
-          <input
-            type="number"
-            step="0.1"
-            min="0.01"
-            value={tool.diameter}
-            class:invalid={diameterInvalid(tool)}
-            title={diameterInvalid(tool) ? t('tools.row.diameter.invalid.title') : ''}
-            onchange={(e) =>
-              updateField(
-                i,
-                'diameter',
-                parseFloat((e.currentTarget as HTMLInputElement).value) || 0,
-              )}
-          />
-          <input
-            type="number"
-            step="0.05"
-            min="0"
-            value={tool.tipDiameter ?? ''}
-            placeholder={fieldApplies('tipDiameter', tool.kind) ? '—' : t('tools.field.na')}
-            disabled={!fieldApplies('tipDiameter', tool.kind)}
-            class:invalid={tool.tipDiameter !== undefined && tool.tipDiameter < 0}
-            title={!fieldApplies('tipDiameter', tool.kind)
-              ? fieldDisabledReason('tipDiameter', tool.kind)
-              : tool.tipDiameter !== undefined && tool.tipDiameter < 0
-                ? t('tools.row.tip_diameter.invalid.title')
-                : ''}
-            onchange={(e) => {
-              // Reject negative tip ⌀ — Rust setup_resolver.rs:669
-              // does .max(0.0) on this, so a typo like -0.5 silently
-              // becomes 0 and the depth math changes without warning.
-              // Treat any negative input as "unset" (same pattern as
-              // defaultStep) so the user must enter a valid value.
-              const v = (e.currentTarget as HTMLInputElement).value;
-              if (v === '') {
-                updateField(i, 'tipDiameter', undefined);
-                return;
-              }
-              const n = parseFloat(v);
-              updateField(i, 'tipDiameter', isNaN(n) || n < 0 ? undefined : n);
-            }}
-          />
-          <input
-            type="number"
-            step="1"
-            min="1"
-            max="179"
-            value={tool.tipAngleDeg ?? ''}
-            placeholder={fieldApplies('tipAngleDeg', tool.kind) ? '60' : t('tools.field.na')}
-            disabled={!fieldApplies('tipAngleDeg', tool.kind)}
-            title={fieldApplies('tipAngleDeg', tool.kind)
-              ? t('tools.row.tip_angle.title')
-              : fieldDisabledReason('tipAngleDeg', tool.kind)}
-            onchange={(e) => {
-              const v = (e.currentTarget as HTMLInputElement).value;
-              updateField(i, 'tipAngleDeg', v === '' ? undefined : parseFloat(v));
-            }}
-          />
-          <input
-            type="number"
-            step="1"
-            min="1"
-            value={tool.flutes}
-            disabled={!fieldApplies('flutes', tool.kind)}
-            title={fieldApplies('flutes', tool.kind)
-              ? ''
-              : fieldDisabledReason('flutes', tool.kind)}
-            onchange={(e) =>
-              updateField(
-                i,
-                'flutes',
-                parseInt((e.currentTarget as HTMLInputElement).value, 10) || 1,
-              )}
-          />
-          <input
-            type="number"
-            step="500"
-            min="1"
-            value={tool.speed}
-            disabled={!fieldApplies('speed', tool.kind)}
-            class:invalid={speedInvalid(tool)}
-            title={!fieldApplies('speed', tool.kind)
-              ? fieldDisabledReason('speed', tool.kind)
-              : speedInvalid(tool)
-                ? t('tools.row.speed.invalid.title')
-                : ''}
-            onchange={(e) =>
-              updateField(
-                i,
-                'speed',
-                parseInt((e.currentTarget as HTMLInputElement).value, 10) || 0,
-              )}
-          />
-          <input
-            type="number"
-            step="50"
-            min="1"
-            value={tool.feedRate}
-            class:invalid={feedInvalid(tool)}
-            title={feedInvalid(tool)
-              ? t('tools.row.feed.invalid.title')
-              : tool.kind === 'drill'
-                ? t('tools.row.feed.drill.title')
-                : ''}
-            onchange={(e) =>
-              updateField(
-                i,
-                'feedRate',
-                parseInt((e.currentTarget as HTMLInputElement).value, 10) || 0,
-              )}
-          />
-          <input
-            type="number"
-            step="50"
-            min="1"
-            value={tool.plungeRate}
-            disabled={!fieldApplies('plunge', tool.kind)}
-            class:invalid={plungeInvalid(tool)}
-            title={!fieldApplies('plunge', tool.kind)
-              ? fieldDisabledReason('plunge', tool.kind)
-              : plungeInvalid(tool)
-                ? t('tools.row.plunge.invalid.title')
-                : ''}
-            onchange={(e) =>
-              updateField(
-                i,
-                'plungeRate',
-                parseInt((e.currentTarget as HTMLInputElement).value, 10) || 0,
-              )}
-          />
-          <input
-            type="number"
-            step="0.05"
-            max="0"
-            value={tool.defaultStep ?? ''}
-            placeholder={fieldApplies('defaultStep', tool.kind) ? '—' : t('tools.field.na')}
-            disabled={!fieldApplies('defaultStep', tool.kind)}
-            title={fieldApplies('defaultStep', tool.kind)
-              ? tool.defaultStep !== undefined && tool.defaultStep >= 0
-                ? t('tools.row.dflt_step.invalid.title')
-                : t('tools.row.dflt_step.title')
-              : fieldDisabledReason('defaultStep', tool.kind)}
-            class:invalid={tool.defaultStep !== undefined && tool.defaultStep >= 0}
-            onchange={(e) => {
-              const v = (e.currentTarget as HTMLInputElement).value;
-              if (v === '') {
-                updateField(i, 'defaultStep', undefined);
-                return;
-              }
-              const n = parseFloat(v);
-              updateField(i, 'defaultStep', isNaN(n) || n >= 0 ? undefined : n);
-            }}
-          />
-          <select
-            value={tool.coolant}
-            onchange={(e) =>
-              updateField(
-                i,
-                'coolant',
-                (e.currentTarget as HTMLSelectElement).value as CoolantMode,
-              )}
-          >
-            {#each coolantOptions as c (c)}
-              <option value={c}>{coolantLabels[c]()}</option>
-            {/each}
-          </select>
-          <button
-            class="del"
-            onclick={() => removeAt(i)}
-            disabled={draft.length <= 1}
-            title={draft.length <= 1 ? t('tools.row.delete.disabled') : t('tools.row.delete.title')}
-            aria-label={draft.length <= 1
-              ? t('tools.row.delete.disabled')
-              : t('tools.row.delete.aria', { name: tool.name })}>×</button
-          >
         </div>
         {#if expanded.has(tool.id)}
           <ToolRowExpandedEditor
@@ -984,18 +772,6 @@
     align-items: center;
     font-size: 0.78rem;
   }
-  input.invalid {
-    border-color: var(--danger);
-  }
-  /* Disabled fields (per-kind n/a entries) fade visibly so users see
-     they're not editable, without changing the row layout. */
-  input:disabled,
-  select:disabled {
-    opacity: 0.4;
-    background: transparent;
-    color: var(--text-muted);
-    cursor: not-allowed;
-  }
   .row.head {
     color: var(--text-muted);
     text-transform: uppercase;
@@ -1032,22 +808,6 @@
     border-radius: 3px;
     animation: ivac-tool-flash 1.2s ease-in-out;
   }
-  .id {
-    text-align: center;
-    color: var(--text-faint);
-    font-variant-numeric: tabular-nums;
-  }
-  .expand {
-    background: transparent;
-    border: 0;
-    color: var(--text-faint);
-    cursor: pointer;
-    padding: 0;
-    font-size: 0.78rem;
-    font-variant-numeric: tabular-nums;
-    width: 100%;
-    text-align: center;
-  }
   input,
   select {
     background: var(--bg-input);
@@ -1059,18 +819,6 @@
     min-width: 0;
     width: 100%;
     box-sizing: border-box;
-  }
-  .del {
-    background: transparent;
-    color: var(--text-muted);
-    border: 1px solid var(--border);
-    border-radius: 3px;
-    padding: 0.05rem 0.4rem;
-    cursor: pointer;
-  }
-  .del:disabled {
-    opacity: 0.3;
-    cursor: not-allowed;
   }
   /* Two header rows: file actions on the activated-tab surface, then
      the filter row in a lighter tone acting as a divider before the
@@ -1168,7 +916,6 @@
     opacity: 0.5;
     cursor: default;
   }
-  /* Comment gets a full-width row of its own. */
   /* Machine-mode filter banner — the "N tools hidden — Show all" /
      "Hide incompatible" row under the table. Muted: it's a view
      control, not a warning (the library itself is untouched). */
@@ -1218,5 +965,4 @@
     font-size: 0.78rem;
     align-self: center;
   }
-  /* Form-profile (z, r) sample editor + dovetail generator. */
 </style>
