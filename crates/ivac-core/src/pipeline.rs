@@ -949,10 +949,10 @@ fn run_stream_emit(
     }
     match prep.post_kind {
         PostProcessorKind::Linuxcnc => {
-            stream_with_post!(linuxcnc::Post::streaming_with_cap(writer, tee_cap))
+            stream_with_post!(linuxcnc::Post::streaming_with_cap(writer, tee_cap));
         }
         PostProcessorKind::Grbl => {
-            stream_with_post!(grbl::Post::streaming_with_cap(writer, tee_cap))
+            stream_with_post!(grbl::Post::streaming_with_cap(writer, tee_cap));
         }
         // Rejected in prepare_stream; the arm keeps the match total.
         PostProcessorKind::Hpgl => return Err(StreamGcodeError::Unsupported(prep.post_kind)),

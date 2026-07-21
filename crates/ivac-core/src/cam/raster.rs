@@ -635,7 +635,7 @@ mod tests {
         // Returning false from `emit` halts the walk — the driver uses this
         // to surface a mid-op cancel on a genuinely huge engrave.
         let c = PowerCurve::Linear { min: 0, max: 1000 };
-        let field = vec![0.5f32; 4 * 10];
+        let field = [0.5f32; 4 * 10];
         let mut seen = 0usize;
         stream_power_rows(
             &c,

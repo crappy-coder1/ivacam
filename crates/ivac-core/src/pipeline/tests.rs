@@ -1292,6 +1292,7 @@ fn raster_scan_direction_sets_scanline_count() {
 /// pinned raster tests above only exercise `resolution_mm == 0` (identity),
 /// so this covers the resample+dither wiring the streaming path adds.
 #[test]
+#[allow(clippy::too_many_lines)]
 fn raster_streaming_alongx_reproduces_whole_grid_powers() {
     use crate::cam::raster::{PowerCurve, RasterLink};
     use crate::cam::surface_mill::ScanDirection;
@@ -1438,6 +1439,7 @@ fn raster_streaming_alongx_reproduces_whole_grid_powers() {
 /// at a time. The pinned AlongY test above only uses identity resample +
 /// Threshold, so this covers the column-stream resample + tile indexing.
 #[test]
+#[allow(clippy::too_many_lines)]
 fn raster_streaming_alongy_reproduces_whole_grid_powers() {
     use crate::cam::raster::{PowerCurve, RasterLink};
     use crate::cam::surface_mill::ScanDirection;
