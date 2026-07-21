@@ -408,10 +408,7 @@
       const layer = project.addTextLayer(layerSeed);
       if (d.style !== 'plain') {
         const op = project.addOperation('engrave');
-        const opName =
-          d.style === 'engraving'
-            ? `Engrave ${layer.name}`
-            : `${STYLE_TABLE[d.style].label} ${layer.name}`;
+        const opName = `${t(STYLE_TABLE[d.style].label)} ${layer.name}`;
         project.updateOperation(op.id, {
           name: opName,
           toolId: d.toolId,
@@ -584,9 +581,9 @@
         <legend>{t('dialog.text.style')}</legend>
         <div class="grid">
           {#each Object.entries(STYLE_TABLE) as [k, spec] (k)}
-            <label class="style-opt" title={spec.help}>
+            <label class="style-opt" title={t(spec.help)}>
               <input type="radio" bind:group={d.style} value={k as TextStyle} />
-              <span>{spec.label}</span>
+              <span>{t(spec.label)}</span>
             </label>
           {/each}
         </div>

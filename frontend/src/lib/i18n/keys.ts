@@ -179,6 +179,22 @@ export type MsgKey =
   | "dialog.text.size"
   | "dialog.text.size.title"
   | "dialog.text.style"
+  | "dialog.text.style.carve_inside"
+  | "dialog.text.style.carve_inside.help"
+  | "dialog.text.style.carve_outside"
+  | "dialog.text.style.carve_outside.help"
+  | "dialog.text.style.engraving"
+  | "dialog.text.style.engraving.help"
+  | "dialog.text.style.outline_inside"
+  | "dialog.text.style.outline_inside.help"
+  | "dialog.text.style.outline_outside"
+  | "dialog.text.style.outline_outside.help"
+  | "dialog.text.style.plain"
+  | "dialog.text.style.plain.help"
+  | "dialog.text.style.pocket_inside"
+  | "dialog.text.style.pocket_inside.help"
+  | "dialog.text.style.pocket_outside"
+  | "dialog.text.style.pocket_outside.help"
   | "dialog.text.switch_font"
   | "dialog.text.text"
   | "dialog.text.text.title"
@@ -1815,6 +1831,22 @@ export const MSG_KEYS: readonly MsgKey[] = [
   "dialog.text.size",
   "dialog.text.size.title",
   "dialog.text.style",
+  "dialog.text.style.carve_inside",
+  "dialog.text.style.carve_inside.help",
+  "dialog.text.style.carve_outside",
+  "dialog.text.style.carve_outside.help",
+  "dialog.text.style.engraving",
+  "dialog.text.style.engraving.help",
+  "dialog.text.style.outline_inside",
+  "dialog.text.style.outline_inside.help",
+  "dialog.text.style.outline_outside",
+  "dialog.text.style.outline_outside.help",
+  "dialog.text.style.plain",
+  "dialog.text.style.plain.help",
+  "dialog.text.style.pocket_inside",
+  "dialog.text.style.pocket_inside.help",
+  "dialog.text.style.pocket_outside",
+  "dialog.text.style.pocket_outside.help",
   "dialog.text.switch_font",
   "dialog.text.text",
   "dialog.text.text.title",

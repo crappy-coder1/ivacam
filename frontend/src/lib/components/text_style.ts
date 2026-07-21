@@ -5,6 +5,7 @@
 
 import type { FrameShape, OpKind, ProfileOffset, SourceCombine } from '../state/op_types';
 import type { ToolKind } from '../state/op_types';
+import type { MsgKey } from '../i18n/keys';
 
 export type TextStyle =
   | 'engraving'
@@ -16,61 +17,65 @@ export type TextStyle =
   | 'outline_outside'
   | 'plain';
 
+/// `label` / `help` are i18n *keys* (resolved with `t()` at the call site),
+/// not display strings — so the style picker localizes like the rest of the
+/// UI instead of hard-coding English. Kept as data here so this module stays
+/// rune-free and vitest-coverable.
 export interface StyleSpec {
-  label: string;
+  label: MsgKey;
   toolKind: ToolKind | null;
   defaultDepth: number | null;
-  help: string;
+  help: MsgKey;
 }
 
 export const STYLE_TABLE: Record<TextStyle, StyleSpec> = {
   engraving: {
-    label: 'Engraving',
+    label: 'dialog.text.style.engraving',
     toolKind: 'engraver',
     defaultDepth: -0.5,
-    help: 'Single-line engrave along the centerline of each glyph. Best with a single-line / Hershey font.',
+    help: 'dialog.text.style.engraving.help',
   },
   carve_inside: {
-    label: 'Carve Inside',
+    label: 'dialog.text.style.carve_inside',
     toolKind: 'v_bit',
     defaultDepth: -3.0,
-    help: 'V-Carve the closed letter regions — variable-depth medial-axis carving.',
+    help: 'dialog.text.style.carve_inside.help',
   },
   carve_outside: {
-    label: 'Carve Outside',
+    label: 'dialog.text.style.carve_outside',
     toolKind: 'v_bit',
     defaultDepth: -3.0,
-    help: 'V-Carve the area between a frame and the text outlines.',
+    help: 'dialog.text.style.carve_outside.help',
   },
   pocket_inside: {
-    label: 'Pocket Inside',
+    label: 'dialog.text.style.pocket_inside',
     toolKind: 'endmill',
     defaultDepth: -2.0,
-    help: 'Clear the closed letter regions with an endmill.',
+    help: 'dialog.text.style.pocket_inside.help',
   },
   pocket_outside: {
-    label: 'Pocket Outside',
+    label: 'dialog.text.style.pocket_outside',
     toolKind: 'endmill',
     defaultDepth: -2.0,
-    help: 'Clear the area between a frame and the text outlines (raised text).',
+    help: 'dialog.text.style.pocket_outside.help',
   },
   outline_inside: {
-    label: 'Outline Inside',
+    label: 'dialog.text.style.outline_inside',
     toolKind: 'endmill',
     defaultDepth: -2.0,
-    help: 'Profile cut on the INSIDE of each letter outline.',
+    help: 'dialog.text.style.outline_inside.help',
   },
   outline_outside: {
-    label: 'Outline Outside',
+    label: 'dialog.text.style.outline_outside',
     toolKind: 'endmill',
     defaultDepth: -2.0,
-    help: 'Profile cut on the OUTSIDE of each letter outline.',
+    help: 'dialog.text.style.outline_outside.help',
   },
   plain: {
-    label: 'Plain (no op)',
+    label: 'dialog.text.style.plain',
     toolKind: null,
     defaultDepth: null,
-    help: 'Adds the text to the geometry layer only — no CAM op is created.',
+    help: 'dialog.text.style.plain.help',
   },
 };
 
