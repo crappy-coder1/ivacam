@@ -2311,7 +2311,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "ivac-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "ivac-core",
@@ -2323,7 +2323,7 @@ dependencies = [
 
 [[package]]
 name = "ivac-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "base64 0.22.1",
  "cavalier_contours",
@@ -2344,7 +2344,7 @@ dependencies = [
 
 [[package]]
 name = "ivac-server"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -2362,7 +2362,7 @@ dependencies = [
 
 [[package]]
 name = "ivac-tauri"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "ivac-core",
@@ -2387,7 +2387,7 @@ dependencies = [
 
 [[package]]
 name = "ivac-wasm"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "console_error_panic_hook",
  "getrandom 0.2.17",
@@ -6469,7 +6469,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "ivac-core",
