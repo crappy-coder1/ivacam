@@ -765,9 +765,14 @@
   }
   .row {
     display: grid;
+    /* Numeric columns are widened past their English-label minimum so
+       longer localized headers (de: "Geschw", "Eintauchen",
+       "Std.-Zustellung") don't spill into their neighbours. Units render
+       on their own line under the label (see `.row.head .unit-hdr`), so a
+       column only has to fit the label word, not "label + unit". */
     grid-template-columns:
       2.5rem minmax(8rem, 1.6fr) minmax(6rem, 1fr)
-      4.5rem 4.5rem 4rem 3.5rem 5rem 5rem 5rem 4.5rem minmax(6rem, 1fr) 2rem;
+      4.5rem 4.5rem 4rem 3.5rem 5rem 5.5rem 5.5rem 6rem minmax(6rem, 1fr) 2rem;
     gap: 0.3rem;
     align-items: center;
     font-size: 0.78rem;
@@ -787,12 +792,28 @@
     background: var(--bg-panel);
     z-index: var(--z-anchor);
   }
+  /* Header cells must never let a long localized label overflow into the
+     next column. Allow shrink-to-fit and break over-long single words
+     (e.g. de "Std.-Zustellung") at hyphenation points instead of spilling. */
+  .row.head > * {
+    min-width: 0;
+  }
+  .row.head button,
+  .row.head > span {
+    overflow-wrap: anywhere;
+    hyphens: auto;
+    line-height: 1.15;
+  }
   .row.head .unit-hdr {
+    /* Unit drops onto its own line under the label so the column width is
+       governed by the (translated) label alone, not "label + unit". */
+    display: block;
     color: var(--text-faint);
     font-size: 0.62rem;
     text-transform: none;
     letter-spacing: 0;
-    margin-left: 0.2rem;
+    margin-left: 0;
+    line-height: 1.1;
   }
   @keyframes ivac-tool-flash {
     0%,

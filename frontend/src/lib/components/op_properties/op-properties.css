@@ -45,6 +45,14 @@
   margin: 0.2rem 0;
   font-size: 0.78rem;
 }
+/* The label sits in the first (capped) column. Long localized compound
+   words — e.g. de "Vorschubgeschwindigkeit" / "Eintauchgeschwindigkeit" —
+   have no space to wrap at and would otherwise overflow the column and
+   render on top of the value input. `break-word` wraps them within the
+   column without collapsing its intrinsic width (unlike `anywhere`). */
+.props .row > span:first-child {
+  overflow-wrap: break-word;
+}
 .props fieldset {
   border: 1px solid var(--border);
   border-radius: 3px;
