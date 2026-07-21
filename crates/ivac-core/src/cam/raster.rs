@@ -111,6 +111,18 @@ impl PowerCurve {
             }
         }
     }
+
+    /// Whether this curve maps each pixel independently of its neighbours,
+    /// so its power grid can be generated in **any** order — in particular
+    /// column-by-column, which lets a vertical (AlongY) raster scan stream
+    /// at `O(rows)` instead of materializing the whole grid (z9zh/jyum).
+    /// Only [`PowerCurve::FloydSteinberg`] is order-dependent: its error
+    /// diffusion is intrinsically row-major, so a column walk needs the
+    /// finished grid. Linear / Threshold / Bayer are all position-local.
+    #[must_use]
+    pub fn streams_column_major(&self) -> bool {
+        !matches!(self, PowerCurve::FloydSteinberg { .. })
+    }
 }
 
 /// Power at brightness `b ∈ [0, 1]`: `max` at black (0), `min` at white
@@ -350,6 +362,92 @@ pub(crate) fn stream_power_rows<G, E>(
     }
 }
 
+/// Column-major counterpart of [`stream_power_rows`] for the vertical
+/// (AlongY) raster path (jyum): produces **one power column at a time** at
+/// `O(rows)` working memory, so a huge vertical engrave needs no cap.
+/// `get_col(x, buf)` must fill `buf` with the `rows` raw (un-clamped)
+/// brightness values of resampled column `x`; `emit(x, powers)` receives
+/// that column's `S` values indexed by row and returns `false` to abort.
+///
+/// Only valid for [`PowerCurve::streams_column_major`] curves (Linear /
+/// Threshold / Bayer) — Floyd–Steinberg's row-major diffusion can't be
+/// produced column-first, so it is rejected (returns `false` without
+/// emitting; the caller routes F–S to the whole-grid path). Output is
+/// byte-identical to slicing [`PowerCurve::power_grid`] by column — a unit
+/// test pins the equivalence.
+#[must_use]
+pub(crate) fn stream_power_cols<G, E>(
+    curve: &PowerCurve,
+    cols: usize,
+    rows: usize,
+    mut get_col: G,
+    mut emit: E,
+) -> bool
+where
+    G: FnMut(usize, &mut Vec<f32>),
+    E: FnMut(usize, &[u32]) -> bool,
+{
+    if cols == 0 || rows == 0 {
+        return true;
+    }
+    let mut work: Vec<f32> = Vec::with_capacity(rows);
+    let mut out: Vec<u32> = vec![0u32; rows];
+    match *curve {
+        PowerCurve::Linear { min, max } => {
+            for x in 0..cols {
+                get_col(x, &mut work);
+                for y in 0..rows {
+                    out[y] = lerp_power(min, max, work[y].clamp(0.0, 1.0));
+                }
+                if !emit(x, &out) {
+                    return true;
+                }
+            }
+        }
+        PowerCurve::Threshold { level, power } => {
+            for x in 0..cols {
+                get_col(x, &mut work);
+                for y in 0..rows {
+                    out[y] = if work[y].clamp(0.0, 1.0) < level {
+                        power
+                    } else {
+                        0
+                    };
+                }
+                if !emit(x, &out) {
+                    return true;
+                }
+            }
+        }
+        PowerCurve::Bayer { matrix_size, power } => {
+            let n = match matrix_size {
+                2 | 4 | 8 => matrix_size as usize,
+                _ => 4,
+            };
+            let matrix = bayer_thresholds(n);
+            for x in 0..cols {
+                get_col(x, &mut work);
+                for y in 0..rows {
+                    // Same (y%n, x%n) tile index as `bayer_dither`, so a
+                    // column here matches that column of the whole grid.
+                    let t = matrix[(y % n) * n + (x % n)];
+                    out[y] = if work[y].clamp(0.0, 1.0) < t {
+                        power
+                    } else {
+                        0
+                    };
+                }
+                if !emit(x, &out) {
+                    return true;
+                }
+            }
+        }
+        // Order-dependent: can't stream column-first. Caller falls back.
+        PowerCurve::FloydSteinberg { .. } => return false,
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -556,5 +654,98 @@ mod tests {
             seen, 3,
             "abort should halt after the row that returns false"
         );
+    }
+
+    /// Assemble the column-streaming generator's columns into a flat grid.
+    fn stream_cols_to_grid(
+        c: &PowerCurve,
+        brightness: &[f32],
+        cols: usize,
+        rows: usize,
+    ) -> Vec<u32> {
+        let mut grid = vec![0u32; cols * rows];
+        let handled = stream_power_cols(
+            c,
+            cols,
+            rows,
+            |x, buf| {
+                buf.clear();
+                for y in 0..rows {
+                    buf.push(brightness[y * cols + x]);
+                }
+            },
+            |x, powers| {
+                for (y, &p) in powers.iter().enumerate() {
+                    grid[y * cols + x] = p;
+                }
+                true
+            },
+        );
+        assert!(
+            handled,
+            "position-independent curve must stream column-major"
+        );
+        grid
+    }
+
+    #[test]
+    fn stream_power_cols_matches_power_grid() {
+        // Column-major streaming (AlongY, jyum) must be byte-identical to the
+        // whole-grid `power_grid` for every position-independent curve — the
+        // uncapped vertical engrave relies on it. Bayer is the load-bearing
+        // case: its per-tile threshold indexes (y%n, x%n), which the column
+        // walk must reproduce exactly.
+        let curves = [
+            PowerCurve::Linear { min: 40, max: 900 },
+            PowerCurve::Threshold {
+                level: 0.5,
+                power: 700,
+            },
+            PowerCurve::Bayer {
+                matrix_size: 4,
+                power: 500,
+            },
+            PowerCurve::Bayer {
+                matrix_size: 8,
+                power: 500,
+            },
+        ];
+        let shapes = [(7usize, 5usize), (1, 6), (6, 1), (16, 16), (13, 9)];
+        for (cols, rows) in shapes {
+            let field: Vec<f32> = (0..cols * rows)
+                .map(|i| ((i * 37 % 100) as f32) / 100.0)
+                .collect();
+            for c in &curves {
+                let reference = c.power_grid(&field, cols, rows);
+                let streamed = stream_cols_to_grid(c, &field, cols, rows);
+                assert_eq!(
+                    streamed, reference,
+                    "column-streaming != whole-grid for {c:?} at {cols}×{rows}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn stream_power_cols_rejects_floyd_steinberg() {
+        // F–S can't be produced column-first; the generator declines it so
+        // the driver keeps that (rare) case on the capped whole-grid path.
+        let c = PowerCurve::FloydSteinberg {
+            level: 0.5,
+            power: 1000,
+        };
+        let mut emitted = 0usize;
+        let handled = stream_power_cols(
+            &c,
+            4,
+            4,
+            |_, buf| buf.resize(4, 0.5),
+            |_, _| {
+                emitted += 1;
+                true
+            },
+        );
+        assert!(!handled, "F–S must be rejected for column streaming");
+        assert_eq!(emitted, 0, "rejected curve must emit nothing");
     }
 }

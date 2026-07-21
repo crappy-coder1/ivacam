@@ -1431,6 +1431,143 @@ fn raster_streaming_alongx_reproduces_whole_grid_powers() {
     );
 }
 
+/// End-to-end guard for the jyum streaming AlongY path: a vertical scan
+/// with a NON-identity `resolution_mm` and a Bayer curve (whose per-tile
+/// threshold indexes (y%n, x%n)) must reproduce exactly the powers the
+/// whole-grid `resample` + `power_grid` would compute, emitted one column
+/// at a time. The pinned AlongY test above only uses identity resample +
+/// Threshold, so this covers the column-stream resample + tile indexing.
+#[test]
+fn raster_streaming_alongy_reproduces_whole_grid_powers() {
+    use crate::cam::raster::{PowerCurve, RasterLink};
+    use crate::cam::surface_mill::ScanDirection;
+    use crate::geometry::Point2;
+    use crate::project::{ReliefGrid, ReliefSource};
+
+    // 6×4 source at 0.2 mm cell, engraved at 0.1 mm → upsample to 12×8.
+    let cell = 0.2;
+    let resolution = 0.1;
+    let (in_cols, in_rows) = (6usize, 4usize);
+    let brightness: Vec<f32> = (0..in_cols * in_rows)
+        .map(|i| ((i * 53 % 100) as f32) / 100.0)
+        .collect();
+    let curve = PowerCurve::Bayer {
+        matrix_size: 4,
+        power: 600,
+    };
+
+    let mut tool = endmill(1, 0.1);
+    tool.kind = ToolKind::LaserBeam;
+    let project = Project {
+        segments: Vec::new(),
+        machine: MachineConfig {
+            mode: crate::project::MachineMode::Laser,
+            ..MachineConfig::default()
+        },
+        tools: vec![tool],
+        operations: vec![Op {
+            id: 1,
+            name: "Engrave".into(),
+            enabled: true,
+            kind: OpKind::RasterEngrave {
+                source_id: 1,
+                resolution_mm: resolution,
+                power_curve: curve,
+                scan_direction: ScanDirection::AlongY,
+                link: RasterLink::LiftBetween,
+                overscan_factor: 0.0,
+            },
+            tool_id: 1,
+            finish_tool_id: None,
+            source: OpSource::All,
+            params: OpParams::mill_default(),
+            group: None,
+            pin_order: false,
+            side: crate::project::WorkpieceSide::Front,
+        }],
+        fixtures: Vec::default(),
+        text_layers: Vec::default(),
+        work_offset: crate::project::WorkOffset::default(),
+        stock: None,
+        relief_sources: vec![ReliefSource {
+            id: 1,
+            name: "img".into(),
+            origin: Point2::new(0.0, 0.0),
+            cell,
+            cols: in_cols as u32,
+            rows: in_rows as u32,
+            grid: ReliefGrid::Grayscale {
+                brightness: brightness.clone(),
+            },
+        }],
+        group_ops_by_tool: false,
+    };
+    let g = run_pipeline(
+        PipelineRequest {
+            project,
+            post_processor: Some(PostProcessorKind::Linuxcnc),
+        },
+        |_, _, _| {},
+    )
+    .unwrap()
+    .gcode;
+
+    // Reference whole-grid resample + power_grid the column-stream must match.
+    let (rb, rc, rr) = {
+        let nc = ((in_cols as f64 * cell / resolution).round() as usize).max(1);
+        let nr = ((in_rows as f64 * cell / resolution).round() as usize).max(1);
+        let mut out = vec![0.0f32; nc * nr];
+        for ny in 0..nr {
+            let sy = (((ny as f64 + 0.5) * resolution / cell) as usize).min(in_rows - 1);
+            for nx in 0..nc {
+                let sx = (((nx as f64 + 0.5) * resolution / cell) as usize).min(in_cols - 1);
+                out[ny * nc + nx] = brightness[sy * in_cols + sx];
+            }
+        }
+        (out, nc, nr)
+    };
+    assert_eq!((rc, rr), (12, 8), "expected 6×4 @0.2 → 12×8 @0.1");
+    let powers = curve.power_grid(&rb, rc, rr);
+    assert!(
+        powers.contains(&600) && powers.contains(&0),
+        "reference Bayer must have both burn and skip pixels"
+    );
+    // Only S600 burns in the emitted program.
+    let burn_powers: std::collections::BTreeSet<u32> = g
+        .lines()
+        .filter_map(|l| l.strip_prefix("M3 S"))
+        .filter_map(|s| s.trim().parse::<u32>().ok())
+        .filter(|&p| p != 0)
+        .collect();
+    assert_eq!(
+        burn_powers,
+        std::collections::BTreeSet::from([600]),
+        "streamed AlongY must emit exactly the reference's on-power (S600):\n{g}"
+    );
+    // One vertical scanline per resampled column, each at a distinct X plane
+    // (AlongY sweeps Y at constant X). Distinct X among reposition rapids
+    // must equal the resampled column count.
+    let op_start = g
+        .lines()
+        .position(|l| l.contains("raster engrave"))
+        .expect("op comment present");
+    let scanline_xs: std::collections::BTreeSet<String> = g
+        .lines()
+        .skip(op_start)
+        .filter(|l| l.starts_with("G0 "))
+        .filter_map(|l| {
+            l.split_whitespace()
+                .find(|w| w.starts_with('X'))
+                .map(str::to_owned)
+        })
+        .collect();
+    assert_eq!(
+        scanline_xs.len(),
+        rc,
+        "one scanline per resampled column (distinct X planes):\n{g}"
+    );
+}
+
 /// Per-tool Z shift: when set on the first op's tool, a
 /// `G92 Z<shift>` line follows `program_begin` to pin work-Z=0 to
 /// the new tool's tip.

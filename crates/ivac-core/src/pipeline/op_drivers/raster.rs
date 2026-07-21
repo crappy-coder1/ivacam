@@ -14,7 +14,7 @@
 //! boustrophedon), and an overscan lead-in/-out so the head reaches feed
 //! before it crosses the first burning pixel. Laser-only.
 
-use crate::cam::raster::{stream_power_rows, RasterLink};
+use crate::cam::raster::{stream_power_cols, stream_power_rows, RasterLink};
 use crate::cam::setup::Setup;
 use crate::cam::surface_mill::ScanDirection;
 use crate::gcode::PostProcessor;
@@ -23,13 +23,14 @@ use crate::pipeline::{cancelled, CancelToken, PipelineError, PipelineWarning};
 use crate::project::MachineMode;
 use crate::project::{Op, OpKind, Project, ReliefSource};
 
-/// Pixel-count ceiling for the **AlongY** (vertical) scan path only.
-/// Vertical scanlines walk image *columns*, which needs random access to
-/// every row at once (and Floyd–Steinberg is intrinsically row-major), so
-/// that path materializes the whole `cols × rows` power grid and warns +
-/// skips past this cap rather than risk a huge transient allocation. The
-/// default **AlongX** (horizontal) path streams row-by-row at `O(cols)`
-/// peak memory through [`stream_power_rows`] and is *not* capped (z9zh).
+/// Pixel-count ceiling for the one remaining non-streaming path: a
+/// **vertical (AlongY) scan with a Floyd–Steinberg curve**. F–S diffuses
+/// error row-major, so a column walk can't produce it lazily — that case
+/// materializes the whole `cols × rows` power grid and warns + skips past
+/// this cap rather than risk a huge transient allocation. Every other
+/// combination streams unbounded at `O(cols)`/`O(rows)`: AlongX for any
+/// curve via [`stream_power_rows`] (z9zh), and AlongY for the
+/// position-independent curves via [`stream_power_cols`] (jyum).
 const MAX_RASTER_PIXELS: usize = 16_000_000;
 
 fn find_source(project: &Project, id: u32) -> Option<&ReliefSource> {
@@ -123,6 +124,39 @@ fn resample_row(
             nx
         } else {
             (((nx as f64 + 0.5) * target_pitch / cell) as usize).min(in_cols - 1)
+        };
+        out.push(src[sy * in_cols + sx]);
+    }
+}
+
+/// Column counterpart of [`resample_row`]: fill `out` with the `new_rows`
+/// raw brightness values of resampled column `nx`, feeding the AlongY
+/// column-streaming path (jyum). Same nearest-neighbour math and identity
+/// short-circuit as [`resample`], so a streamed column is byte-identical to
+/// that column of the whole grid.
+fn resample_col(
+    src: &[f32],
+    in_cols: usize,
+    in_rows: usize,
+    cell: f64,
+    target_pitch: f64,
+    new_rows: usize,
+    nx: usize,
+    out: &mut Vec<f32>,
+) {
+    out.clear();
+    let identity =
+        target_pitch <= 0.0 || (target_pitch - cell).abs() < 1e-6 || in_cols == 0 || in_rows == 0;
+    let sx = if identity {
+        nx
+    } else {
+        (((nx as f64 + 0.5) * target_pitch / cell) as usize).min(in_cols - 1)
+    };
+    for ny in 0..new_rows {
+        let sy = if identity {
+            ny
+        } else {
+            (((ny as f64 + 0.5) * target_pitch / cell) as usize).min(in_rows - 1)
         };
         out.push(src[sy * in_cols + sx]);
     }
@@ -294,6 +328,11 @@ pub(in crate::pipeline) fn run_raster_op<P: PostProcessor>(
     let oy = source.origin.y;
     let feed = setup.tool.rate_h.max(1);
     let scan_y = matches!(scan_direction, ScanDirection::AlongY);
+    // Only ONE combination can't stream: a vertical (AlongY) scan with a
+    // Floyd–Steinberg curve. A column walk needs random row access, and F–S
+    // diffuses row-major, so that case materializes the whole grid. AlongX
+    // (any curve) and AlongY with a position-independent curve both stream.
+    let along_y_whole_grid = scan_y && !power_curve.streams_column_major();
     // AlongX: one scanline per image row, sweeping across cols.
     // AlongY: one scanline per image column, sweeping down rows.
     let line_len = if scan_y { rows } else { cols };
@@ -306,10 +345,10 @@ pub(in crate::pipeline) fn run_raster_op<P: PostProcessor>(
         bidirectional: matches!(link, RasterLink::Bidirectional),
     };
 
-    // AlongY can't stream (column walk needs random row access; F–S is
-    // row-major), so it materializes the whole grid and stays behind the
-    // cap. Check BEFORE emitting the op header so a skipped op emits nothing.
-    if scan_y
+    // The pixel cap now guards ONLY the non-streaming path (AlongY + F–S);
+    // every streaming path is unbounded. Check BEFORE the op header so a
+    // skipped op emits nothing.
+    if along_y_whole_grid
         && cols
             .checked_mul(rows)
             .map_or(true, |n| n > MAX_RASTER_PIXELS)
@@ -318,7 +357,7 @@ pub(in crate::pipeline) fn run_raster_op<P: PostProcessor>(
             op.id,
             "raster_too_large",
             format!(
-                "raster op '{}' resamples to {cols}×{rows} pixels, over the {MAX_RASTER_PIXELS}-pixel cap for vertical (AlongY) scanning. Lower the resolution (larger resolution_mm), crop the image, or switch to horizontal (AlongX) scanning — AlongX streams unbounded.",
+                "raster op '{}' resamples to {cols}×{rows} pixels, over the {MAX_RASTER_PIXELS}-pixel cap for vertical (AlongY) scanning with a Floyd–Steinberg curve — the one combination that can't stream. Lower the resolution (larger resolution_mm), crop the image, switch to a Bayer / Threshold / Linear curve (all stream vertically, unbounded), or use horizontal (AlongX) scanning.",
                 op.name
             ),
         )
@@ -333,63 +372,87 @@ pub(in crate::pipeline) fn run_raster_op<P: PostProcessor>(
     post.laser_arm(); // M3 S0 — armed cold
     post.feedrate(feed);
     let mut final_pt = Point2::new(ox, oy);
-
-    if scan_y {
-        // AlongY: whole grid (cap-guarded above); walk columns. Per-pixel
-        // power computed once over the full grid (Floyd–Steinberg diffuses
-        // across rows, so a column walk must see the full result).
-        let (brightness, _, _) = resample(src_brightness, in_cols, in_rows, cell, *resolution_mm);
-        let powers = power_curve.power_grid(&brightness, cols, rows);
-        // Brightness isn't needed past the power grid; free it before emit.
-        drop(brightness);
-        if powers.is_empty() {
-            post.laser_off();
-            *last_pos = final_pt;
-            return Ok(());
-        }
-        let mut col: Vec<u32> = vec![0u32; rows];
-        for line in 0..cols {
+    let mut aborted = false;
+    {
+        // One emit closure for all three routes: reposition + burn a single
+        // scanline, honoring the cancel token (a huge engrave stays
+        // interruptible). `line_powers[k]` is the k-th pixel along the sweep.
+        let mut emit = |line: usize, line_powers: &[u32]| -> bool {
             if cancelled(cancel) {
-                return Err(PipelineError::Cancelled);
+                aborted = true;
+                return false;
             }
-            for (k, slot) in col.iter_mut().enumerate() {
-                *slot = powers[k * cols + line];
-            }
-            emit_scanline(post, &geom, line, &col, &mut final_pt);
-        }
-    } else {
-        // AlongX: stream image rows; O(cols) peak memory, no pixel cap. Each
-        // row's powers are produced lazily and emitted as its scanline, so a
-        // whole-program raster never materializes the grid.
-        let mut aborted = false;
-        stream_power_rows(
-            power_curve,
-            cols,
-            rows,
-            |ny, buf| {
-                resample_row(
-                    src_brightness,
-                    in_cols,
-                    in_rows,
-                    cell,
-                    *resolution_mm,
-                    cols,
-                    ny,
-                    buf,
-                );
-            },
-            |line, line_powers| {
-                if cancelled(cancel) {
-                    aborted = true;
-                    return false;
+            emit_scanline(post, &geom, line, line_powers, &mut final_pt);
+            true
+        };
+
+        if along_y_whole_grid {
+            // AlongY + Floyd–Steinberg: materialize the grid (cap-guarded
+            // above), then walk columns — F–S must see the finished grid.
+            let (brightness, _, _) =
+                resample(src_brightness, in_cols, in_rows, cell, *resolution_mm);
+            let powers = power_curve.power_grid(&brightness, cols, rows);
+            drop(brightness); // free before emit; don't hold both grids live
+            let mut col: Vec<u32> = vec![0u32; rows];
+            for line in 0..cols {
+                for (k, slot) in col.iter_mut().enumerate() {
+                    *slot = powers[k * cols + line];
                 }
-                emit_scanline(post, &geom, line, line_powers, &mut final_pt);
-                true
-            },
-        );
-        if aborted {
-            return Err(PipelineError::Cancelled);
+                if !emit(line, &col) {
+                    break;
+                }
+            }
+        } else if scan_y {
+            // AlongY, position-independent curve: stream image columns at
+            // O(rows), no pixel cap.
+            let handled = stream_power_cols(
+                power_curve,
+                cols,
+                rows,
+                |nx, buf| {
+                    resample_col(
+                        src_brightness,
+                        in_cols,
+                        in_rows,
+                        cell,
+                        *resolution_mm,
+                        rows,
+                        nx,
+                        buf,
+                    );
+                },
+                &mut emit,
+            );
+            // `streams_column_major` already excluded F–S, so this holds;
+            // the assert documents the invariant without a release cost.
+            debug_assert!(
+                handled,
+                "position-independent curve must stream column-major"
+            );
+        } else {
+            // AlongX (any curve): stream image rows at O(cols), no pixel cap.
+            stream_power_rows(
+                power_curve,
+                cols,
+                rows,
+                |ny, buf| {
+                    resample_row(
+                        src_brightness,
+                        in_cols,
+                        in_rows,
+                        cell,
+                        *resolution_mm,
+                        cols,
+                        ny,
+                        buf,
+                    );
+                },
+                &mut emit,
+            );
         }
+    }
+    if aborted {
+        return Err(PipelineError::Cancelled);
     }
 
     post.laser_off(); // M5 — beam down at op end
@@ -471,6 +534,33 @@ mod tests {
             assert_eq!(
                 assembled, whole,
                 "resample_row != resample at cell={cell}, pitch={pitch}"
+            );
+        }
+    }
+
+    #[test]
+    fn resample_col_assembles_to_resample() {
+        // The streaming AlongY path pulls one resampled column at a time via
+        // `resample_col`; placed column-major, they must reconstruct exactly
+        // the whole-grid `resample`. Same cases as the row test.
+        let b: Vec<f32> = (0..24).map(|i| i as f32 / 24.0).collect();
+        for (in_cols, in_rows, cell, pitch) in [
+            (6usize, 4usize, 0.1, 0.1),
+            (6, 4, 0.1, 0.2),
+            (6, 4, 0.1, 0.05),
+        ] {
+            let (whole, nc, nr) = resample(&b, in_cols, in_rows, cell, pitch);
+            let mut assembled = vec![0.0f32; nc * nr];
+            let mut colbuf = Vec::new();
+            for nx in 0..nc {
+                resample_col(&b, in_cols, in_rows, cell, pitch, nr, nx, &mut colbuf);
+                for (ny, &v) in colbuf.iter().enumerate() {
+                    assembled[ny * nc + nx] = v;
+                }
+            }
+            assert_eq!(
+                assembled, whole,
+                "resample_col != resample at cell={cell}, pitch={pitch}"
             );
         }
     }
