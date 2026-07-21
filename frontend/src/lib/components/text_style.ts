@@ -10,7 +10,6 @@ import type { MsgKey } from '../i18n/keys';
 export type TextStyle =
   | 'engraving'
   | 'carve_inside'
-  | 'carve_outside'
   | 'pocket_inside'
   | 'pocket_outside'
   | 'outline_inside'
@@ -40,12 +39,6 @@ export const STYLE_TABLE: Record<TextStyle, StyleSpec> = {
     toolKind: 'v_bit',
     defaultDepth: -3.0,
     help: 'dialog.text.style.carve_inside.help',
-  },
-  carve_outside: {
-    label: 'dialog.text.style.carve_outside',
-    toolKind: 'v_bit',
-    defaultDepth: -3.0,
-    help: 'dialog.text.style.carve_outside.help',
   },
   pocket_inside: {
     label: 'dialog.text.style.pocket_inside',
@@ -121,17 +114,6 @@ export function describeStyleOp(
         depth,
         sourceObjects: sources,
         sourceCombine: objectIds.length > 1 ? 'union' : 'auto',
-      };
-    case 'carve_outside':
-      return {
-        kind: 'vcarve',
-        name: 'V-Carve Text (outside)',
-        toolId,
-        depth,
-        sourceObjects: sources,
-        sourceCombine: 'difference',
-        frameShape: 'rectangle',
-        framePaddingMm: 3 * toolDiameter,
       };
     case 'pocket_inside':
       return {

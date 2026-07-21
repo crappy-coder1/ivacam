@@ -19,7 +19,8 @@
   import { defaultClient } from '../api/http';
   import type { Segment, RenderTextRequest } from '../api/types';
   import type { TextFontSource, TextLayer } from '../state/project.svelte';
-  import { STYLE_TABLE, engravingMismatch, type TextStyle } from './text_style';
+  import { STYLE_TABLE, describeStyleOp, engravingMismatch, type TextStyle } from './text_style';
+  import type { OpPatch } from '../state/op_types';
   import { computeFootprint } from '../sim/driver';
   import { selectionOrigin } from '../canvas/selection-geometry';
   import { formatLength } from '../cam/units';
@@ -406,17 +407,40 @@
       project.history.beginTransaction('Add text');
       txOpen = true;
       const layer = project.addTextLayer(layerSeed);
+      // Map the chosen STIL to the correct op kind / offset / frame via
+      // the shared `describeStyleOp` table, then re-source it onto the
+      // text layer's synthetic geometry. `objectIds` is empty because the
+      // source is the layer (`__text_<id>`), not imported chains; the
+      // tool diameter drives the *Outside frame padding.
       if (d.style !== 'plain') {
-        const op = project.addOperation('engrave');
-        const opName = `${t(STYLE_TABLE[d.style].label)} ${layer.name}`;
-        project.updateOperation(op.id, {
-          name: opName,
-          toolId: d.toolId,
-          depth: d.depth,
-          sourceObjects: undefined,
-          sourceLayers: [`__text_${layer.id}`],
-          offset: 'on',
-        });
+        const toolDiameter = project.data.tools.find((tl) => tl.id === d.toolId)?.diameter ?? 3;
+        const desc = describeStyleOp(d.style, [], d.toolId, toolDiameter, d.depth);
+        if (desc) {
+          const op = project.addOperation(desc.kind);
+          const opName = `${t(STYLE_TABLE[d.style].label)} ${layer.name}`;
+          const base = {
+            name: opName,
+            toolId: d.toolId,
+            depth: d.depth,
+            sourceObjects: undefined,
+            sourceLayers: [`__text_${layer.id}`],
+          };
+          // `offset` (profile/engrave) and `frameShape` (pocket) live on
+          // different op variants and never co-occur, so branch on kind to
+          // keep the patch assignable to a single `OpEntry` variant.
+          const patch: OpPatch =
+            desc.kind === 'pocket'
+              ? {
+                  ...base,
+                  sourceCombine: desc.sourceCombine,
+                  frameShape: desc.frameShape,
+                  framePaddingMm: desc.framePaddingMm,
+                }
+              : desc.kind === 'vcarve'
+                ? { ...base, sourceCombine: desc.sourceCombine }
+                : { ...base, offset: desc.offset };
+          project.updateOperation(op.id, patch);
+        }
       }
       project.history.commitTransaction();
       txOpen = false;

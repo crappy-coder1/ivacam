@@ -181,8 +181,6 @@ export type MsgKey =
   | "dialog.text.style"
   | "dialog.text.style.carve_inside"
   | "dialog.text.style.carve_inside.help"
-  | "dialog.text.style.carve_outside"
-  | "dialog.text.style.carve_outside.help"
   | "dialog.text.style.engraving"
   | "dialog.text.style.engraving.help"
   | "dialog.text.style.outline_inside"
@@ -1833,8 +1831,6 @@ export const MSG_KEYS: readonly MsgKey[] = [
   "dialog.text.style",
   "dialog.text.style.carve_inside",
   "dialog.text.style.carve_inside.help",
-  "dialog.text.style.carve_outside",
-  "dialog.text.style.carve_outside.help",
   "dialog.text.style.engraving",
   "dialog.text.style.engraving.help",
   "dialog.text.style.outline_inside",

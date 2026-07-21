@@ -407,8 +407,6 @@
   "dialog.text.style.engraving.help": "Single-line engrave along the centerline of each glyph. Best with a single-line / Hershey font.",
   "dialog.text.style.carve_inside": "Carve Inside",
   "dialog.text.style.carve_inside.help": "V-Carve the closed letter regions — variable-depth medial-axis carving.",
-  "dialog.text.style.carve_outside": "Carve Outside",
-  "dialog.text.style.carve_outside.help": "V-Carve the area between a frame and the text outlines.",
   "dialog.text.style.pocket_inside": "Pocket Inside",
   "dialog.text.style.pocket_inside.help": "Clear the closed letter regions with an endmill.",
   "dialog.text.style.pocket_outside": "Pocket Outside",

@@ -407,8 +407,6 @@
   "dialog.text.style.engraving.help": "Einlinien-Gravur entlang der Mittellinie jedes Zeichens. Am besten mit einer Einlinien-/Hershey-Schrift.",
   "dialog.text.style.carve_inside": "V-Carve innen",
   "dialog.text.style.carve_inside.help": "V-Carve der geschlossenen Buchstabenflächen — Gravur mit variabler Tiefe entlang der Mittelachse.",
-  "dialog.text.style.carve_outside": "V-Carve außen",
-  "dialog.text.style.carve_outside.help": "V-Carve der Fläche zwischen einem Rahmen und den Textkonturen.",
   "dialog.text.style.pocket_inside": "Tasche innen",
   "dialog.text.style.pocket_inside.help": "Räumt die geschlossenen Buchstabenflächen mit einem Schaftfräser aus.",
   "dialog.text.style.pocket_outside": "Tasche außen",

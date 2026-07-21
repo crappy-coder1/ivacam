@@ -35,16 +35,6 @@ describe('describeStyleOp', () => {
     expect(d).toMatchObject({ kind: 'vcarve', sourceCombine: 'auto' });
   });
 
-  it('carve_outside → vcarve + frame, padding 3*toolD', () => {
-    const d = describeStyleOp('carve_outside', IDS_TWO, TOOL_ID, TOOL_DIAMETER, -3);
-    expect(d).toMatchObject({
-      kind: 'vcarve',
-      sourceCombine: 'difference',
-      frameShape: 'rectangle',
-      framePaddingMm: 9,
-    });
-  });
-
   it('pocket_inside → pocket auto', () => {
     const d = describeStyleOp('pocket_inside', IDS_TWO, TOOL_ID, TOOL_DIAMETER, DEPTH);
     expect(d).toMatchObject({ kind: 'pocket', sourceCombine: 'auto' });
@@ -80,7 +70,6 @@ describe('describeStyleOp', () => {
     const styles: TextStyle[] = [
       'engraving',
       'carve_inside',
-      'carve_outside',
       'pocket_inside',
       'pocket_outside',
       'outline_inside',
@@ -99,7 +88,6 @@ describe('describeStyleOp', () => {
     const styles: TextStyle[] = [
       'engraving',
       'carve_inside',
-      'carve_outside',
       'pocket_inside',
       'pocket_outside',
       'outline_inside',
@@ -140,22 +128,6 @@ describe('describeStyleOp', () => {
             "toolId": 7,
           },
           "style": "carve_inside",
-        },
-        {
-          "out": {
-            "depth": -3,
-            "framePaddingMm": 9,
-            "frameShape": "rectangle",
-            "kind": "vcarve",
-            "name": "V-Carve Text (outside)",
-            "sourceCombine": "difference",
-            "sourceObjects": [
-              1,
-              2,
-            ],
-            "toolId": 7,
-          },
-          "style": "carve_outside",
         },
         {
           "out": {
