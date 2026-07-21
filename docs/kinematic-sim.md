@@ -3,7 +3,7 @@
 **Status:** **DEFERRED** (engine), **SCHEMA ADOPTED as a future import target**
 **Date:** 2026-07-17
 **Tracker:** `ivac-58nl.5` under epic `ivac-58nl` (GrblGru comparison roadmap)
-**Related:** material-model track `ivac-58nl.6`; two-sided machining `ivac-rt1.11` / spike `ivac-rt1.11.1`
+**Related:** material-model track `ivac-58nl.6` / [`material-model.md`](./material-model.md); two-sided machining `ivac-rt1.11` / spike `ivac-rt1.11.1`
 **Tracker IDs are ivaCAM beads issues — run `bd show <id>`.**
 **Source assessment:** `~/grblgru/GRBLGRU_ASSESS_01.md` (external, untracked — see the correction restated in the last section)
 

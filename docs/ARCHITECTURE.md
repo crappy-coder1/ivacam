@@ -100,7 +100,8 @@ ivac-core/src/
   pipeline.rs       run_pipeline() entry point + integration tests
   pipeline_cache.rs per-op result cache (keyed by hashed inputs)
   project.rs        wire types: Project, Op, ToolEntry, MachineConfig
-  sim/              heightfield voxel simulation
+  sim/              destructive material sim — multi-span Z-dexel
+                    (undercuts, two-sided); see docs/material-model.md
   schema.rs         emits openapi.yaml from JsonSchema derives
 ```
 
