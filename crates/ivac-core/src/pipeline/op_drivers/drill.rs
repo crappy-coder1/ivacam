@@ -448,6 +448,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -493,6 +494,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -540,6 +542,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -582,6 +585,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -620,6 +624,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: Some(PostProcessorKind::Grbl),
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -695,6 +700,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -748,6 +754,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -794,6 +801,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -852,6 +860,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -924,6 +933,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -997,6 +1007,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -1040,6 +1051,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -1140,6 +1152,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -1243,6 +1256,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -1302,6 +1316,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -1373,6 +1388,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -1438,6 +1454,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             |_, _, _| {},
         )

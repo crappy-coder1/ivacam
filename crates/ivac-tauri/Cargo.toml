@@ -67,6 +67,10 @@ webkit2gtk = { version = "2.0", features = ["v2_38"] }
 tempfile = "3"
 
 [features]
+# .cps post runtime — default ON for the desktop-class transports
+# (custom-protocol stays out of default per the note below).
+default = ["cps"]
+cps = ["ivac-core/cps"]
 # Engaged automatically by tauri-cli for release builds; isolates dev
 # vs. production custom-protocol behavior. Don't add it to a default
 # feature set — `cargo build` should match `cargo tauri dev`.

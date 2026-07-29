@@ -67,6 +67,12 @@ pub enum ErrorCode {
     /// the stock, severing it before the flip. See the two-sided conflict
     /// guard ([`crate::cam::two_sided`]).
     TwoSidedThrough,
+    /// `post_processor: "cps"` was requested without a `cps_post`
+    /// selection naming the script to run.
+    CpsSelectionMissing,
+    /// This build has no `.cps` runtime (compiled without the `cps`
+    /// feature), or the CPS execution path isn't available.
+    CpsUnavailable,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

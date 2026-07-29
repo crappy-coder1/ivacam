@@ -100,6 +100,11 @@ pub struct PipelineRequest {
     pub project: Project,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub post_processor: Option<PostProcessorKind>,
+    /// Which `.cps` post to run and with what property overrides.
+    /// Required when `post_processor` is [`PostProcessorKind::Cps`],
+    /// ignored otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cps_post: Option<CpsPostSelection>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
@@ -109,6 +114,10 @@ pub enum PostProcessorKind {
     Linuxcnc,
     Grbl,
     Hpgl,
+    /// Autodesk-`.cps`-compatible post (JS runtime, `cps` feature).
+    /// The variant exists in every build so the wire type is stable;
+    /// builds without the feature reject it at validation.
+    Cps,
 }
 
 impl PostProcessorKind {
@@ -124,8 +133,48 @@ impl PostProcessorKind {
             PostProcessorKind::Linuxcnc => 0,
             PostProcessorKind::Grbl => 1,
             PostProcessorKind::Hpgl => 2,
+            PostProcessorKind::Cps => 3,
         }
     }
+}
+
+/// `.cps` post selection: the script source plus sparse property
+/// overrides (only values the user changed from the post's defaults).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CpsPostSelection {
+    pub source: CpsPostSource,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub properties: BTreeMap<String, CpsParamValue>,
+}
+
+/// Where the `.cps` script text comes from.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum CpsPostSource {
+    /// A post shipped in the ivac-cps bundled library, by id.
+    Bundled { id: String },
+    /// User-supplied script travelling inline over the wire (file
+    /// pickers read the text client-side; keeps projects
+    /// self-contained).
+    Inline {
+        script: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        filename: Option<String>,
+    },
+    /// Filesystem path — CLI-only convenience. The server rejects it:
+    /// it never reads server-side paths on a client's behalf.
+    Path { path: String },
+}
+
+/// One property override. Untagged so the JSON is the bare primitive
+/// (`true`, `3.5`, `"G28"`) — the shapes `.cps` properties take.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum CpsParamValue {
+    Bool(bool),
+    Number(f64),
+    Text(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -257,6 +306,10 @@ pub enum PipelineError {
         thickness_mm: f64,
         removal_mm: f64,
     },
+    #[error("post_processor \"cps\" requires a cps_post selection")]
+    CpsSelectionMissing,
+    #[error("this build does not support .cps post-processors")]
+    CpsUnavailable,
     #[error("pipeline cancelled")]
     Cancelled,
 }
@@ -275,7 +328,23 @@ impl PipelineError {
                 Structured::misconfigured(format!("unknown post_processor: {name}"))
                     .with_code(ErrorCode::UnknownPostProcessor)
                     .with_param("name", name)
-                    .with_hint("Pick a known post: linuxcnc, grbl, or hpgl."),
+                    .with_hint("Pick a known post: linuxcnc, grbl, hpgl, or cps."),
+            ),
+            PipelineError::CpsSelectionMissing => Some(
+                Structured::misconfigured(
+                    "post_processor \"cps\" requires a cps_post selection".to_string(),
+                )
+                .with_code(ErrorCode::CpsSelectionMissing)
+                .with_hint("Pick a bundled post or supply a .cps script in cps_post."),
+            ),
+            PipelineError::CpsUnavailable => Some(
+                Structured::unsupported(
+                    "this build does not support .cps post-processors".to_string(),
+                )
+                .with_code(ErrorCode::CpsUnavailable)
+                .with_hint(
+                    "Use a build with the cps feature enabled, or pick linuxcnc, grbl, or hpgl.",
+                ),
             ),
             PipelineError::UnknownTool(op_id, tool_id) => {
                 let mut e = Structured::misconfigured(format!(
@@ -486,6 +555,8 @@ fn run_pipeline_impl<F: Fn(&str, f64, &str)>(
     if cancelled(cancel) {
         return Err(PipelineError::Cancelled);
     }
+    // Fail an unusable CPS request before any real work happens.
+    validate_cps_request(&req)?;
     let mut project = req.project;
 
     // Pre-pipeline: render every TextLayer to segments and append them
@@ -580,6 +651,11 @@ fn run_pipeline_impl<F: Fn(&str, f64, &str)>(
             ))
         }
         PostProcessorKind::Hpgl => run_with_post!(hpgl::Post::new()),
+        // Validated above (feature + selection present). Execution —
+        // recorder → run_per_op → ivac_cps::run_post — is wired by
+        // cps.7 (ivac-yhdf.8); until then a valid CPS request still
+        // cannot run.
+        PostProcessorKind::Cps => return Err(PipelineError::CpsUnavailable),
     };
     let (total_closed, total_offsets, _) = *stats_collector.borrow();
 
@@ -864,13 +940,15 @@ struct StreamPrep {
 fn prepare_stream(
     request: PipelineRequest,
 ) -> Result<(StreamPrep, Vec<PipelineWarning>), StreamGcodeError> {
-    let mut project = request.project;
     let post_kind = request.post_processor.unwrap_or_default();
-    // Reject non-streamable posts before any work — HPGL has no write-through
-    // mode (its finish() re-splits the whole buffer on `;`).
-    if post_kind == PostProcessorKind::Hpgl {
+    // Reject non-streamable posts before any work — HPGL has no
+    // write-through mode (its finish() re-splits the whole buffer on
+    // `;`), and CPS runs the whole recorded program through the JS
+    // post at the end, so it has nothing to stream either.
+    if matches!(post_kind, PostProcessorKind::Hpgl | PostProcessorKind::Cps) {
         return Err(StreamGcodeError::Unsupported(post_kind));
     }
+    let mut project = request.project;
 
     if !project.text_layers.is_empty() {
         for layer in &project.text_layers {
@@ -954,8 +1032,27 @@ fn run_stream_emit(
         PostProcessorKind::Grbl => {
             stream_with_post!(grbl::Post::streaming_with_cap(writer, tee_cap));
         }
-        // Rejected in prepare_stream; the arm keeps the match total.
-        PostProcessorKind::Hpgl => return Err(StreamGcodeError::Unsupported(prep.post_kind)),
+        // Rejected in prepare_stream; the arms keep the match total.
+        PostProcessorKind::Hpgl | PostProcessorKind::Cps => {
+            return Err(StreamGcodeError::Unsupported(prep.post_kind))
+        }
+    }
+    Ok(())
+}
+
+/// CPS request preconditions, shared by the buffered and streaming
+/// entries. A build without the `cps` feature rejects the kind
+/// outright; a cps-enabled build requires a [`CpsPostSelection`] (the
+/// dispatch arm consumes it).
+fn validate_cps_request(req: &PipelineRequest) -> Result<(), PipelineError> {
+    if req.post_processor.unwrap_or_default() != PostProcessorKind::Cps {
+        return Ok(());
+    }
+    if cfg!(not(feature = "cps")) {
+        return Err(PipelineError::CpsUnavailable);
+    }
+    if req.cps_post.is_none() {
+        return Err(PipelineError::CpsSelectionMissing);
     }
     Ok(())
 }
@@ -2657,6 +2754,9 @@ pub(crate) fn register_schemas(map: &mut crate::schema::SchemaMap) {
     crate::schema::insert::<PipelineStats>(map, "GenerateStats");
     crate::schema::insert::<RegionPreview>(map, "RegionPreview");
     crate::schema::insert::<PipelineWarning>(map, "PipelineWarning");
+    crate::schema::insert::<CpsPostSelection>(map, "CpsPostSelection");
+    crate::schema::insert::<CpsPostSource>(map, "CpsPostSource");
+    crate::schema::insert::<CpsParamValue>(map, "CpsParamValue");
 }
 
 #[cfg(test)]

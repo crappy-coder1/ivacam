@@ -454,6 +454,7 @@ mod tests {
             PipelineRequest {
                 project: project_with(vec![op], vec![tool]),
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -490,6 +491,7 @@ mod tests {
             PipelineRequest {
                 project: project_with(vec![op], vec![tool]),
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             |_, _, _| {},
         )

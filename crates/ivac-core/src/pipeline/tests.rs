@@ -90,6 +90,7 @@ fn pipeline_relief_mill_emits_varying_z_ballnose_surface() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -139,6 +140,7 @@ fn pipeline_relief_mill_emits_varying_z_ballnose_surface() {
         PipelineRequest {
             project: project2,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -225,6 +227,7 @@ fn pipeline_relief_mill_heightgrid_cuts_real_z_without_depth_range() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -323,6 +326,7 @@ fn pipeline_waterline_rough_emits_level_chains_over_stl_basin() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -423,6 +427,7 @@ fn pipeline_waterline_rough_rejects_grayscale_source() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -493,6 +498,7 @@ fn pipeline_renders_text_layers_and_routes_via_synthetic_layer() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -514,6 +520,7 @@ fn run_pipeline_emits_a_recognizable_program() {
                 vec![endmill(1, 3.0)],
             ),
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -543,6 +550,7 @@ fn run_pipeline_picks_grbl_when_requested() {
                 vec![endmill(1, 3.0)],
             ),
             post_processor: Some(PostProcessorKind::Grbl),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -575,6 +583,7 @@ fn run_pipeline_hpgl_emits_pen_up_down_program() {
                 vec![endmill(1, 3.0)],
             ),
             post_processor: Some(PostProcessorKind::Hpgl),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -604,6 +613,7 @@ fn two_op_project_emits_two_distinct_op_blocks() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -624,6 +634,7 @@ fn progress_callback_fires_each_phase() {
                 vec![endmill(1, 3.0)],
             ),
             post_processor: None,
+            cps_post: None,
         },
         |phase, _f, _m| phases.borrow_mut().push(phase.to_string()),
     )
@@ -672,6 +683,7 @@ fn post_profile_overrides_program_start_and_end() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -743,6 +755,7 @@ fn post_profile_axes_config_drives_axis_emission() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -823,6 +836,7 @@ fn post_profile_disabled_axis_drops_the_word() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -872,6 +886,7 @@ fn post_profile_without_axes_keeps_legacy_output() {
         PipelineRequest {
             project: project(machine_with),
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -880,6 +895,7 @@ fn post_profile_without_axes_keeps_legacy_output() {
         PipelineRequest {
             project: project(machine_without),
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -968,6 +984,7 @@ fn plot_mode_emits_only_two_z_values() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -1065,6 +1082,7 @@ fn laser_op_emits_pierce_dwell_before_cut() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -1103,6 +1121,7 @@ fn non_laser_tool_ignores_pierce_field() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -1181,6 +1200,7 @@ fn raster_engrave_emits_power_modulated_scanlines() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -1257,6 +1277,7 @@ fn raster_scan_direction_sets_scanline_count() {
             PipelineRequest {
                 project,
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -1361,6 +1382,7 @@ fn raster_streaming_alongx_reproduces_whole_grid_powers() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -1508,6 +1530,7 @@ fn raster_streaming_alongy_reproduces_whole_grid_powers() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -1593,6 +1616,7 @@ fn first_tool_z_shift_emits_g92_after_program_begin() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -1623,6 +1647,7 @@ fn no_z_shift_emits_no_g92() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -1658,6 +1683,7 @@ fn comma_decimal_separator_emits_commas_in_numbers() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -1705,6 +1731,7 @@ fn line_numbering_prefixes_every_line() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -1748,6 +1775,7 @@ fn no_line_numbering_by_default() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -1801,6 +1829,7 @@ fn chamfer_op_emits_constant_z_pass_at_computed_depth() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -1882,6 +1911,7 @@ fn chamfer_after_deep_profile_keeps_own_depth() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -1967,6 +1997,7 @@ fn chamfer_finish_pass_emits_second_pass_at_finish_feed() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -2010,6 +2041,7 @@ fn chamfer_with_non_vbit_warns() {
         PipelineRequest {
             project,
             post_processor: None,
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -2058,6 +2090,7 @@ fn chamfer_deep_chamfer_uses_multi_pass_stepdown() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -2126,6 +2159,7 @@ fn chamfer_step_larger_than_depth_clamps_to_chamfer_z() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -2194,6 +2228,7 @@ fn chamfer_oversize_width_clamped_to_tool_reach() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -2318,6 +2353,7 @@ fn generate_streaming_emits_op_events_in_order() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         &cancel,
         &mut |e| events.push(e),
@@ -2370,6 +2406,7 @@ fn generate_streaming_done_event_carries_aggregated_stats() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         &cancel,
         &mut |e| last = Some(e),
@@ -2444,6 +2481,7 @@ fn generate_streaming_cancellation() {
     let request = PipelineRequest {
         project,
         post_processor: Some(PostProcessorKind::Linuxcnc),
+        cps_post: None,
     };
     cancel_clone.cancel();
     let start = Instant::now();
@@ -2481,6 +2519,7 @@ fn collect_cached_flags(project: Project) -> Vec<(u32, bool)> {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         &cancel,
         &mut |e| {
@@ -2624,6 +2663,7 @@ fn cache_hit_produces_identical_response() {
     let req = || PipelineRequest {
         project: project.clone(),
         post_processor: Some(PostProcessorKind::Linuxcnc),
+        cps_post: None,
     };
     let r1 = run_pipeline(req(), |_, _, _| {}).expect("first run");
     let r2 = run_pipeline(req(), |_, _, _| {}).expect("cached run");
@@ -2670,6 +2710,7 @@ fn missing_tool_returns_structured_error() {
         PipelineRequest {
             project: project.clone(),
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -2700,6 +2741,7 @@ fn unsupported_op_kind_returns_structured_error() {
         PipelineRequest {
             project: project.clone(),
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -2786,6 +2828,7 @@ fn pipeline_emits_m0_for_pause_op() {
         crate::pipeline::PipelineRequest {
             project,
             post_processor: None,
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -2858,6 +2901,7 @@ fn pause_op_skips_tool_validation() {
         crate::pipeline::PipelineRequest {
             project,
             post_processor: None,
+            cps_post: None,
         },
         |_, _, _| {},
     );
@@ -2976,6 +3020,7 @@ fn pipeline_emits_g28_for_homing_op() {
         crate::pipeline::PipelineRequest {
             project,
             post_processor: None,
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -3059,6 +3104,7 @@ fn pipeline_homing_without_retract_skips_safe_z_move() {
         crate::pipeline::PipelineRequest {
             project,
             post_processor: None,
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -3151,6 +3197,7 @@ fn pipeline_emits_g38_2_for_probe_op() {
         crate::pipeline::PipelineRequest {
             project,
             post_processor: None,
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -3231,6 +3278,7 @@ fn pipeline_emits_comment_only_for_cycle_marker_op() {
         crate::pipeline::PipelineRequest {
             project,
             post_processor: None,
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -3372,6 +3420,7 @@ fn pipeline_emits_gcode_include_with_variable_expansion() {
         crate::pipeline::PipelineRequest {
             project,
             post_processor: None,
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -3497,6 +3546,7 @@ fn gcode_include_unknown_variable_warns_and_passes_through() {
         crate::pipeline::PipelineRequest {
             project,
             post_processor: None,
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -3584,6 +3634,7 @@ fn gcode_include_empty_content_warns() {
         crate::pipeline::PipelineRequest {
             project,
             post_processor: None,
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -3666,6 +3717,7 @@ fn gcode_include_mixed_body_emits_counted_skipped_summary() {
         crate::pipeline::PipelineRequest {
             project,
             post_processor: None,
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -3776,6 +3828,7 @@ fn gcode_include_multi_axis_line_classified_unsimulated() {
         crate::pipeline::PipelineRequest {
             project,
             post_processor: None,
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -3860,6 +3913,7 @@ fn gcode_include_comment_only_body_emits_no_classification_warning() {
         crate::pipeline::PipelineRequest {
             project,
             post_processor: None,
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -3943,6 +3997,7 @@ fn gcode_include_verbose_mode_fans_out_per_line_warnings() {
         crate::pipeline::PipelineRequest {
             project,
             post_processor: None,
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -4054,6 +4109,7 @@ fn pipeline_emits_group_boundary_markers() {
         crate::pipeline::PipelineRequest {
             project,
             post_processor: None,
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -4103,6 +4159,7 @@ fn pipeline_emits_no_group_markers_when_field_unset() {
         crate::pipeline::PipelineRequest {
             project,
             post_processor: None,
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -4150,6 +4207,7 @@ fn pipeline_treats_empty_group_string_as_no_group() {
         crate::pipeline::PipelineRequest {
             project,
             post_processor: None,
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -4299,6 +4357,7 @@ fn project_with_pause_between_cuts_decodes_and_runs() {
         crate::pipeline::PipelineRequest {
             project,
             post_processor: None,
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -4370,6 +4429,7 @@ fn multi_op_different_tools_emit_m6_at_each_boundary() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -4420,6 +4480,7 @@ fn multi_op_same_tool_emits_at_most_one_m6() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -4460,6 +4521,7 @@ fn no_toolchange_machine_omits_m6() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -4530,6 +4592,7 @@ fn rectangle_tab_drop_uses_plunge_feedrate() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -4625,6 +4688,7 @@ fn laser_pierce_dwells_at_cut_z() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -4685,6 +4749,7 @@ fn multi_op_toolchange_envelope_has_m5_before_m6_and_m3_after() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -4753,6 +4818,7 @@ fn dual_tool_internal_change_uses_full_envelope() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -4840,6 +4906,7 @@ fn drill_stufenfase_change_uses_full_envelope() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -4896,6 +4963,7 @@ fn coolant_off_before_spindle_off_in_inter_op_toolchange() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -4949,6 +5017,7 @@ fn first_tool_envelope_omits_leading_coolant_off() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -4991,6 +5060,7 @@ fn same_tool_consecutive_ops_skip_envelope_entirely() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -5036,6 +5106,7 @@ fn non_toolchange_machine_pauses_for_manual_swap() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -5091,6 +5162,7 @@ fn manual_multitool_emits_g53_move_to_toolchange_position() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -5142,6 +5214,7 @@ fn unset_toolchange_position_emits_no_mid_program_g53() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -5188,6 +5261,7 @@ fn atc_multitool_emits_g53_move_before_m6() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -5232,6 +5306,7 @@ fn multi_tool_manual_machine_warns_with_change_count() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -5296,6 +5371,7 @@ fn single_tool_and_atc_machines_omit_manual_toolchange_warning() {
             PipelineRequest {
                 project,
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -5351,6 +5427,7 @@ fn grbl_atc_without_template_warns() {
             PipelineRequest {
                 project,
                 post_processor: Some(post),
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -5427,6 +5504,7 @@ fn grbl_fixed_sensor_without_template_warns() {
             PipelineRequest {
                 project,
                 post_processor: Some(post),
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -5492,6 +5570,7 @@ fn tool_length_offsets_emit_g43_and_skip_zshift() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -5538,6 +5617,7 @@ fn tool_length_offsets_off_emits_no_g43() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -5587,6 +5667,7 @@ fn two_tool_manual_gcode(
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -5790,6 +5871,7 @@ fn inch_units_emit_scaled_numbers() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -5872,6 +5954,7 @@ fn toolchange_envelope_routes_ccw_tool_through_m4() {
         crate::pipeline::PipelineRequest {
             project,
             post_processor: Some(crate::pipeline::PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -5928,6 +6011,7 @@ fn toolchange_envelope_keeps_m3_for_default_cw_tool() {
         crate::pipeline::PipelineRequest {
             project,
             post_processor: Some(crate::pipeline::PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -6005,6 +6089,7 @@ fn prev_tool_id_stays_unchanged_when_dual_tool_skips_finish() {
         crate::pipeline::PipelineRequest {
             project,
             post_processor: Some(crate::pipeline::PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -6136,6 +6221,7 @@ fn prev_tool_id_unchanged_after_drill_skips_chamfer_swap() {
         crate::pipeline::PipelineRequest {
             project,
             post_processor: Some(crate::pipeline::PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -6215,6 +6301,7 @@ fn pause_op_does_not_lock_spindle_direction() {
         crate::pipeline::PipelineRequest {
             project,
             post_processor: Some(crate::pipeline::PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -6307,6 +6394,7 @@ fn laser_mode_toolchange_envelope_emits_no_spindle_commands() {
         crate::pipeline::PipelineRequest {
             project,
             post_processor: Some(crate::pipeline::PostProcessorKind::Grbl),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -6416,6 +6504,7 @@ fn run_pipeline_flags_cuts_outside_work_area() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -6449,6 +6538,7 @@ fn run_pipeline_no_work_area_warning_when_in_bounds() {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -6536,6 +6626,7 @@ fn tslot_op_emits_single_floor_z_pass_not_a_depth_cascade() {
         PipelineRequest {
             project: tslot_project(tslot_tool(1, 12.0, 6.0), -3.0),
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -6584,6 +6675,7 @@ fn tslot_op_emits_stem_slot_prerequisite_warning() {
         PipelineRequest {
             project: tslot_project(tslot_tool(1, 12.0, 6.0), -7.0),
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -6608,6 +6700,7 @@ fn tslot_op_with_plain_endmill_warns_kind_mismatch() {
         PipelineRequest {
             project: tslot_project(endmill(1, 6.0), -5.0),
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -6639,6 +6732,7 @@ fn per_op_warnings_resurface_on_cache_hit() {
     let mk = || PipelineRequest {
         project: tslot_project(endmill(1, 6.0), -2.71),
         post_processor: Some(PostProcessorKind::Linuxcnc),
+        cps_post: None,
     };
     let kinds = |r: &crate::pipeline::PipelineResponse| -> Vec<String> {
         r.warnings.iter().map(|w| w.kind.clone()).collect()
@@ -6740,6 +6834,7 @@ fn dovetail_op_emits_single_floor_z_pass_not_a_depth_cascade() {
         PipelineRequest {
             project: dovetail_project(dovetail_tool(1, 12.0), -3.0),
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -6787,6 +6882,7 @@ fn dovetail_op_emits_rough_channel_prerequisite_warning() {
         PipelineRequest {
             project: dovetail_project(dovetail_tool(1, 12.0), -7.0),
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -6812,6 +6908,7 @@ fn dovetail_op_with_plain_endmill_warns_kind_mismatch() {
         PipelineRequest {
             project: dovetail_project(endmill(1, 6.0), -5.0),
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -6890,6 +6987,7 @@ fn ldu2_tessellated_circle_profile_collapses_to_arcs() {
         PipelineRequest {
             project: tessellated_circle_profile_project(true),
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )
@@ -6927,6 +7025,7 @@ fn ldu2_source_fit_is_gated_on_arcs_flag() {
             PipelineRequest {
                 project: tessellated_circle_profile_project(arcs),
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -7048,6 +7147,7 @@ fn group_ops_by_tool_collapses_redundant_toolchange() {
             PipelineRequest {
                 project,
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -7109,6 +7209,7 @@ fn optional_stop_swaps_pause_m0_for_m1() {
             PipelineRequest {
                 project,
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -7162,6 +7263,7 @@ fn optional_stop_swaps_manual_toolchange_m0_for_m1() {
             PipelineRequest {
                 project,
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -7226,6 +7328,7 @@ mod streaming_gcode {
             PipelineRequest {
                 project: a_project(),
                 post_processor: Some(kind),
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -7239,6 +7342,7 @@ mod streaming_gcode {
             PipelineRequest {
                 project: a_project(),
                 post_processor: Some(kind),
+                cps_post: None,
             },
             Box::new(SharedBuf(buf.clone())),
         )
@@ -7282,6 +7386,7 @@ mod streaming_gcode {
             PipelineRequest {
                 project: a_project(),
                 post_processor: Some(kind),
+                cps_post: None,
             },
             Box::new(SharedBuf(buf.clone())),
             cap,
@@ -7337,6 +7442,7 @@ mod streaming_gcode {
             PipelineRequest {
                 project: a_project(),
                 post_processor: Some(PostProcessorKind::Hpgl),
+                cps_post: None,
             },
             Box::new(SharedBuf(buf.clone())),
         )
@@ -7365,6 +7471,7 @@ mod streaming_gcode {
             PipelineRequest {
                 project: a_project(),
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             Box::new(AlwaysFails),
         )
@@ -7384,6 +7491,7 @@ mod streaming_gcode {
             PipelineRequest {
                 project: a_project(),
                 post_processor: Some(kind),
+                cps_post: None,
             },
             Box::new(SharedBuf(buf.clone())),
         )
@@ -7413,6 +7521,7 @@ mod streaming_gcode {
             PipelineRequest {
                 project: a_project(),
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -7485,6 +7594,7 @@ mod two_sided_guard {
             PipelineRequest {
                 project,
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -7583,5 +7693,109 @@ mod two_sided_guard {
             run(project).is_ok(),
             "a tabbed front through-cut holds the part — must not refuse"
         );
+    }
+}
+
+/// CPS wire-seam validation (cps.1, ivac-yhdf.2). Execution is wired by
+/// cps.7 — these tests pin the request-validation contract that must
+/// hold in every build.
+mod cps_seam {
+    use super::*;
+
+    fn cps_request(cps_post: Option<CpsPostSelection>) -> PipelineRequest {
+        PipelineRequest {
+            project: project_with(vec![], vec![]),
+            post_processor: Some(PostProcessorKind::Cps),
+            cps_post,
+        }
+    }
+
+    fn inline_selection() -> CpsPostSelection {
+        CpsPostSelection {
+            source: CpsPostSource::Inline {
+                script: "function onOpen() {}".into(),
+                filename: Some("mini.cps".into()),
+            },
+            properties: std::collections::BTreeMap::new(),
+        }
+    }
+
+    /// `post_processor: "cps"` without a `cps_post` → the structured
+    /// selection-missing error (never a panic, never silent default).
+    #[cfg(feature = "cps")]
+    #[test]
+    fn cps_without_selection_is_a_structured_error() {
+        let err = run_pipeline(cps_request(None), |_, _, _| {}).expect_err("must reject");
+        assert!(matches!(err, PipelineError::CpsSelectionMissing));
+        let structured = err.to_structured(None).expect("structured");
+        assert_eq!(
+            structured.code,
+            Some(crate::errors::ErrorCode::CpsSelectionMissing)
+        );
+    }
+
+    /// A build compiled WITHOUT the cps feature rejects the kind
+    /// outright, selection or not.
+    #[cfg(not(feature = "cps"))]
+    #[test]
+    fn cps_kind_rejected_without_feature() {
+        let err = run_pipeline(cps_request(Some(inline_selection())), |_, _, _| {})
+            .expect_err("must reject");
+        assert!(matches!(err, PipelineError::CpsUnavailable));
+        let structured = err.to_structured(None).expect("structured");
+        assert_eq!(
+            structured.code,
+            Some(crate::errors::ErrorCode::CpsUnavailable)
+        );
+    }
+
+    /// Interim behavior until the cps.7 dispatch arm lands: a VALID
+    /// selection passes validation and then reports the runtime as
+    /// unavailable. cps.7 replaces this expectation with real output.
+    #[cfg(feature = "cps")]
+    #[test]
+    fn cps_with_selection_reaches_the_unwired_arm() {
+        let err = run_pipeline(cps_request(Some(inline_selection())), |_, _, _| {})
+            .expect_err("arm not wired yet");
+        assert!(matches!(err, PipelineError::CpsUnavailable));
+    }
+
+    /// Streaming has no CPS mode (the JS post runs over the whole
+    /// recorded program at the end) — rejected up front like HPGL.
+    #[test]
+    fn streaming_rejects_cps() {
+        match prepare_stream(cps_request(Some(inline_selection()))) {
+            Err(StreamGcodeError::Unsupported(PostProcessorKind::Cps)) => {}
+            Err(other) => panic!("wrong rejection: {other}"),
+            Ok(_) => panic!("streaming must reject cps"),
+        }
+    }
+
+    /// Wire names + cache tags are frozen: serde strings feed the wire
+    /// format and the tag feeds op-cache keys.
+    #[test]
+    fn wire_names_and_cache_tags_are_stable() {
+        assert_eq!(
+            serde_json::to_value(PostProcessorKind::Cps).unwrap(),
+            serde_json::json!("cps")
+        );
+        assert_eq!(PostProcessorKind::Linuxcnc.cache_tag(), 0);
+        assert_eq!(PostProcessorKind::Grbl.cache_tag(), 1);
+        assert_eq!(PostProcessorKind::Hpgl.cache_tag(), 2);
+        assert_eq!(PostProcessorKind::Cps.cache_tag(), 3);
+
+        let sel = serde_json::to_value(inline_selection()).unwrap();
+        assert_eq!(sel["source"]["kind"], "inline");
+        assert_eq!(sel["source"]["filename"], "mini.cps");
+        let bundled = serde_json::to_value(CpsPostSource::Bundled { id: "grbl".into() }).unwrap();
+        assert_eq!(bundled["kind"], "bundled");
+        // Property overrides are bare primitives on the wire.
+        let props: std::collections::BTreeMap<String, CpsParamValue> = serde_json::from_value(
+            serde_json::json!({"useRadius": true, "sequenceNumberStart": 10.0, "safe": "G28"}),
+        )
+        .unwrap();
+        assert_eq!(props["useRadius"], CpsParamValue::Bool(true));
+        assert_eq!(props["sequenceNumberStart"], CpsParamValue::Number(10.0));
+        assert_eq!(props["safe"], CpsParamValue::Text("G28".into()));
     }
 }

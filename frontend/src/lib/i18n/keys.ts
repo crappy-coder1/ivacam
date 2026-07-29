@@ -205,6 +205,8 @@ export type MsgKey =
   | "dialog.unsaved.dont_save"
   | "dialog.unsaved.save_continue"
   | "dialog.unsaved.title"
+  | "error.code.cps_selection_missing"
+  | "error.code.cps_unavailable"
   | "error.code.internal_panic"
   | "error.code.missing_tool"
   | "error.code.text_render_failed"
@@ -216,6 +218,8 @@ export type MsgKey =
   | "error.fix.change_profile_offset"
   | "error.fix.disable_op"
   | "error.fix.lower_sim_resolution"
+  | "error.hint.cps_selection_missing"
+  | "error.hint.cps_unavailable"
   | "error.hint.internal_panic"
   | "error.hint.missing_tool"
   | "error.hint.text_render_failed"
@@ -1855,6 +1859,8 @@ export const MSG_KEYS: readonly MsgKey[] = [
   "dialog.unsaved.dont_save",
   "dialog.unsaved.save_continue",
   "dialog.unsaved.title",
+  "error.code.cps_selection_missing",
+  "error.code.cps_unavailable",
   "error.code.internal_panic",
   "error.code.missing_tool",
   "error.code.text_render_failed",
@@ -1866,6 +1872,8 @@ export const MSG_KEYS: readonly MsgKey[] = [
   "error.fix.change_profile_offset",
   "error.fix.disable_op",
   "error.fix.lower_sim_resolution",
+  "error.hint.cps_selection_missing",
+  "error.hint.cps_unavailable",
   "error.hint.internal_panic",
   "error.hint.missing_tool",
   "error.hint.text_render_failed",

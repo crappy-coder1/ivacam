@@ -8,3 +8,5 @@
 //! gets NC text + diagnostics back in one envelope.
 
 pub mod engine;
+pub mod ir;
+pub mod meta;

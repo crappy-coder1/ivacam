@@ -16,6 +16,12 @@ path = "src/main.rs"
 [lints]
 workspace = true
 
+[features]
+# .cps post runtime — default ON for the desktop-class transports;
+# only the size-sensitive wasm build leaves it opt-in.
+default = ["cps"]
+cps = ["ivac-core/cps"]
+
 [dependencies]
 ivac-core = { workspace = true }
 anyhow = { workspace = true }

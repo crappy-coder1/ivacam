@@ -53,6 +53,9 @@ struct VersionResponse<'a> {
     version: &'a str,
     transport: &'a str,
     git_sha: Option<&'a str>,
+    /// Feature probe, same vocabulary as the server's `/version`
+    /// (`post-<dialect>`, …) so the frontend has ONE uniform check.
+    capabilities: Vec<&'a str>,
 }
 
 #[wasm_bindgen]
@@ -62,10 +65,21 @@ pub fn healthz() -> Result<JsValue, JsValue> {
 
 #[wasm_bindgen]
 pub fn version() -> Result<JsValue, JsValue> {
+    #[allow(unused_mut)]
+    let mut capabilities = vec![
+        "import-dxf",
+        "generate-gcode",
+        "post-linuxcnc",
+        "post-grbl",
+        "post-hpgl",
+    ];
+    #[cfg(feature = "cps")]
+    capabilities.push("post-cps");
     let v = VersionResponse {
         version: env!("CARGO_PKG_VERSION"),
         transport: "wasm",
         git_sha: option_env!("GIT_SHA"),
+        capabilities,
     };
     serde_wasm_bindgen::to_value(&v).map_err(into_js_error)
 }

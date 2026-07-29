@@ -15,6 +15,13 @@ crate-type = ["cdylib", "rlib"]
 [lints]
 workspace = true
 
+[features]
+# .cps post runtime. Deliberately NOT in default: it adds ~1 MiB
+# gzipped of boa engine to the bundle (cps.0 probe). cps.10 measures
+# the real delta via wasm-size-guard.sh and decides whether to ship
+# it on by default.
+cps = ["ivac-core/cps"]
+
 [dependencies]
 ivac-core = { workspace = true }
 serde = { workspace = true }

@@ -12,7 +12,14 @@ description = "ivaCAM core: DXF/SVG import, CAM math, gcode generation"
 [lints]
 workspace = true
 
+[features]
+# Autodesk-.cps-compatible post runtime (boa engine via ivac-cps).
+# Off by default at the core so size-sensitive builds (wasm) opt in
+# explicitly; the cli/server/tauri transports default it ON.
+cps = ["dep:ivac-cps"]
+
 [dependencies]
+ivac-cps = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # dya2: base64 codec for the `font_bytes` wire field — compact string form

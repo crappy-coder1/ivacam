@@ -159,6 +159,7 @@ fn chamfer_after_pocket_does_not_dip_below_pocket_floor() {
         PipelineRequest {
             project: project.clone(),
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )

@@ -195,14 +195,20 @@ async fn version() -> Json<VersionResponse> {
     Json(VersionResponse {
         version: env!("CARGO_PKG_VERSION"),
         transport: "rust-server",
-        capabilities: vec![
-            "import-dxf",
-            "generate-gcode",
-            "stream-gcode",
-            "post-linuxcnc",
-            "post-grbl",
-            "post-hpgl",
-        ],
+        capabilities: {
+            #[allow(unused_mut)]
+            let mut caps = vec![
+                "import-dxf",
+                "generate-gcode",
+                "stream-gcode",
+                "post-linuxcnc",
+                "post-grbl",
+                "post-hpgl",
+            ];
+            #[cfg(feature = "cps")]
+            caps.push("post-cps");
+            caps
+        },
     })
 }
 
@@ -864,6 +870,7 @@ mod tests {
         PipelineRequest {
             project: ivac_core::project::Project::default(),
             post_processor: Some(post),
+            cps_post: None,
         }
     }
 

@@ -432,6 +432,68 @@ components:
       - mist
       - flood
       type: string
+    CpsParamValue:
+      anyOf:
+      - type: boolean
+      - format: double
+        type: number
+      - type: string
+      description: One property override. Untagged so the JSON is the bare primitive (`true`, `3.5`, `"G28"`) — the shapes `.cps` properties take.
+    CpsPostSelection:
+      description: '`.cps` post selection: the script source plus sparse property overrides (only values the user changed from the post''s defaults).'
+      properties:
+        properties:
+          additionalProperties:
+            $ref: '#/components/schemas/CpsParamValue'
+          type: object
+        source:
+          $ref: '#/components/schemas/CpsPostSource'
+      required:
+      - source
+      type: object
+    CpsPostSource:
+      description: Where the `.cps` script text comes from.
+      oneOf:
+      - description: A post shipped in the ivac-cps bundled library, by id.
+        properties:
+          id:
+            type: string
+          kind:
+            enum:
+            - bundled
+            type: string
+        required:
+        - id
+        - kind
+        type: object
+      - description: User-supplied script travelling inline over the wire (file pickers read the text client-side; keeps projects self-contained).
+        properties:
+          filename:
+            type:
+            - string
+            - 'null'
+          kind:
+            enum:
+            - inline
+            type: string
+          script:
+            type: string
+        required:
+        - kind
+        - script
+        type: object
+      - description: 'Filesystem path — CLI-only convenience. The server rejects it: it never reads server-side paths on a client''s behalf.'
+        properties:
+          kind:
+            enum:
+            - path
+            type: string
+          path:
+            type: string
+        required:
+        - kind
+        - path
+        type: object
     CutDirection:
       description: |-
         Climb vs conventional milling. Determines the path winding the generator emits — for a standard right-hand spindle:
@@ -555,6 +617,14 @@ components:
       - description: A two-sided (flip-stock) job has a front op that cuts clean through the stock, severing it before the flip. See the two-sided conflict guard ([`crate::cam::two_sided`]).
         enum:
         - two_sided_through
+        type: string
+      - description: '`post_processor: "cps"` was requested without a `cps_post` selection naming the script to run.'
+        enum:
+        - cps_selection_missing
+        type: string
+      - description: This build has no `.cps` runtime (compiled without the `cps` feature), or the CPS execution path isn't available.
+        enum:
+        - cps_unavailable
         type: string
     ErrorKind:
       enum:
@@ -730,6 +800,11 @@ components:
       type: object
     GenerateRequest:
       properties:
+        cps_post:
+          anyOf:
+          - $ref: '#/components/schemas/CpsPostSelection'
+          - type: 'null'
+          description: Which `.cps` post to run and with what property overrides. Required when `post_processor` is [`PostProcessorKind::Cps`], ignored otherwise.
         post_processor:
           anyOf:
           - $ref: '#/components/schemas/PostProcessorKind'
@@ -2569,11 +2644,16 @@ components:
         - seek_mm
         type: object
     PostProcessorKind:
-      enum:
-      - linuxcnc
-      - grbl
-      - hpgl
-      type: string
+      oneOf:
+      - enum:
+        - linuxcnc
+        - grbl
+        - hpgl
+        type: string
+      - description: Autodesk-`.cps`-compatible post (JS runtime, `cps` feature). The variant exists in every build so the wire type is stable; builds without the feature reject it at validation.
+        enum:
+        - cps
+        type: string
     PostProfile:
       description: A named bundle of override templates the user attaches to a machine config. Any field left at `None` keeps the built-in emitter's default behavior. The active variant of `PostProcessorKind` is unaffected — ivac's linuxcnc / grbl / hpgl emitters continue to drive line-level formatting (delta encoding, arc fitting, drill cycles). The profile only swaps the PROGRAM-LEVEL strings.
       properties:
@@ -4316,6 +4396,14 @@ components:
       - description: A two-sided (flip-stock) job has a front op that cuts clean through the stock, severing it before the flip. See the two-sided conflict guard ([`crate::cam::two_sided`]).
         enum:
         - two_sided_through
+        type: string
+      - description: '`post_processor: "cps"` was requested without a `cps_post` selection naming the script to run.'
+        enum:
+        - cps_selection_missing
+        type: string
+      - description: This build has no `.cps` runtime (compiled without the `cps` feature), or the CPS execution path isn't available.
+        enum:
+        - cps_unavailable
         type: string
     WiacErrorKind:
       enum:

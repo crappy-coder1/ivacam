@@ -189,6 +189,7 @@ pub fn run(project: Project, post: PostProcessorKind) -> PipelineResponse {
         PipelineRequest {
             project,
             post_processor: Some(post),
+            cps_post: None,
         },
         |_, _, _| {},
     )

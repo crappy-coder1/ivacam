@@ -938,6 +938,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -1021,6 +1022,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -1084,6 +1086,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -1165,6 +1168,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -1241,6 +1245,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -1310,6 +1315,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -1436,6 +1442,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -1494,6 +1501,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -1532,6 +1540,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -1566,6 +1575,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -1608,6 +1618,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -1683,6 +1694,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -1731,6 +1743,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -1780,6 +1793,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -1836,6 +1850,7 @@ mod tests {
                     PipelineRequest {
                         project: mk(offset),
                         post_processor: None,
+                        cps_post: None,
                     },
                     |_, _, _| {},
                 )
@@ -1899,6 +1914,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -2046,6 +2062,7 @@ mod tests {
                 PipelineRequest {
                     project: mk(offset),
                     post_processor: None,
+                    cps_post: None,
                 },
                 |_, _, _| {},
             )
@@ -2097,6 +2114,7 @@ mod tests {
             PipelineRequest {
                 project: mk(ToolOffset::On),
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -2105,6 +2123,7 @@ mod tests {
             PipelineRequest {
                 project: mk(ToolOffset::Outside),
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -2113,6 +2132,7 @@ mod tests {
             PipelineRequest {
                 project: mk(ToolOffset::Inside),
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -2199,6 +2219,7 @@ mod tests {
             PipelineRequest {
                 project: baseline_project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -2207,6 +2228,7 @@ mod tests {
             PipelineRequest {
                 project: annulus_project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -2283,6 +2305,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -2361,6 +2384,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -2454,6 +2478,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -2562,6 +2587,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -2651,6 +2677,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -2763,6 +2790,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -2867,6 +2895,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -2915,6 +2944,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -2987,6 +3017,7 @@ mod tests {
                 PipelineRequest {
                     project,
                     post_processor: None,
+                    cps_post: None,
                 },
                 |_, _, _| {},
             )
@@ -3045,6 +3076,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -3123,6 +3155,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -3187,6 +3220,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -3249,6 +3283,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -3292,6 +3327,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -3341,6 +3377,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -3530,6 +3567,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -3583,6 +3621,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -3656,6 +3695,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -3737,6 +3777,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -3797,6 +3838,7 @@ mod tests {
             PipelineRequest {
                 project: cascade_project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -3806,6 +3848,7 @@ mod tests {
             PipelineRequest {
                 project: spiral_project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -3880,6 +3923,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -3975,6 +4019,7 @@ mod tests {
                     PipelineRequest {
                         project: mk(outer_only.clone(), strategy, pocket_islands),
                         post_processor: None,
+                        cps_post: None,
                     },
                     |_, _, _| {},
                 )
@@ -3983,6 +4028,7 @@ mod tests {
                     PipelineRequest {
                         project: mk(with_inners.clone(), strategy, pocket_islands),
                         post_processor: None,
+                        cps_post: None,
                     },
                     |_, _, _| {},
                 )
@@ -4074,6 +4120,7 @@ mod tests {
             PipelineRequest {
                 project: mk(PocketStrategy::Spiral),
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -4085,6 +4132,7 @@ mod tests {
                     loop_radius_factor: 0.6,
                 }),
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -4160,6 +4208,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -4216,6 +4265,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -4245,6 +4295,7 @@ mod tests {
             PipelineRequest {
                 project: project_with(vec![op_a], vec![tool_a]),
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -4253,6 +4304,7 @@ mod tests {
             PipelineRequest {
                 project: project_with(vec![op_b], vec![tool_b]),
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -4318,6 +4370,7 @@ mod tests {
             PipelineRequest {
                 project: mk(false),
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -4326,6 +4379,7 @@ mod tests {
             PipelineRequest {
                 project: mk(true),
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -4422,6 +4476,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -4514,6 +4569,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -4594,6 +4650,7 @@ mod tests {
             PipelineRequest {
                 project: mk(0.0, true),
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -4604,6 +4661,7 @@ mod tests {
             PipelineRequest {
                 project: mk(0.2, true),
                 post_processor: None,
+                cps_post: None,
             },
             |_, _, _| {},
         )

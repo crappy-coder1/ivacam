@@ -307,6 +307,30 @@ export interface components {
         };
         /** @enum {string} */
         Coolant: "off" | "mist" | "flood";
+        /** @description One property override. Untagged so the JSON is the bare primitive (`true`, `3.5`, `"G28"`) — the shapes `.cps` properties take. */
+        CpsParamValue: boolean | number | string;
+        /** @description `.cps` post selection: the script source plus sparse property overrides (only values the user changed from the post's defaults). */
+        CpsPostSelection: {
+            properties?: {
+                [key: string]: components["schemas"]["CpsParamValue"];
+            };
+            source: components["schemas"]["CpsPostSource"];
+        };
+        /** @description Where the `.cps` script text comes from. */
+        CpsPostSource: {
+            id: string;
+            /** @enum {string} */
+            kind: "bundled";
+        } | {
+            filename?: string | null;
+            /** @enum {string} */
+            kind: "inline";
+            script: string;
+        } | {
+            /** @enum {string} */
+            kind: "path";
+            path: string;
+        };
         /**
          * @description Climb vs conventional milling. Determines the path winding the generator emits — for a standard right-hand spindle:
          *
@@ -377,7 +401,7 @@ export interface components {
             error: string;
         };
         /** @description Stable identifiers for the errors the GUI surfaces, so the frontend can localize them. Add a variant here + an `error.code.<snake>` (and optional `error.hint.<snake>`) entry in `frontend/src/lib/i18n/messages/en.json`. */
-        ErrorCode: "unknown_post_processor" | "missing_tool" | "unimplemented_op_kind" | "text_render_failed" | "internal_panic" | "two_sided_through";
+        ErrorCode: "unknown_post_processor" | "missing_tool" | "unimplemented_op_kind" | "text_render_failed" | "internal_panic" | "two_sided_through" | "cps_selection_missing" | "cps_unavailable";
         /** @enum {string} */
         ErrorKind: "bad_input" | "misconfigured" | "limit" | "unsupported" | "io" | "internal";
         /** @description A user-declared physical obstacle on the stock the cutter must miss. Lives in stock-relative XY (same frame as the imported geometry) and occupies a Z range; the sim collision test gates on that range first then falls back to a per-shape XY swept-region check. */
@@ -465,6 +489,8 @@ export interface components {
             segments_to_line: number[];
         };
         GenerateRequest: {
+            /** @description Which `.cps` post to run and with what property overrides. Required when `post_processor` is [`PostProcessorKind::Cps`], ignored otherwise. */
+            cps_post?: components["schemas"]["CpsPostSelection"] | null;
             post_processor?: components["schemas"]["PostProcessorKind"] | null;
             /** @description The full project — geometry + machine + tools + operations + tabs. */
             project: components["schemas"]["Project"];
@@ -1606,8 +1632,7 @@ export interface components {
              */
             seek_mm: number;
         };
-        /** @enum {string} */
-        PostProcessorKind: "linuxcnc" | "grbl" | "hpgl";
+        PostProcessorKind: ("linuxcnc" | "grbl" | "hpgl") | "cps";
         /** @description A named bundle of override templates the user attaches to a machine config. Any field left at `None` keeps the built-in emitter's default behavior. The active variant of `PostProcessorKind` is unaffected — ivac's linuxcnc / grbl / hpgl emitters continue to drive line-level formatting (delta encoding, arc fitting, drill cycles). The profile only swaps the PROGRAM-LEVEL strings. */
         PostProfile: {
             /** @description Per-axis output format. When set, replaces the hard-coded `X{val} Y{val} Z{val}` / `I{val} J{val}` / `F{rate}` / `S{rpm}` emission with the user's axis names + printf-ish format + scale, with per-axis enable so disabled axes drop out entirely. */
@@ -2585,7 +2610,7 @@ export interface components {
             span?: components["schemas"]["SourceSpan"] | null;
         };
         /** @description Stable identifiers for the errors the GUI surfaces, so the frontend can localize them. Add a variant here + an `error.code.<snake>` (and optional `error.hint.<snake>`) entry in `frontend/src/lib/i18n/messages/en.json`. */
-        WiacErrorCode: "unknown_post_processor" | "missing_tool" | "unimplemented_op_kind" | "text_render_failed" | "internal_panic" | "two_sided_through";
+        WiacErrorCode: "unknown_post_processor" | "missing_tool" | "unimplemented_op_kind" | "text_render_failed" | "internal_panic" | "two_sided_through" | "cps_selection_missing" | "cps_unavailable";
         /** @enum {string} */
         WiacErrorKind: "bad_input" | "misconfigured" | "limit" | "unsupported" | "io" | "internal";
         WiacSourceSpan: {

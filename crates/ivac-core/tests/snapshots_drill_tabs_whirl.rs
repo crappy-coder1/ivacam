@@ -139,6 +139,7 @@ fn run_to_gcode(project: Project) -> String {
         PipelineRequest {
             project,
             post_processor: Some(PostProcessorKind::Linuxcnc),
+            cps_post: None,
         },
         |_, _, _| {},
     )

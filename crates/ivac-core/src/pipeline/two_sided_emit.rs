@@ -159,6 +159,7 @@ pub fn run_pipeline_two_sided<F: Fn(&str, f64, &str)>(
         PipelineRequest {
             project: front_project,
             post_processor: Some(post_kind),
+            cps_post: req.cps_post.clone(),
         },
         &progress,
     )?;
@@ -177,6 +178,7 @@ pub fn run_pipeline_two_sided<F: Fn(&str, f64, &str)>(
         PipelineRequest {
             project: back_project,
             post_processor: Some(post_kind),
+            cps_post: req.cps_post.clone(),
         },
         &progress,
     )?;
@@ -420,6 +422,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -444,6 +447,7 @@ mod tests {
             PipelineRequest {
                 project: project.clone(),
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             |_, _, _| {},
         )

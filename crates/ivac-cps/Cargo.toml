@@ -18,6 +18,9 @@ workspace = true
 boa_engine = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Same pin + feature as ivac-core: PostMeta/PropertyMeta cross the
+# transport boundary, so they register JSON schemas like pipeline types.
+schemars = { version = "0.8", features = ["preserve_order"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 

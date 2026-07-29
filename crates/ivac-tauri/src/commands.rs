@@ -116,6 +116,9 @@ pub struct VersionResponse {
     pub version: &'static str,
     pub transport: &'static str,
     pub git_sha: Option<&'static str>,
+    /// Feature probe, same vocabulary as the server's `/version`
+    /// (`post-<dialect>`, …) so the frontend has ONE uniform check.
+    pub capabilities: Vec<&'static str>,
 }
 
 #[tauri::command]
@@ -138,10 +141,21 @@ pub fn clear_pipeline_cache_cmd() {
 
 #[tauri::command]
 pub fn version() -> VersionResponse {
+    #[allow(unused_mut)]
+    let mut capabilities = vec![
+        "import-dxf",
+        "generate-gcode",
+        "post-linuxcnc",
+        "post-grbl",
+        "post-hpgl",
+    ];
+    #[cfg(feature = "cps")]
+    capabilities.push("post-cps");
     VersionResponse {
         version: env!("CARGO_PKG_VERSION"),
         transport: "tauri",
         git_sha: option_env!("GIT_SHA"),
+        capabilities,
     }
 }
 

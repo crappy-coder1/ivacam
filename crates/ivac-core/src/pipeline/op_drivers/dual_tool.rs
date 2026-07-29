@@ -154,6 +154,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -216,6 +217,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -247,6 +249,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             |_, _, _| {},
         )
@@ -297,6 +300,7 @@ mod tests {
             PipelineRequest {
                 project,
                 post_processor: Some(PostProcessorKind::Linuxcnc),
+                cps_post: None,
             },
             |_, _, _| {},
         )
