@@ -179,6 +179,34 @@ fn script_can_overwrite_host_global() {
     assert_eq!(out, "patched");
 }
 
+/// KNOWN boa 0.21.1 BUG (workaround pinned): a `new C()` executed
+/// during the top-level run of the same script that assigned
+/// `C.prototype.m = function () {…}` members yields the LAST assigned
+/// method instead of the instance. The prelude works around it by
+/// never instantiating during such a script's own top level
+/// (09_machine.js declares, 15_driver.js instantiates). This test
+/// documents the bug shape; when an engine upgrade makes the first
+/// assertion fail, the bug is fixed upstream — drop the workaround
+/// and this test together.
+#[test]
+fn boa_new_after_prototype_assignment_bug() {
+    let mut e = Engine::new();
+    e.eval_named(
+        "bug.js",
+        "function C() { this.v = 1; }\nC.prototype.m = function () { return 7; };\nvar sameScript = new C();",
+    )
+    .expect("eval");
+    e.eval_named("later.js", "var laterScript = new C();")
+        .expect("eval");
+    let same = eval_str(&mut e, "typeof sameScript");
+    let later = eval_str(&mut e, "typeof laterScript + ':' + laterScript.m()");
+    assert_eq!(
+        same, "function",
+        "boa fixed the same-script new-after-prototype bug — remove the 09_machine.js workaround"
+    );
+    assert_eq!(later, "object:7", "the cross-script path must stay correct");
+}
+
 /// Work item 3: minimal end-to-end — a ~20-line inline post defines
 /// `onOpen`/`onLinear`, Rust drives them through `call_global`, output
 /// lands in the sink.

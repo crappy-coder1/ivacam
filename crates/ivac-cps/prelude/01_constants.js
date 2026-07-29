@@ -1,15 +1,13 @@
-// 01_constants.js — kernel constants.
+// 01_constants.js — the kernel constant table.
 //
-// cps.3 seeds only what the output-exactness core (04-07) needs; cps.4
-// completes the full ~330-constant table (COMMAND_*, COOLANT_*,
-// MOVEMENT_*, TOOL_*, CAPABILITY_*, PLANE_*, ...) and adds the Rust↔JS
-// consistency test against ivac-cps/src/ir.rs::codes.
-//
-// Posts compare these by NAME, so the requirement is that recorder
-// (Rust) and prelude (JS) agree — not that the numbers match Autodesk's
-// undocumented internals.
+// Values follow globals.d.ts declaration order (per family, from 0)
+// with bitmask families (CAPABILITY_*, STRATEGY_*, HAS_*, PLANE bits in
+// allowedCircularPlanes usage) as powers of two. Posts compare by NAME;
+// the Rust side of the encodings the recorder emits lives in
+// ivac-cps/src/ir.rs::codes, and tests/constants_consistency.rs pins
+// the two tables together.
 
-// Units (the driver assigns the active `unit` global from these).
+// Units (the driver assigns the active `unit` global).
 var IN = 1;
 var MM = 2;
 
@@ -32,9 +30,267 @@ var TYPE_ABSOLUTE = 0;
 var TYPE_INCREMENTAL = 1;
 var TYPE_DIRECTIONAL = 2;
 
-// Convenience text constants (globals.d.ts declares them).
+var PLANE_XY = 0;
+var PLANE_ZX = 1;
+var PLANE_YZ = 2;
+var PLANE_XZ = 1;
+
+var X = 0;
+var Y = 1;
+var Z = 2;
+var A = 3;
+var B = 4;
+var C = 5;
+var ABC = 6;
+var TOOL_AXIS_X = 0;
+var TOOL_AXIS_Y = 1;
+var TOOL_AXIS_Z = 2;
+
+var CAPABILITY_MILLING = 1;
+var CAPABILITY_TURNING = 2;
+var CAPABILITY_JET = 4;
+var CAPABILITY_SETUP_SHEET = 8;
+var CAPABILITY_INTERMEDIATE = 16;
+var CAPABILITY_MACHINE_SIMULATION = 32;
+var FEATURE_MACHINE_ROTARY_ANGLES = 1;
+
+var RADIUS_COMPENSATION_OFF = 0;
+var RADIUS_COMPENSATION_LEFT = 1;
+var RADIUS_COMPENSATION_RIGHT = 2;
+
+var COOLANT_DISABLED = 0;
+var COOLANT_FLOOD = 1;
+var COOLANT_MIST = 2;
+var COOLANT_TOOL = 3;
+var COOLANT_THROUGH_TOOL = 4;
+var COOLANT_AIR = 5;
+var COOLANT_AIR_THROUGH_TOOL = 6;
+var COOLANT_SUCTION = 7;
+var COOLANT_FLOOD_MIST = 8;
+var COOLANT_FLOOD_THROUGH_TOOL = 9;
+var COOLANT_OFF = 0;
+
+var MATERIAL_UNSPECIFIED = 0;
+var MATERIAL_HSS = 1;
+var MATERIAL_TI_COATED = 2;
+var MATERIAL_CARBIDE = 3;
+var MATERIAL_CERAMICS = 4;
+
+var TOOL_UNSPECIFIED = 0;
+var TOOL_DRILL = 1;
+var TOOL_DRILL_CENTER = 2;
+var TOOL_DRILL_SPOT = 3;
+var TOOL_DRILL_BLOCK = 4;
+var TOOL_MILLING_END_FLAT = 5;
+var TOOL_MILLING_END_BALL = 6;
+var TOOL_MILLING_END_BULLNOSE = 7;
+var TOOL_MILLING_CHAMFER = 8;
+var TOOL_MILLING_FACE = 9;
+var TOOL_MILLING_SLOT = 10;
+var TOOL_MILLING_RADIUS = 11;
+var TOOL_MILLING_DOVETAIL = 12;
+var TOOL_MILLING_TAPERED = 13;
+var TOOL_MILLING_LOLLIPOP = 14;
+var TOOL_MILLING_FORM = 15;
+var TOOL_MILLING_THREAD = 16;
+var TOOL_TAP_RIGHT_HAND = 17;
+var TOOL_TAP_LEFT_HAND = 18;
+var TOOL_REAMER = 19;
+var TOOL_BORING_BAR = 20;
+var TOOL_COUNTER_BORE = 21;
+var TOOL_COUNTER_SINK = 22;
+var TOOL_HOLDER_ONLY = 23;
+var TOOL_TURNING_GENERAL = 24;
+var TOOL_TURNING_THREADING = 25;
+var TOOL_TURNING_GROOVING = 26;
+var TOOL_TURNING_BORING = 27;
+var TOOL_TURNING_CUSTOM = 28;
+var TOOL_PROBE = 29;
+var TOOL_WIRE = 30;
+var TOOL_WATER_JET = 31;
+var TOOL_LASER_CUTTER = 32;
+var TOOL_PLASMA_CUTTER = 33;
+var TOOL_WELDER = 34;
+var TOOL_GRINDER = 35;
+var TOOL_MARKER = 36;
+var TOOL_COMPENSATION_INSERT_CENTER = 0;
+var TOOL_COMPENSATION_TIP = 1;
+var TOOL_COMPENSATION_TIP_CENTER = 2;
+var TOOL_COMPENSATION_TIP_TANGENT = 3;
+
+var MOVEMENT_RAPID = 0;
+var MOVEMENT_LEAD_IN = 1;
+var MOVEMENT_CUTTING = 2;
+var MOVEMENT_LEAD_OUT = 3;
+var MOVEMENT_LINK_TRANSITION = 4;
+var MOVEMENT_LINK_DIRECT = 5;
+var MOVEMENT_RAMP_HELIX = 6;
+var MOVEMENT_RAMP_PROFILE = 7;
+var MOVEMENT_RAMP_ZIG_ZAG = 8;
+var MOVEMENT_RAMP = 9;
+var MOVEMENT_PLUNGE = 10;
+var MOVEMENT_PREDRILL = 11;
+var MOVEMENT_EXTENDED = 12;
+var MOVEMENT_REDUCED = 13;
+var MOVEMENT_FINISH_CUTTING = 14;
+var MOVEMENT_HIGH_FEED = 15;
+var MOVEMENT_DEPOSITING = 16;
+var MOVEMENT_BRIDGING = 17;
+var MOVEMENT_CONNECTION = 18;
+var MOVEMENT_DRILL_BREAKTHROUGH = 19;
+var MOVEMENT_GUN_DRILL_POSITIONING = 20;
+var MOVEMENT_PIERCE_CIRCULAR = 21;
+var MOVEMENT_PIERCE_PROFILE = 22;
+var MOVEMENT_PIERCE_LINEAR = 23;
+var MOVEMENT_PIERCE = 24;
+
+var COMMAND_STOP = 0;
+var COMMAND_OPTIONAL_STOP = 1;
+var COMMAND_END = 2;
+var COMMAND_SPINDLE_CLOCKWISE = 3;
+var COMMAND_SPINDLE_COUNTERCLOCKWISE = 4;
+var COMMAND_START_SPINDLE = 5;
+var COMMAND_STOP_SPINDLE = 6;
+var COMMAND_ORIENTATE_SPINDLE = 7;
+var COMMAND_LOAD_TOOL = 8;
+var COMMAND_COOLANT_ON = 9;
+var COMMAND_COOLANT_OFF = 10;
+var COMMAND_ACTIVATE_SPEED_FEED_SYNCHRONIZATION = 11;
+var COMMAND_DEACTIVATE_SPEED_FEED_SYNCHRONIZATION = 12;
+var COMMAND_LOCK_MULTI_AXIS = 13;
+var COMMAND_UNLOCK_MULTI_AXIS = 14;
+var COMMAND_EXACT_STOP = 15;
+var COMMAND_START_CHIP_TRANSPORT = 16;
+var COMMAND_STOP_CHIP_TRANSPORT = 17;
+var COMMAND_OPEN_DOOR = 18;
+var COMMAND_CLOSE_DOOR = 19;
+var COMMAND_BREAK_CONTROL = 20;
+var COMMAND_TOOL_MEASURE = 21;
+var COMMAND_CALIBRATE = 22;
+var COMMAND_VERIFY = 23;
+var COMMAND_CLEAN = 24;
+var COMMAND_ALARM = 25;
+var COMMAND_ALERT = 26;
+var COMMAND_CHANGE_PALLET = 27;
+var COMMAND_POWER_ON = 28;
+var COMMAND_POWER_OFF = 29;
+var COMMAND_MAIN_CHUCK_OPEN = 30;
+var COMMAND_MAIN_CHUCK_CLOSE = 31;
+var COMMAND_SECONDARY_CHUCK_OPEN = 32;
+var COMMAND_SECONDARY_CHUCK_CLOSE = 33;
+var COMMAND_SECONDARY_SPINDLE_SYNCHRONIZATION_ACTIVATE = 34;
+var COMMAND_SECONDARY_SPINDLE_SYNCHRONIZATION_DEACTIVATE = 35;
+var COMMAND_SYNC_CHANNELS = 36;
+var COMMAND_PROBE_ON = 37;
+var COMMAND_PROBE_OFF = 38;
+
+var HIGH_FEED_NO_MAPPING = 0;
+var HIGH_FEED_MAP_MULTI = 1;
+var HIGH_FEED_MAP_XY_Z = 2;
+var HIGH_FEED_MAP_ANY = 3;
+
+var TYPE_MILLING = 0;
+var TYPE_TURNING = 1;
+var TYPE_JET = 2;
+
+var OPTIMIZE_NONE = 0;
+var OPTIMIZE_TABLES = 1;
+var OPTIMIZE_BOTH = 2;
+var OPTIMIZE_AXIS = 3;
+
+var SINGULARITY_LINEARIZE_OFF = 0;
+var SINGULARITY_LINEARIZE_LINEAR = 1;
+var SINGULARITY_LINEARIZE_ROTARY = 2;
+
+var STRATEGY_MULTIAXIS = 1;
+var STRATEGY_2D = 2;
+var STRATEGY_3D = 4;
+var STRATEGY_DRILLING = 8;
+var STRATEGY_TURNING = 16;
+var STRATEGY_JET = 32;
+var STRATEGY_PROBING = 64;
+var STRATEGY_INSPECTION = 128;
+var STRATEGY_ADDITIVE = 256;
+
+var FEED_PER_MINUTE = 0;
+var FEED_PER_REVOLUTION = 1;
+var FEED_INVERSE_TIME = 2;
+var FEED_FPM = 0;
+var FEED_DPM = 3;
+var INVERSE_MINUTES = 0;
+var INVERSE_SECONDS = 1;
+var DPM_COMBINATION = 2;
+var DPM_STANDARD = 3;
+
+var HAS_PARAMETER = 1;
+var HAS_RAPID = 2;
+var HAS_LINEAR = 4;
+var HAS_DWELL = 8;
+var HAS_CIRCULAR = 16;
+var HAS_CYCLE = 32;
+var HAS_WELL_KNOWN_COMMAND = 64;
+var HAS_COMMENT = 128;
+
+var RECORD_INVALID = 0;
+var RECORD_WELL_KNOWN_COMMAND = 1;
+var RECORD_MACHINE_COMMAND = 2;
+var RECORD_SPINDLE_SPEED = 3;
+var RECORD_PARAMETER = 4;
+var RECORD_LINEAR = 5;
+var RECORD_LINEAR_5D = 6;
+var RECORD_LINEAR_ZXN = 7;
+var RECORD_LINEAR_EXTRUDE = 8;
+var RECORD_CIRCULAR = 9;
+var RECORD_DWELL = 10;
+var RECORD_CYCLE = 11;
+var RECORD_CYCLE_OFF = 12;
+var RECORD_COMMENT = 13;
+var RECORD_WIDE_COMMENT = 14;
+var RECORD_PASS_THROUGH = 15;
+var RECORD_WIDE_PASS_THROUGH = 16;
+var RECORD_OPERATION = 17;
+var RECORD_OPERATION_END = 18;
+var RECORD_CIRCULAR_EXTRUDE = 19;
+
+// Euler conventions (Shoemake order): 12 static (_S) then 12 rotating (_R).
+var EULER_XYX_S = 0;
+var EULER_XYZ_S = 1;
+var EULER_XZX_S = 2;
+var EULER_XZY_S = 3;
+var EULER_YXY_S = 4;
+var EULER_YXZ_S = 5;
+var EULER_YZX_S = 6;
+var EULER_YZY_S = 7;
+var EULER_ZXY_S = 8;
+var EULER_ZXZ_S = 9;
+var EULER_ZYX_S = 10;
+var EULER_ZYZ_S = 11;
+var EULER_XYX_R = 12;
+var EULER_XYZ_R = 13;
+var EULER_XZX_R = 14;
+var EULER_XZY_R = 15;
+var EULER_YXY_R = 16;
+var EULER_YXZ_R = 17;
+var EULER_YZX_R = 18;
+var EULER_YZY_R = 19;
+var EULER_ZXY_R = 20;
+var EULER_ZXZ_R = 21;
+var EULER_ZYX_R = 22;
+var EULER_ZYZ_R = 23;
+
+// Text constants.
 var EOL = "\n";
 var SP = " ";
+var PATH_SEPARATOR = "/";
+var NUL = "\u0000";
+var SOH = "\u0001";
+var STX = "\u0002";
+var ETX = "\u0003";
+var EOT = "\u0004";
 var CR = "\r";
 var LF = "\n";
 var TAB = "\t";
+
+// Kernel revision reported to posts (above every minimumRevision in
+// circulation, so revision gates take their modern branch).
+var revision = 50000;

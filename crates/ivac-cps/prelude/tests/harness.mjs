@@ -27,6 +27,9 @@ export function createRuntime() {
       emit: (text) => chunks.push(String(text)),
       log: () => {},
       localize: (s) => String(s),
+      diag: () => {},
+      abortCheck: () => false,
+      now: () => 0,
     },
     __ivacTestOutput: () => chunks.join(""),
     __ivacTestReset: () => {

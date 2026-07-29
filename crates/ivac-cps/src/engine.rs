@@ -1,10 +1,11 @@
 //! boa [`Context`] lifecycle: host bindings, script evaluation, entry-point
 //! calls.
 //!
-//! cps.0 scope: the minimal viable engine — a fresh context with the
-//! `__ivac` host object (one `emit` sink) plus named-source evaluation
-//! and global-function calls. cps.3/cps.4 grow this into the full
-//! prelude loader + dispatch driver.
+//! The host surface is deliberately tiny: `__ivac` carries `emit`
+//! (NC-text sink), `diag` (diagnostics), `log`, `localize`,
+//! `abortCheck` and a deterministic `now`. Everything else the `.cps`
+//! runtime needs lives in the JS prelude ([`PRELUDE`]); the public
+//! execution API is [`crate::run_post`] / [`crate::inspect_post`].
 
 use std::path::Path;
 
@@ -33,6 +34,10 @@ pub const PRELUDE: &[(&str, &str)] = &[
         "01_constants.js",
         include_str!("../prelude/01_constants.js"),
     ),
+    (
+        "02_vector_matrix.js",
+        include_str!("../prelude/02_vector_matrix.js"),
+    ),
     ("04_format.js", include_str!("../prelude/04_format.js")),
     (
         "05_variables.js",
@@ -40,18 +45,36 @@ pub const PRELUDE: &[(&str, &str)] = &[
     ),
     ("06_output.js", include_str!("../prelude/06_output.js")),
     ("07_text.js", include_str!("../prelude/07_text.js")),
+    (
+        "08_tool_section.js",
+        include_str!("../prelude/08_tool_section.js"),
+    ),
+    ("09_machine.js", include_str!("../prelude/09_machine.js")),
+    ("10_state.js", include_str!("../prelude/10_state.js")),
+    ("11_circular.js", include_str!("../prelude/11_circular.js")),
+    (
+        "13_properties.js",
+        include_str!("../prelude/13_properties.js"),
+    ),
+    ("15_driver.js", include_str!("../prelude/15_driver.js")),
 ];
+
+/// Diagnostics sink: `(severity, message)` pairs pushed by the
+/// prelude's `__ivac.diag` (severity is `"error"` or `"warning"`).
+pub type DiagSink = Gc<GcRefCell<Vec<(String, String)>>>;
 
 /// A boa context with the `__ivac` host object installed.
 pub struct Engine {
     context: Context,
     sink: EmitSink,
+    diags: DiagSink,
 }
 
 impl std::fmt::Debug for Engine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Engine")
             .field("emitted_lines", &self.sink.borrow().len())
+            .field("diagnostics", &self.diags.borrow().len())
             .finish_non_exhaustive()
     }
 }
@@ -98,16 +121,57 @@ impl Engine {
             Ok(args.first().cloned().unwrap_or_default())
         });
 
+        let diags: DiagSink = Gc::new(GcRefCell::new(Vec::new()));
+        let diag = NativeFunction::from_copy_closure_with_captures(
+            |_this, args, diags, ctx| {
+                let severity = args
+                    .first()
+                    .cloned()
+                    .unwrap_or_default()
+                    .to_string(ctx)?
+                    .to_std_string_escaped();
+                let message = args
+                    .get(1)
+                    .cloned()
+                    .unwrap_or_default()
+                    .to_string(ctx)?
+                    .to_std_string_escaped();
+                diags.borrow_mut().push((severity, message));
+                Ok(JsValue::undefined())
+            },
+            diags.clone(),
+        );
+        // Cancellation probe — always "keep going" until the pipeline
+        // wires a real token through (cps.7/cps.8 budgets).
+        let abort_check =
+            NativeFunction::from_copy_closure(|_this, _args, _ctx| Ok(JsValue::from(false)));
+        // Deterministic clock: posts occasionally timestamp headers;
+        // a fixed epoch keeps output byte-stable across runs.
+        let now = NativeFunction::from_copy_closure(|_this, _args, _ctx| Ok(JsValue::from(0)));
+
         let ivac = ObjectInitializer::new(&mut context)
             .function(emit, JsString::from("emit"), 1)
             .function(log, JsString::from("log"), 1)
             .function(localize, JsString::from("localize"), 1)
+            .function(diag, JsString::from("diag"), 2)
+            .function(abort_check, JsString::from("abortCheck"), 0)
+            .function(now, JsString::from("now"), 0)
             .build();
         context
             .register_global_property(JsString::from("__ivac"), ivac, Attribute::all())
             .expect("fresh context: __ivac cannot already exist");
 
-        Self { context, sink }
+        Self {
+            context,
+            sink,
+            diags,
+        }
+    }
+
+    /// Diagnostics pushed via `__ivac.diag` so far, as
+    /// `(severity, message)` pairs.
+    pub fn diagnostics(&self) -> Vec<(String, String)> {
+        self.diags.borrow().clone()
     }
 
     /// Evaluate the runtime prelude ([`PRELUDE`]) in order. An error
