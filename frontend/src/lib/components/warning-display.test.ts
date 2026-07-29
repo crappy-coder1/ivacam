@@ -39,6 +39,9 @@ const KNOWN_WARN_PARAMS = new Set([
   'first_tool',
   'flute_length',
   'front_op',
+  // cps_unsupported_op: the program-only op kind label
+  // (cps_program_only_event's .with_param("kind", …)).
+  'kind',
   'kind_name',
   'layer',
   'limit',

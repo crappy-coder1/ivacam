@@ -230,6 +230,8 @@ export type MsgKey =
   | "error.hint.unknown_post_processor"
   | "error.span"
   | "gcode.label"
+  | "gcode.line_sync_unavailable"
+  | "gcode.line_sync_unavailable.title"
   | "gcode.silenced"
   | "gcode.silenced.title"
   | "gcode.stale"
@@ -253,6 +255,7 @@ export type MsgKey =
   | "genbar.download.title"
   | "genbar.error.block_critical"
   | "genbar.error.block_work_area"
+  | "genbar.error.cps_post_missing"
   | "genbar.error.no_operations"
   | "genbar.generate.generate"
   | "genbar.generate.generating"
@@ -344,11 +347,18 @@ export type MsgKey =
   | "machine.capabilities"
   | "machine.capabilities.legend_title"
   | "machine.capabilities.primary_title"
+  | "machine.cps.open_file"
+  | "machine.cps.post"
+  | "machine.cps.post.none"
+  | "machine.cps.post.title"
+  | "machine.cps.properties"
+  | "machine.cps.unsupported"
   | "machine.decimal_sep"
   | "machine.decimal_sep.comma"
   | "machine.decimal_sep.period"
   | "machine.decimal_sep.title"
   | "machine.dialect"
+  | "machine.dialect.cps"
   | "machine.dialect.title"
   | "machine.emit_arcs"
   | "machine.emit_arcs.title"
@@ -1572,6 +1582,7 @@ export type MsgKey =
   | "warn.chamfer_non_vbit"
   | "warn.chamfer_width_clamped_to_reach"
   | "warn.compression_transition_above_cut"
+  | "warn.cps_unsupported_op"
   | "warn.dovetail_requires_rough_channel.generic"
   | "warn.dovetail_requires_rough_channel.known"
   | "warn.drill_spot_depth_non_negative"
@@ -1886,6 +1897,8 @@ export const MSG_KEYS: readonly MsgKey[] = [
   "error.hint.unknown_post_processor",
   "error.span",
   "gcode.label",
+  "gcode.line_sync_unavailable",
+  "gcode.line_sync_unavailable.title",
   "gcode.silenced",
   "gcode.silenced.title",
   "gcode.stale",
@@ -1909,6 +1922,7 @@ export const MSG_KEYS: readonly MsgKey[] = [
   "genbar.download.title",
   "genbar.error.block_critical",
   "genbar.error.block_work_area",
+  "genbar.error.cps_post_missing",
   "genbar.error.no_operations",
   "genbar.generate.generate",
   "genbar.generate.generating",
@@ -2000,11 +2014,18 @@ export const MSG_KEYS: readonly MsgKey[] = [
   "machine.capabilities",
   "machine.capabilities.legend_title",
   "machine.capabilities.primary_title",
+  "machine.cps.open_file",
+  "machine.cps.post",
+  "machine.cps.post.none",
+  "machine.cps.post.title",
+  "machine.cps.properties",
+  "machine.cps.unsupported",
   "machine.decimal_sep",
   "machine.decimal_sep.comma",
   "machine.decimal_sep.period",
   "machine.decimal_sep.title",
   "machine.dialect",
+  "machine.dialect.cps",
   "machine.dialect.title",
   "machine.emit_arcs",
   "machine.emit_arcs.title",
@@ -3228,6 +3249,7 @@ export const MSG_KEYS: readonly MsgKey[] = [
   "warn.chamfer_non_vbit",
   "warn.chamfer_width_clamped_to_reach",
   "warn.compression_transition_above_cut",
+  "warn.cps_unsupported_op",
   "warn.dovetail_requires_rough_channel.generic",
   "warn.dovetail_requires_rough_channel.known",
   "warn.drill_spot_depth_non_negative",

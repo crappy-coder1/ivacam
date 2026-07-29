@@ -26,6 +26,7 @@
   import { warningFocus } from '../state/warning-focus.svelte';
   import { tick } from 'svelte';
   import { t } from '../i18n';
+  import { cpsSelectionKey, toCpsPostRequest } from './cps-post-form';
   import { warningMessage } from './warning-display';
 
   // Format a duration in seconds as HH:MM:SS (always two digits per
@@ -59,9 +60,9 @@
   }
 
   const client = defaultClient();
-  type PostId = 'linuxcnc' | 'grbl' | 'hpgl';
+  type PostId = 'linuxcnc' | 'grbl' | 'hpgl' | 'cps';
   function coercePost(v: string): PostId {
-    return v === 'grbl' || v === 'hpgl' ? v : 'linuxcnc';
+    return v === 'grbl' || v === 'hpgl' || v === 'cps' ? v : 'linuxcnc';
   }
   // The gcode dialect is now a MACHINE setting (chosen in the Machine
   // dialog) rather than a toolbar dropdown — a controller speaks one
@@ -75,7 +76,14 @@
   /// cached text is now wrong-dialect — exporting it via the Download button
   /// would write LinuxCNC gcode into a .plt (HPGL) file. Clear the cache so the
   /// user is forced to regen, matching how a machine swap invalidates the run.
-  let generatedPost: PostId | null = null;
+  let generatedPost: string | null = null;
+  /// Identity of the post that produced the cached gcode: the dialect
+  /// plus, for CPS, the selected script + property values. Switching
+  /// post or tweaking a property must drop stale gcode exactly like a
+  /// dialect switch does.
+  const postTag = $derived(
+    post === 'cps' ? `cps|${cpsSelectionKey(project.data.machine.cpsPost)}` : post,
+  );
   $effect(() => {
     // Drop the post tag whenever the cached gcode disappears (project
     // reload, manual clear, machine swap) so the next run re-captures
@@ -83,14 +91,14 @@
     if (project.gen.generated == null) generatedPost = null;
   });
   $effect(() => {
-    const current = post;
+    const current = postTag;
     // Defer the workspace write off the synchronous effect flush.
     // Writing $state (workspace.version) inside an effect body aborts
     // Svelte 5's reactivity scheduler silently — see project.svelte.ts
     // persistPerProjectState for the full diagnosis.
     queueMicrotask(() => {
       try {
-        workspace.setLastPostProcessor(current);
+        workspace.setLastPostProcessor(post);
       } catch (e) {
         console.warn('persist post processor:', e);
       }
@@ -283,6 +291,16 @@
         post_processor: post,
         project: opProject as unknown as GenerateRequestWithProject['project'],
       };
+      if (post === 'cps') {
+        const selection = toCpsPostRequest(project.data.machine.cpsPost);
+        if (!selection) {
+          project.failGenerate(t('genbar.error.cps_post_missing'));
+          return;
+        }
+        // The generated request type models cps_post structurally; the
+        // runtime payload matches the Rust wire shape.
+        (req as unknown as { cps_post: unknown }).cps_post = selection;
+      }
       // Two-sided (flip-stock) jobs emit two programs, so they take the
       // buffered `generateTwoSided` path (no streaming — two-sided jobs are
       // small relative to the unbounded-raster case streaming targets).
@@ -312,7 +330,7 @@
         }
         project.setGenerated(r);
       }
-      generatedPost = post;
+      generatedPost = postTag;
       project.finishGenerate();
     } catch (e) {
       if (e instanceof CancelledError) {

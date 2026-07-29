@@ -13,12 +13,15 @@
   import { untrack } from 'svelte';
   import Modal from './Modal.svelte';
   import PostProcessorEditor from './PostProcessorEditor.svelte';
+  import CpsPostConfigEditor from './CpsPostConfig.svelte';
   import { DialogDraft } from './dialog-draft.svelte';
   import * as fileOps from '../services/file_ops';
   import { workspace } from '../state/workspace.svelte';
   import { duplicateProfile, profileFromCurrent } from '../state/machine_profiles';
   import { suggestMachineName } from '../state/tool_naming';
   import { t } from '../i18n';
+  import { defaultClient } from '../api/http';
+  import type { VersionResponse } from '../api/types';
 
   interface Props {
     open: boolean;
@@ -55,6 +58,22 @@
       jerk: m.jerk ? { ...m.jerk } : { x: 100, y: 100, z: 50 },
     };
   }
+
+  // The .cps option exists only when the active transport's build
+  // carries the runtime (wasm ships it opt-in) — probe /version once.
+  let cpsSupported = $state(false);
+  $effect(() => {
+    let cancelled = false;
+    void defaultClient()
+      .version()
+      .then((v: VersionResponse) => {
+        if (!cancelled) cpsSupported = (v.capabilities ?? []).includes('post-cps');
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  });
 
   const dd = new DialogDraft<MachineDraft>();
   dd.open(compositeOf(project.data.machine));
@@ -586,15 +605,26 @@
           value={draft.gcodeDialect ?? 'linuxcnc'}
           onchange={(e) => {
             const v = (e.currentTarget as HTMLSelectElement).value;
-            draft.gcodeDialect = v === 'grbl' || v === 'hpgl' ? v : 'linuxcnc';
+            draft.gcodeDialect = v === 'grbl' || v === 'hpgl' || v === 'cps' ? v : 'linuxcnc';
           }}
         >
           <option value="linuxcnc">LinuxCNC</option>
           <option value="grbl">GRBL</option>
           <option value="hpgl">HPGL</option>
+          {#if cpsSupported}
+            <option value="cps">{t('machine.dialect.cps')}</option>
+          {/if}
         </select>
       </span>
     </label>
+    {#if draft.gcodeDialect === 'cps'}
+      <CpsPostConfigEditor
+        value={draft.cpsPost}
+        onchange={(next) => {
+          draft.cpsPost = next;
+        }}
+      />
+    {/if}
     <label title={t('machine.decimal_sep.title')}>
       {t('machine.decimal_sep')}
       <span class="field">

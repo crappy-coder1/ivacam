@@ -378,7 +378,12 @@ export interface MachineSettings {
   /// controller speaks one dialect) rather than per-run. `linuxcnc` =
   /// standard RS-274; `grbl` = hobby-CNC subset; `hpgl` = plotter /
   /// drag-knife. Undefined ⇒ fall back to the last-used / linuxcnc.
-  gcodeDialect?: 'linuxcnc' | 'grbl' | 'hpgl';
+  gcodeDialect?: 'linuxcnc' | 'grbl' | 'hpgl' | 'cps';
+  /// Selected `.cps` post when `gcodeDialect === 'cps'`. A file-sourced
+  /// post embeds its SCRIPT so a saved project stays self-contained;
+  /// `properties` is sparse — only values the user changed from the
+  /// post's own defaults.
+  cpsPost?: CpsPostConfig;
   /// Decimal separator for emitted numbers. Default '.';
   /// switch to ',' for European Siemens / Heidenhain controllers.
   decimalSeparator?: '.' | ',';
@@ -451,6 +456,21 @@ export interface MachineSettings {
 /// substituted at emit time: `<version>`, `<unit>`, `<t>` (tool
 /// number), `<n>` (tool name), `<d>` (tool diameter), `<f>` (feed),
 /// `<s>` (spindle), `<op>` (op name), `<nl>` (newline).
+/// Machine-level `.cps` post selection (see `MachineSettings.cpsPost`).
+export interface CpsPostConfig {
+  source: 'bundled' | 'file';
+  /// Bundled library id (`source === 'bundled'`).
+  bundledId?: string;
+  /// Display name of an opened file (`source === 'file'`).
+  filename?: string;
+  /// The opened file's script text — embedded so the project is
+  /// self-contained (`source === 'file'`).
+  script?: string;
+  /// Sparse property overrides: only values differing from the post's
+  /// declared defaults.
+  properties: Record<string, boolean | number | string>;
+}
+
 export interface PostProfile {
   name?: string;
   file_extension?: string;

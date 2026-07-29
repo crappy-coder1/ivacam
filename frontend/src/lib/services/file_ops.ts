@@ -5,6 +5,7 @@
 /// imported / generated payload, and the active project path / recent
 /// list.
 
+import { resolveExportExtension, applyProfileLineEnding } from './gcode-export';
 import { project } from '../state/project.svelte';
 import { workspace } from '../state/workspace.svelte';
 import { confirmStore } from '../state/confirm.svelte';
@@ -629,15 +630,34 @@ export async function loadSample(url: string) {
 /// A two-sided run writes two files, so both get a `-front`/`-back`
 /// filename suffix to keep them apart; single-sided exports stay
 /// unsuffixed for back-compat.
+/// Output extension precedence and line-ending application live in
+/// `gcode-export.ts` (rune-free, unit-tested); these thin wrappers bind
+/// them to the live project's machine settings.
+function exportExtension(
+  postProcessor: 'linuxcnc' | 'grbl' | 'hpgl' | 'cps',
+  gen: { output_extension?: string | null } | null,
+): string {
+  return resolveExportExtension(
+    postProcessor,
+    gen?.output_extension ?? undefined,
+    project.data.machine.postProfile?.file_extension,
+  );
+}
+
+function applyLineEnding(gcode: string): string {
+  return applyProfileLineEnding(gcode, project.data.machine.postProfile?.line_ending);
+}
+
 export async function exportGeneratedGcode(
-  postProcessor: 'linuxcnc' | 'grbl' | 'hpgl',
+  postProcessor: 'linuxcnc' | 'grbl' | 'hpgl' | 'cps',
   side: 'front' | 'back' = 'front',
 ): Promise<void> {
   const gen = side === 'back' ? project.gen.generatedBack : project.gen.generated;
   if (!gen) return;
   const twoSided = project.gen.generatedBack != null;
   const base = project.transformedImport?.filename?.replace(/\.[^.]+$/, '') ?? 'output';
-  const ext = postProcessor === 'hpgl' ? 'plt' : 'ngc';
+  const ext = exportExtension(postProcessor, gen);
+  const text = applyLineEnding(gen.gcode);
   const filename = `${base}${twoSided ? `-${side}` : ''}.${ext}`;
   if (isTauri()) {
     const { save } = await import('@tauri-apps/plugin-dialog');
@@ -648,14 +668,14 @@ export async function exportGeneratedGcode(
     });
     if (typeof path === 'string') {
       try {
-        await writeTextFile(path, gen.gcode);
+        await writeTextFile(path, text);
       } catch (e) {
         project.setError(`save: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
     return;
   }
-  const blob = new Blob([gen.gcode], { type: 'text/plain' });
+  const blob = new Blob([text], { type: 'text/plain' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;

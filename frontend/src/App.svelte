@@ -65,7 +65,7 @@
 
   // Phone Save dropdown (punch-list 10): project / G-code / carved STL.
   let saveMenuOpen = $state(false);
-  const gcodeDialect = $derived<'linuxcnc' | 'grbl' | 'hpgl'>(
+  const gcodeDialect = $derived<'linuxcnc' | 'grbl' | 'hpgl' | 'cps'>(
     project.data.machine.gcodeDialect ?? 'linuxcnc',
   );
   function closeSaveMenu() {

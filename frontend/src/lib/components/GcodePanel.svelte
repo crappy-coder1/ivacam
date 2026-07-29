@@ -69,7 +69,19 @@
   // Split the gcode lazily — only when the selected program changes — so
   // scrolling a 5000-line program doesn't redo work.
   const lines = $derived(activeGen?.gcode.split('\n') ?? []);
-  const idx = $derived(activeGen?.gcode_index ?? null);
+  /// `null` when the response carries no usable line index. CPS posts
+  /// whose rendered text doesn't map 1:1 onto the recorded motion ship
+  /// an EMPTY index — the geometry is still exact, only line↔segment
+  /// sync is unavailable, so treat empty as absent and tell the user
+  /// instead of silently mis-highlighting rows.
+  const idx = $derived.by(() => {
+    const index = activeGen?.gcode_index ?? null;
+    if (!index || index.lines_to_segment.length === 0) return null;
+    return index;
+  });
+  const lineSyncUnavailable = $derived(
+    activeGen != null && activeGen.toolpath.length > 0 && idx == null,
+  );
 
   const chapters = $derived(parseGcodeChapters(lines, project.data.operations));
 
@@ -285,6 +297,11 @@
 
 {#if activeGen && activeGen.gcode}
   <div class="gcode-panel">
+    {#if lineSyncUnavailable}
+      <p class="sync-hint" title={t('gcode.line_sync_unavailable.title')}>
+        {t('gcode.line_sync_unavailable')}
+      </p>
+    {/if}
     {#if twoSided}
       <!-- Two-sided (flip-stock) run: let the user inspect either face's
            program. Single-sided runs render exactly as before (no bar). -->
@@ -386,6 +403,14 @@
 {/if}
 
 <style>
+  .sync-hint {
+    margin: 0;
+    padding: 0.25rem 0.5rem;
+    font-size: 0.85em;
+    opacity: 0.85;
+    border-bottom: 1px solid var(--color-border, #3334);
+  }
+
   /* Column host: the (optional) Front/Back tab bar sits above the
      scrolling code area, which flexes to fill the rest. */
   .gcode-panel {
