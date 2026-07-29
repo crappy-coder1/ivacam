@@ -277,8 +277,51 @@ function getNextRecord() {
 
 // ---- re-dispatch helpers (resolve CURRENT bindings at call time) ----
 
+// LEXICAL entry-point resolution. The bundle runs inside one function
+// scope (see run.rs — the boa global-binding workaround), so the
+// post's declarations are locals; `typeof name` resolves them through
+// the scope chain (and falls back to assignment-created globals).
+function __ivacEntry(name) {
+  switch (name) {
+    case "onMachine":
+      return typeof onMachine === "function" ? onMachine : undefined;
+    case "onParameter":
+      return typeof onParameter === "function" ? onParameter : undefined;
+    case "onOpen":
+      return typeof onOpen === "function" ? onOpen : undefined;
+    case "onSection":
+      return typeof onSection === "function" ? onSection : undefined;
+    case "onSectionEnd":
+      return typeof onSectionEnd === "function" ? onSectionEnd : undefined;
+    case "onClose":
+      return typeof onClose === "function" ? onClose : undefined;
+    case "onTerminate":
+      return typeof onTerminate === "function" ? onTerminate : undefined;
+    case "onDwell":
+      return typeof onDwell === "function" ? onDwell : undefined;
+    case "onCommand":
+      return typeof onCommand === "function" ? onCommand : undefined;
+    case "onSpindleSpeed":
+      return typeof onSpindleSpeed === "function" ? onSpindleSpeed : undefined;
+    case "onCoolant":
+      return typeof onCoolant === "function" ? onCoolant : undefined;
+    case "onComment":
+      return typeof onComment === "function" ? onComment : undefined;
+    case "onPassThrough":
+      return typeof onPassThrough === "function" ? onPassThrough : undefined;
+    case "onCycle":
+      return typeof onCycle === "function" ? onCycle : undefined;
+    case "onCyclePoint":
+      return typeof onCyclePoint === "function" ? onCyclePoint : undefined;
+    case "onCycleEnd":
+      return typeof onCycleEnd === "function" ? onCycleEnd : undefined;
+    default:
+      return undefined;
+  }
+}
+
 function __ivacCallOptional(name, args) {
-  var fn = this[name] !== undefined ? this[name] : undefined;
+  var fn = __ivacEntry(name);
   if (typeof fn === "function") {
     fn.apply(undefined, args || []);
     return true;

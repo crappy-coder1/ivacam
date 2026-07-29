@@ -650,25 +650,35 @@ fn cycle_params(z: f64, r: f64, rate_v: u32) -> std::collections::BTreeMap<Strin
     ])
 }
 
+/// IR-derived preview bundle: segments plus the per-segment feeds and
+/// summed dwell the time estimator needs (so timing never depends on
+/// output-text parseability).
+#[derive(Debug, Clone, Default)]
+pub struct IrPreview {
+    pub segments: Vec<ToolpathSegment>,
+    /// Modal feed per segment, mm/min (0 for rapids/retracts).
+    pub feeds_mm_min: Vec<f64>,
+    /// Summed dwell seconds (Dwell records + cycle dwells per peck).
+    pub dwell_s: f64,
+}
+
 /// Preview toolpath straight from the IR — geometry is exact regardless
 /// of what dialect text the JS post renders (fixes the HPGL-style
 /// silent-degradation class where preview quality hinged on text
-/// re-parseability). `gcode_line` stays 0 (unknown); cps.7's line-sync
-/// recovery zips real line numbers on when the rendered text matches.
+/// re-parseability). `gcode_line` stays 0 (unknown); see
+/// [`preview_with_line_sync`] for the recovery pass.
 #[must_use]
 pub fn ir_to_toolpath(program: &ir::Program) -> Vec<ToolpathSegment> {
-    let mut out = Vec::new();
+    ir_preview(program).segments
+}
+
+/// Full preview extraction (segments + feeds + dwell).
+#[must_use]
+pub fn ir_preview(program: &ir::Program) -> IrPreview {
+    let mut preview = IrPreview::default();
     for section in &program.sections {
         let mut pos = pose(section.initial_position);
         let op_id = section.id;
-        let seg = |from: Pose3, to: Pose3, kind: MoveKind, arc: Option<ArcXY>| ToolpathSegment {
-            from,
-            to,
-            kind,
-            gcode_line: 0,
-            op_id,
-            arc,
-        };
         for record in &section.records {
             match record {
                 ir::Record::Rapid { x, y, z } => {
@@ -678,18 +688,19 @@ pub fn ir_to_toolpath(program: &ir::Program) -> Vec<ToolpathSegment> {
                         z: *z,
                     };
                     if to != pos {
-                        out.push(seg(pos, to, MoveKind::Rapid, None));
+                        push_segment(&mut preview, pos, to, MoveKind::Rapid, None, op_id, 0.0);
                         pos = to;
                     }
                 }
-                ir::Record::Linear { x, y, z, .. } => {
+                ir::Record::Linear { x, y, z, feed, .. } => {
                     let to = Pose3 {
                         x: *x,
                         y: *y,
                         z: *z,
                     };
                     if to != pos {
-                        out.push(seg(pos, to, classify_linear(pos, to), None));
+                        let kind = classify_linear(pos, to);
+                        push_segment(&mut preview, pos, to, kind, None, op_id, *feed);
                         pos = to;
                     }
                 }
@@ -697,6 +708,7 @@ pub fn ir_to_toolpath(program: &ir::Program) -> Vec<ToolpathSegment> {
                     clockwise,
                     center,
                     end,
+                    feed,
                     ..
                 } => {
                     let to = Pose3 {
@@ -704,18 +716,27 @@ pub fn ir_to_toolpath(program: &ir::Program) -> Vec<ToolpathSegment> {
                         y: end.y,
                         z: end.z,
                     };
-                    push_arc_chords(&mut out, &mut pos, center, to, !clockwise, op_id);
+                    push_arc_chords(&mut preview, &mut pos, center, to, !clockwise, op_id, *feed);
                 }
                 ir::Record::Cycle {
                     cycle_type,
                     params,
                     points,
                 } => {
-                    expand_cycle_segments(&mut out, &mut pos, cycle_type, params, points, op_id);
+                    expand_cycle_segments(
+                        &mut preview,
+                        &mut pos,
+                        cycle_type,
+                        params,
+                        points,
+                        op_id,
+                    );
+                }
+                ir::Record::Dwell { seconds } => {
+                    preview.dwell_s += seconds.max(0.0);
                 }
                 ir::Record::RapidMachine { .. }
                 | ir::Record::CycleEnd
-                | ir::Record::Dwell { .. }
                 | ir::Record::Command { .. }
                 | ir::Record::SpindleSpeed { .. }
                 | ir::Record::Coolant { .. }
@@ -726,7 +747,52 @@ pub fn ir_to_toolpath(program: &ir::Program) -> Vec<ToolpathSegment> {
             }
         }
     }
-    out
+    preview
+}
+
+/// Line-sync recovery: when the rendered text parses into exactly as
+/// many motion segments as the IR yields, zip the parsed line numbers
+/// onto the IR segments and keep the parsed [`preview::GcodeIndex`];
+/// otherwise ship an empty index (the frontend shows a "line sync
+/// unavailable" hint, cps.9) — the GEOMETRY stays IR-exact either way.
+#[must_use]
+pub fn preview_with_line_sync(
+    program: &ir::Program,
+    text: &str,
+) -> (IrPreview, crate::gcode::preview::GcodeIndex) {
+    let mut preview = ir_preview(program);
+    let (parsed, index) = crate::gcode::preview::interpret_with_index(text);
+    if parsed.len() == preview.segments.len() {
+        for (segment, parsed_segment) in preview.segments.iter_mut().zip(&parsed) {
+            segment.gcode_line = parsed_segment.gcode_line;
+        }
+        (preview, index)
+    } else {
+        (preview, crate::gcode::preview::GcodeIndex::default())
+    }
+}
+
+fn push_segment(
+    preview: &mut IrPreview,
+    from: Pose3,
+    to: Pose3,
+    kind: MoveKind,
+    arc: Option<ArcXY>,
+    op_id: u32,
+    feed_mm_min: f64,
+) {
+    preview.segments.push(ToolpathSegment {
+        from,
+        to,
+        kind,
+        gcode_line: 0,
+        op_id,
+        arc,
+    });
+    preview.feeds_mm_min.push(match kind {
+        MoveKind::Rapid | MoveKind::Retract => 0.0,
+        _ => feed_mm_min,
+    });
 }
 
 fn pose(p: ir::Position) -> Pose3 {
@@ -756,12 +822,13 @@ fn classify_linear(from: Pose3, to: Pose3) -> MoveKind {
 /// to G2/G3 lines, so sim/renderer/envelope consumers see the shape
 /// they already handle.
 fn push_arc_chords(
-    out: &mut Vec<ToolpathSegment>,
+    preview: &mut IrPreview,
     pos: &mut Pose3,
     center: &ir::Position,
     to: Pose3,
     ccw: bool,
     op_id: u32,
+    feed_mm_min: f64,
 ) {
     const ARC_CHORD_STEP_DEG: f64 = 15.0;
     let from = *pos;
@@ -799,14 +866,15 @@ fn push_arc_chords(
                 z: from.z + dz * (k as f64) / (n as f64),
             }
         };
-        out.push(ToolpathSegment {
-            from: prev,
-            to: chord_to,
-            kind: MoveKind::Arc,
-            gcode_line: 0,
+        push_segment(
+            preview,
+            prev,
+            chord_to,
+            MoveKind::Arc,
+            Some(ArcXY { cx, cy, ccw }),
             op_id,
-            arc: Some(ArcXY { cx, cy, ccw }),
-        });
+            feed_mm_min,
+        );
         prev = chord_to;
     }
     *pos = to;
@@ -815,9 +883,9 @@ fn push_arc_chords(
 /// Cycle records → the G0/G1-equivalent segments of the trait-default
 /// expansions (`drill_simple`/`drill_peck`/`drill_chip_break`), so the
 /// preview and time estimate see the same motion a non-canned dialect
-/// would cut.
+/// would cut. Per-peck dwells accumulate into the preview's dwell sum.
 fn expand_cycle_segments(
-    out: &mut Vec<ToolpathSegment>,
+    preview: &mut IrPreview,
     pos: &mut Pose3,
     cycle_type: &str,
     params: &std::collections::BTreeMap<String, f64>,
@@ -825,6 +893,8 @@ fn expand_cycle_segments(
     op_id: u32,
 ) {
     let get = |k: &str| params.get(k).copied();
+    let feed = get("feedrate").unwrap_or(0.0);
+    let dwell = get("dwell").unwrap_or(0.0).max(0.0);
     for point in points {
         let bottom = point.z;
         let retract = get("retract").unwrap_or(bottom);
@@ -833,19 +903,7 @@ fn expand_cycle_segments(
             y: point.y,
             z: retract,
         };
-        let mut push = |from: Pose3, to: Pose3, kind: MoveKind| {
-            if from != to {
-                out.push(ToolpathSegment {
-                    from,
-                    to,
-                    kind,
-                    gcode_line: 0,
-                    op_id,
-                    arc: None,
-                });
-            }
-        };
-        push(*pos, entry, MoveKind::Rapid);
+        push_segment(preview, *pos, entry, MoveKind::Rapid, None, op_id, 0.0);
         let at = |z: f64| Pose3 {
             x: point.x,
             y: point.y,
@@ -863,31 +921,105 @@ fn expand_cycle_segments(
                 let mut current = retract;
                 loop {
                     let next = (current - q).max(bottom);
-                    push(at(current), at(next), MoveKind::Plunge);
+                    push_segment(
+                        preview,
+                        at(current),
+                        at(next),
+                        MoveKind::Plunge,
+                        None,
+                        op_id,
+                        feed,
+                    );
+                    preview.dwell_s += dwell;
                     current = next;
                     if current <= bottom + 1e-9 {
                         break;
                     }
                     if full_retract {
-                        push(at(current), at(retract), MoveKind::Retract);
-                        let re_entry = current + RE_ENTRY_CLEARANCE_MM;
-                        push(at(retract), at(re_entry.min(retract)), MoveKind::Rapid);
-                        push(at(re_entry.min(retract)), at(current), MoveKind::Plunge);
+                        push_segment(
+                            preview,
+                            at(current),
+                            at(retract),
+                            MoveKind::Retract,
+                            None,
+                            op_id,
+                            0.0,
+                        );
+                        let re_entry = (current + RE_ENTRY_CLEARANCE_MM).min(retract);
+                        push_segment(
+                            preview,
+                            at(retract),
+                            at(re_entry),
+                            MoveKind::Rapid,
+                            None,
+                            op_id,
+                            0.0,
+                        );
+                        push_segment(
+                            preview,
+                            at(re_entry),
+                            at(current),
+                            MoveKind::Plunge,
+                            None,
+                            op_id,
+                            feed,
+                        );
                     } else {
                         let break_z = (current
                             + get("chipBreakDistance").unwrap_or(CHIP_BREAK_DISTANCE_MM))
                         .min(retract);
-                        push(at(current), at(break_z), MoveKind::Retract);
-                        push(at(break_z), at(current), MoveKind::Plunge);
+                        push_segment(
+                            preview,
+                            at(current),
+                            at(break_z),
+                            MoveKind::Retract,
+                            None,
+                            op_id,
+                            0.0,
+                        );
+                        push_segment(
+                            preview,
+                            at(break_z),
+                            at(current),
+                            MoveKind::Plunge,
+                            None,
+                            op_id,
+                            feed,
+                        );
                     }
                 }
-                push(at(bottom), at(retract), MoveKind::Retract);
+                push_segment(
+                    preview,
+                    at(bottom),
+                    at(retract),
+                    MoveKind::Retract,
+                    None,
+                    op_id,
+                    0.0,
+                );
             }
             // drilling / counter-boring / anything unrecognized:
-            // straight plunge + retract (dwells carry no geometry).
+            // straight plunge + retract.
             _ => {
-                push(entry, at(bottom), MoveKind::Plunge);
-                push(at(bottom), entry, MoveKind::Retract);
+                push_segment(
+                    preview,
+                    entry,
+                    at(bottom),
+                    MoveKind::Plunge,
+                    None,
+                    op_id,
+                    feed,
+                );
+                preview.dwell_s += dwell;
+                push_segment(
+                    preview,
+                    at(bottom),
+                    entry,
+                    MoveKind::Retract,
+                    None,
+                    op_id,
+                    0.0,
+                );
             }
         }
         *pos = entry;

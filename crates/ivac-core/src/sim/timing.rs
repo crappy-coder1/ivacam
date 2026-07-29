@@ -213,6 +213,27 @@ pub struct OpRates {
     pub feed_rate_mm_min: u32,
 }
 
+/// Like [`estimate_from_gcode_with_rates`] but with the per-segment
+/// feeds and dwell total supplied directly (the CPS pipeline derives
+/// them from the recorded IR, so the estimate never depends on the
+/// post's output text being parseable).
+#[must_use]
+pub fn estimate_from_feeds_with_rates(
+    segments: &[ToolpathSegment],
+    feeds_mm_min: &[f64],
+    dwell_s: f64,
+    machine: &MachineConfig,
+    tool_changes: u32,
+    spindle_warmup_s: f64,
+    op_rates: &[OpRates],
+) -> TimeEstimate {
+    let clamped = clamp_feeds_by_kind(segments, feeds_mm_min, op_rates);
+    let mut est = estimate(segments, &clamped, machine, tool_changes, spindle_warmup_s);
+    est.dwell_s += dwell_s;
+    est.total_s += dwell_s;
+    est
+}
+
 /// Like [`estimate_from_gcode`] but also clamps per-segment feeds to
 /// the tool's declared plunge/cut rates. `op_rates` is a small lookup
 /// of `op_id → (plunge_rate, feed_rate)`; segments whose `op_id` isn't

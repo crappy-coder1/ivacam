@@ -626,6 +626,10 @@ components:
         enum:
         - cps_unavailable
         type: string
+      - description: The `.cps` post failed — parse/runtime error, an `error()` halt inside the post, or an unresolvable post selection.
+        enum:
+        - cps_post_failed
+        type: string
     ErrorKind:
       enum:
       - bad_input
@@ -822,6 +826,11 @@ components:
           type: string
         gcode_index:
           $ref: '#/components/schemas/GcodeIndex'
+        output_extension:
+          description: Output file extension the post declares (`.cps` posts carry their own, e.g. `"nc"`). `None` for the built-in dialects — exporters fall back to their per-dialect defaults.
+          type:
+          - string
+          - 'null'
         regions:
           description: 'Filled-area preview for Pocket ops: the actual region the cutter will machine, computed via the per-op `SourceCombine` mode (Auto by default — outer + inner = annulus). The frontend paints these as translucent fills so the user sees what they''re cutting before reading the toolpath. Empty for non-Pocket ops.'
           items:
@@ -2239,6 +2248,11 @@ components:
           type: string
         gcode_index:
           $ref: '#/components/schemas/GcodeIndex'
+        output_extension:
+          description: Output file extension the post declares (`.cps` posts carry their own, e.g. `"nc"`). `None` for the built-in dialects — exporters fall back to their per-dialect defaults.
+          type:
+          - string
+          - 'null'
         regions:
           description: 'Filled-area preview for Pocket ops: the actual region the cutter will machine, computed via the per-op `SourceCombine` mode (Auto by default — outer + inner = annulus). The frontend paints these as translucent fills so the user sees what they''re cutting before reading the toolpath. Empty for non-Pocket ops.'
           items:
@@ -4404,6 +4418,10 @@ components:
       - description: This build has no `.cps` runtime (compiled without the `cps` feature), or the CPS execution path isn't available.
         enum:
         - cps_unavailable
+        type: string
+      - description: The `.cps` post failed — parse/runtime error, an `error()` halt inside the post, or an unresolvable post selection.
+        enum:
+        - cps_post_failed
         type: string
     WiacErrorKind:
       enum:

@@ -73,6 +73,9 @@ pub enum ErrorCode {
     /// This build has no `.cps` runtime (compiled without the `cps`
     /// feature), or the CPS execution path isn't available.
     CpsUnavailable,
+    /// The `.cps` post failed — parse/runtime error, an `error()` halt
+    /// inside the post, or an unresolvable post selection.
+    CpsPostFailed,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

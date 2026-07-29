@@ -205,6 +205,7 @@ export type MsgKey =
   | "dialog.unsaved.dont_save"
   | "dialog.unsaved.save_continue"
   | "dialog.unsaved.title"
+  | "error.code.cps_post_failed"
   | "error.code.cps_selection_missing"
   | "error.code.cps_unavailable"
   | "error.code.internal_panic"
@@ -218,6 +219,7 @@ export type MsgKey =
   | "error.fix.change_profile_offset"
   | "error.fix.disable_op"
   | "error.fix.lower_sim_resolution"
+  | "error.hint.cps_post_failed"
   | "error.hint.cps_selection_missing"
   | "error.hint.cps_unavailable"
   | "error.hint.internal_panic"
@@ -1859,6 +1861,7 @@ export const MSG_KEYS: readonly MsgKey[] = [
   "dialog.unsaved.dont_save",
   "dialog.unsaved.save_continue",
   "dialog.unsaved.title",
+  "error.code.cps_post_failed",
   "error.code.cps_selection_missing",
   "error.code.cps_unavailable",
   "error.code.internal_panic",
@@ -1872,6 +1875,7 @@ export const MSG_KEYS: readonly MsgKey[] = [
   "error.fix.change_profile_offset",
   "error.fix.disable_op",
   "error.fix.lower_sim_resolution",
+  "error.hint.cps_post_failed",
   "error.hint.cps_selection_missing",
   "error.hint.cps_unavailable",
   "error.hint.internal_panic",

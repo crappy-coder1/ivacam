@@ -121,12 +121,29 @@ fn cmd_generate(args: impl Iterator<Item = String>) -> Result<()> {
     let mut tool_offset = ToolOffset::Outside;
 
     let mut overcut = false;
+    // CPS post selection (only meaningful with --post cps).
+    let mut post_file: Option<PathBuf> = None;
+    let mut post_id: Option<String> = None;
+    let mut post_props: Vec<(String, String)> = Vec::new();
     let mut iter = args.peekable();
     while let Some(arg) = iter.next() {
         let needs_value =
             |opt: &'static str| move || i18n::tp("cli.err.opt_needs_value", &[("opt", opt)]);
         match arg.as_str() {
             "--post" => post_kind = iter.next().with_context(needs_value("--post"))?,
+            "--post-file" => {
+                post_file = Some(PathBuf::from(
+                    iter.next().with_context(needs_value("--post-file"))?,
+                ));
+            }
+            "--post-id" => post_id = Some(iter.next().with_context(needs_value("--post-id"))?),
+            "--post-prop" => {
+                let raw = iter.next().with_context(needs_value("--post-prop"))?;
+                let (key, value) = raw
+                    .split_once('=')
+                    .context("--post-prop expects key=value")?;
+                post_props.push((key.to_string(), value.to_string()));
+            }
             "--diameter" => {
                 diameter = iter
                     .next()
@@ -163,23 +180,39 @@ fn cmd_generate(args: impl Iterator<Item = String>) -> Result<()> {
     setup.mill.overcut = overcut;
     setup.machine.comments = true;
 
-    let gcode = match post_kind.as_str() {
+    #[cfg(not(feature = "cps"))]
+    let _ = (&post_file, &post_id, &post_props);
+    let (gcode, cps_toolpath) = match post_kind.as_str() {
         "linuxcnc" | "" => {
             let mut p = linuxcnc::Post::new();
-            emit_polylines(&setup, &offsets, &mut p)
+            (emit_polylines(&setup, &offsets, &mut p), None)
         }
         "grbl" => {
             let mut p = grbl::Post::new();
-            emit_polylines(&setup, &offsets, &mut p)
+            (emit_polylines(&setup, &offsets, &mut p), None)
         }
         "hpgl" => {
             let mut p = hpgl::Post::new();
-            emit_polylines(&setup, &offsets, &mut p)
+            (emit_polylines(&setup, &offsets, &mut p), None)
+        }
+        #[cfg(feature = "cps")]
+        "cps" => {
+            let response = generate_cps(
+                &import,
+                diameter,
+                depth,
+                step,
+                tool_offset,
+                post_file.as_deref(),
+                post_id.as_deref(),
+                &post_props,
+            )?;
+            (response.gcode, Some(response.toolpath))
         }
         other => bail!("{}", i18n::tp("cli.err.unknown_post", &[("name", other)])),
     };
 
-    let toolpath = preview::interpret(&gcode);
+    let toolpath = cps_toolpath.unwrap_or_else(|| preview::interpret(&gcode));
 
     let body = GenerateResponseJson {
         gcode: &gcode,
@@ -189,6 +222,77 @@ fn cmd_generate(args: impl Iterator<Item = String>) -> Result<()> {
     serde_json::to_writer_pretty(std::io::stdout(), &body)?;
     println!();
     Ok(())
+}
+
+/// `--post cps`: build a one-op Profile project from the import and run
+/// the REAL pipeline (recorder → JS post), so the CLI exercises the
+/// same path the interactive transports use. The post comes from
+/// `--post-id <bundled>` or `--post-file <path.cps>`; `--post-prop
+/// key=value` (repeatable) sets property overrides (bool/number
+/// auto-detected, everything else a string).
+#[cfg(feature = "cps")]
+#[allow(clippy::too_many_arguments)]
+fn generate_cps(
+    import: &ivac_core::input::ImportOutput,
+    diameter: f64,
+    depth: f64,
+    step: f64,
+    tool_offset: ToolOffset,
+    post_file: Option<&std::path::Path>,
+    post_id: Option<&str>,
+    post_props: &[(String, String)],
+) -> Result<ivac_core::pipeline::PipelineResponse> {
+    use ivac_core::pipeline::{
+        run_pipeline, CpsParamValue, CpsPostSelection, CpsPostSource, PipelineRequest,
+        PostProcessorKind,
+    };
+    use ivac_core::project::{Op, OpKind, Project, ToolEntry};
+
+    let source = match (post_file, post_id) {
+        (Some(path), _) => CpsPostSource::Path {
+            path: path.display().to_string(),
+        },
+        (None, Some(id)) => CpsPostSource::Bundled { id: id.to_string() },
+        (None, None) => {
+            bail!("--post cps needs --post-id <bundled id> or --post-file <file.cps>")
+        }
+    };
+    let mut properties = std::collections::BTreeMap::new();
+    for (key, raw) in post_props {
+        let value = if raw == "true" || raw == "false" {
+            CpsParamValue::Bool(raw == "true")
+        } else if let Ok(number) = raw.parse::<f64>() {
+            CpsParamValue::Number(number)
+        } else {
+            CpsParamValue::Text(raw.clone())
+        };
+        properties.insert(key.clone(), value);
+    }
+
+    let mut tool = ToolEntry::default();
+    tool.id = 1;
+    tool.diameter = diameter;
+    tool.default_step = Some(step);
+    let mut op = Op::default();
+    op.params.depth = depth;
+    if let OpKind::Profile { offset, .. } = &mut op.kind {
+        *offset = tool_offset;
+    }
+    let project = Project {
+        segments: import.segments.clone(),
+        tools: vec![tool],
+        operations: vec![op],
+        ..Project::default()
+    };
+    run_pipeline(
+        PipelineRequest {
+            project,
+            post_processor: Some(PostProcessorKind::Cps),
+            cps_post: Some(CpsPostSelection { source, properties }),
+        },
+        |_, _, _| {},
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 /// Stream g-code from a full project JSON (a serialized `PipelineRequest` —

@@ -401,7 +401,7 @@ export interface components {
             error: string;
         };
         /** @description Stable identifiers for the errors the GUI surfaces, so the frontend can localize them. Add a variant here + an `error.code.<snake>` (and optional `error.hint.<snake>`) entry in `frontend/src/lib/i18n/messages/en.json`. */
-        ErrorCode: "unknown_post_processor" | "missing_tool" | "unimplemented_op_kind" | "text_render_failed" | "internal_panic" | "two_sided_through" | "cps_selection_missing" | "cps_unavailable";
+        ErrorCode: "unknown_post_processor" | "missing_tool" | "unimplemented_op_kind" | "text_render_failed" | "internal_panic" | "two_sided_through" | "cps_selection_missing" | "cps_unavailable" | "cps_post_failed";
         /** @enum {string} */
         ErrorKind: "bad_input" | "misconfigured" | "limit" | "unsupported" | "io" | "internal";
         /** @description A user-declared physical obstacle on the stock the cutter must miss. Lives in stock-relative XY (same frame as the imported geometry) and occupies a Z range; the sim collision test gates on that range first then falls back to a per-shape XY swept-region check. */
@@ -498,6 +498,8 @@ export interface components {
         GenerateResponse: {
             gcode: string;
             gcode_index: components["schemas"]["GcodeIndex"];
+            /** @description Output file extension the post declares (`.cps` posts carry their own, e.g. `"nc"`). `None` for the built-in dialects — exporters fall back to their per-dialect defaults. */
+            output_extension?: string | null;
             /** @description Filled-area preview for Pocket ops: the actual region the cutter will machine, computed via the per-op `SourceCombine` mode (Auto by default — outer + inner = annulus). The frontend paints these as translucent fills so the user sees what they're cutting before reading the toolpath. Empty for non-Pocket ops. */
             regions?: components["schemas"]["RegionPreview"][];
             stats: components["schemas"]["PipelineStats"];
@@ -1417,6 +1419,8 @@ export interface components {
         PipelineResponse: {
             gcode: string;
             gcode_index: components["schemas"]["GcodeIndex"];
+            /** @description Output file extension the post declares (`.cps` posts carry their own, e.g. `"nc"`). `None` for the built-in dialects — exporters fall back to their per-dialect defaults. */
+            output_extension?: string | null;
             /** @description Filled-area preview for Pocket ops: the actual region the cutter will machine, computed via the per-op `SourceCombine` mode (Auto by default — outer + inner = annulus). The frontend paints these as translucent fills so the user sees what they're cutting before reading the toolpath. Empty for non-Pocket ops. */
             regions?: components["schemas"]["RegionPreview"][];
             stats: components["schemas"]["PipelineStats"];
@@ -2610,7 +2614,7 @@ export interface components {
             span?: components["schemas"]["SourceSpan"] | null;
         };
         /** @description Stable identifiers for the errors the GUI surfaces, so the frontend can localize them. Add a variant here + an `error.code.<snake>` (and optional `error.hint.<snake>`) entry in `frontend/src/lib/i18n/messages/en.json`. */
-        WiacErrorCode: "unknown_post_processor" | "missing_tool" | "unimplemented_op_kind" | "text_render_failed" | "internal_panic" | "two_sided_through" | "cps_selection_missing" | "cps_unavailable";
+        WiacErrorCode: "unknown_post_processor" | "missing_tool" | "unimplemented_op_kind" | "text_render_failed" | "internal_panic" | "two_sided_through" | "cps_selection_missing" | "cps_unavailable" | "cps_post_failed";
         /** @enum {string} */
         WiacErrorKind: "bad_input" | "misconfigured" | "limit" | "unsupported" | "io" | "internal";
         WiacSourceSpan: {

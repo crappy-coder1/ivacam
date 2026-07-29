@@ -7749,15 +7749,32 @@ mod cps_seam {
         );
     }
 
-    /// Interim behavior until the cps.7 dispatch arm lands: a VALID
-    /// selection passes validation and then reports the runtime as
-    /// unavailable. cps.7 replaces this expectation with real output.
+    /// A valid inline selection runs end-to-end: the (empty) project
+    /// records an empty program, the post's entry points fire, and the
+    /// response carries the post's declared extension.
     #[cfg(feature = "cps")]
     #[test]
-    fn cps_with_selection_reaches_the_unwired_arm() {
-        let err = run_pipeline(cps_request(Some(inline_selection())), |_, _, _| {})
-            .expect_err("arm not wired yet");
-        assert!(matches!(err, PipelineError::CpsUnavailable));
+    fn cps_with_selection_runs_the_post() {
+        let mut selection = inline_selection();
+        selection.source = CpsPostSource::Inline {
+            script: "extension = \"tap\";\nfunction onOpen() { writeln(\"HELLO\"); }".into(),
+            filename: Some("mini.cps".into()),
+        };
+        let resp = run_pipeline(cps_request(Some(selection)), |_, _, _| {}).expect("post must run");
+        assert_eq!(resp.gcode, "HELLO\n");
+        assert_eq!(resp.output_extension.as_deref(), Some("tap"));
+    }
+
+    /// An unknown bundled id is a structured post failure.
+    #[cfg(feature = "cps")]
+    #[test]
+    fn cps_unknown_bundled_post_fails_cleanly() {
+        let selection = CpsPostSelection {
+            source: CpsPostSource::Bundled { id: "nope".into() },
+            properties: std::collections::BTreeMap::new(),
+        };
+        let err = run_pipeline(cps_request(Some(selection)), |_, _, _| {}).expect_err("unknown");
+        assert!(matches!(err, PipelineError::CpsPostFailed { .. }));
     }
 
     /// Streaming has no CPS mode (the JS post runs over the whole

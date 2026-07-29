@@ -10,6 +10,7 @@
 pub mod diag;
 pub mod engine;
 pub mod ir;
+pub mod library;
 pub mod meta;
 pub mod run;
 

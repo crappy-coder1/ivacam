@@ -203,6 +203,11 @@ pub struct PipelineResponse {
     /// (`MachineConfig.toolchange_s` × number of M6s), and per-tool
     /// spindle pauses summed across used tools.
     pub time_estimate: crate::sim::timing::TimeEstimate,
+    /// Output file extension the post declares (`.cps` posts carry
+    /// their own, e.g. `"nc"`). `None` for the built-in dialects —
+    /// exporters fall back to their per-dialect defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_extension: Option<String>,
 }
 
 /// One non-fatal warning attached to (optionally) a specific op.
@@ -311,6 +316,8 @@ pub enum PipelineError {
     CpsSelectionMissing,
     #[error("this build does not support .cps post-processors")]
     CpsUnavailable,
+    #[error(".cps post failed: {message}")]
+    CpsPostFailed { message: String },
     #[error("pipeline cancelled")]
     Cancelled,
 }
@@ -346,6 +353,12 @@ impl PipelineError {
                 .with_hint(
                     "Use a build with the cps feature enabled, or pick linuxcnc, grbl, or hpgl.",
                 ),
+            ),
+            PipelineError::CpsPostFailed { message } => Some(
+                Structured::misconfigured(format!(".cps post failed: {message}"))
+                    .with_code(ErrorCode::CpsPostFailed)
+                    .with_param("detail", message)
+                    .with_hint("Check the post script (or its property values) — the message names the failing spot."),
             ),
             PipelineError::UnknownTool(op_id, tool_id) => {
                 let mut e = Structured::misconfigured(format!(
@@ -642,6 +655,12 @@ fn run_pipeline_impl<F: Fn(&str, f64, &str)>(
             p.finish()
         }};
     }
+    // CPS runs keep their recorded program around for the IR-derived
+    // preview below, and surface the post's declared file extension.
+    #[cfg(feature = "cps")]
+    let mut cps_program: Option<ivac_cps::ir::Program> = None;
+    #[allow(unused_mut)] // assigned only by the cfg(cps) arm
+    let mut output_extension: Option<String> = None;
     let gcode = match post_kind {
         PostProcessorKind::Linuxcnc => run_with_post!(linuxcnc::Post::new()),
         // z9zh: GRBL dynamic-power (M4) laser mode is opt-in per machine
@@ -652,10 +671,50 @@ fn run_pipeline_impl<F: Fn(&str, f64, &str)>(
             ))
         }
         PostProcessorKind::Hpgl => run_with_post!(hpgl::Post::new()),
-        // Validated above (feature + selection present). Execution —
-        // recorder → run_per_op → ivac_cps::run_post — is wired by
-        // cps.7 (ivac-yhdf.8); until then a valid CPS request still
-        // cannot run.
+        // Recorder → run_per_op (NO per-op cache: recording costs
+        // milliseconds while the JS run is whole-program; a follow-up
+        // memoizes the whole run) → ivac_cps::run_post.
+        #[cfg(feature = "cps")]
+        PostProcessorKind::Cps => {
+            let selection = req
+                .cps_post
+                .as_ref()
+                .expect("checked by validate_cps_request");
+            let resolved = resolve_cps_source(selection)?;
+            let mut recorder = crate::gcode::cps_recorder::CpsRecorder::new();
+            run_per_op(
+                &project,
+                &objects,
+                &header_setup,
+                &mut recorder,
+                &stats_collector,
+                progress,
+                n_ops,
+                &mut warnings,
+                sink,
+                cancel,
+                None,
+                post_tag,
+            )?;
+            let program = recorder.into_program();
+            progress("post", 0.88, "running .cps post");
+            if cancelled(cancel) {
+                return Err(PipelineError::Cancelled);
+            }
+            let overrides = cps_properties_json(&selection.properties);
+            let output = ivac_cps::run_post(&resolved.source, &resolved.name, &program, &overrides)
+                .map_err(cps_post_error)?;
+            for diagnostic in &output.diagnostics {
+                warnings.push(PipelineWarning::new(
+                    "cps_post_warning",
+                    diagnostic.message.clone(),
+                ));
+            }
+            output_extension = Some(output.extension);
+            cps_program = Some(program);
+            output.text
+        }
+        #[cfg(not(feature = "cps"))]
         PostProcessorKind::Cps => return Err(PipelineError::CpsUnavailable),
     };
     let (total_closed, total_offsets, _) = *stats_collector.borrow();
@@ -670,10 +729,33 @@ fn run_pipeline_impl<F: Fn(&str, f64, &str)>(
     // instead of re-parsing every line and re-tessellating every arc
     // (bd ivac-ryan.14). With caching off (`cache == None`) we interpret
     // directly, same as before.
+    // CPS preview comes from the recorded IR (geometry exact no matter
+    // what dialect text the post rendered); the built-in dialects keep
+    // the text-interpreting path. `cps_feeds_dwell` carries the
+    // IR-derived per-segment feeds + dwell for the time estimate.
+    #[cfg(feature = "cps")]
+    let (toolpath, gcode_index, cps_feeds_dwell) = if let Some(program) = &cps_program {
+        let (ir_preview, index) =
+            crate::gcode::cps_recorder::preview_with_line_sync(program, &gcode);
+        (
+            ir_preview.segments,
+            index,
+            Some((ir_preview.feeds_mm_min, ir_preview.dwell_s)),
+        )
+    } else {
+        let (toolpath, index) = match cache {
+            Some(c) => c.interpret_memoized(&gcode, || preview::interpret_with_index(&gcode)),
+            None => preview::interpret_with_index(&gcode),
+        };
+        (toolpath, index, None)
+    };
+    #[cfg(not(feature = "cps"))]
     let (toolpath, gcode_index) = match cache {
         Some(c) => c.interpret_memoized(&gcode, || preview::interpret_with_index(&gcode)),
         None => preview::interpret_with_index(&gcode),
     };
+    #[cfg(not(feature = "cps"))]
+    let cps_feeds_dwell: Option<(Vec<f64>, f64)> = None;
     // Scan the emitted toolpath against the machine work-area
     // envelope here (core-side) so every transport — not just the
     // frontend — surfaces soft-limit / gantry-crash risk as a critical
@@ -706,14 +788,27 @@ fn run_pipeline_impl<F: Fn(&str, f64, &str)>(
             })
         })
         .collect();
-    let time_estimate = crate::sim::timing::estimate_from_gcode_with_rates(
-        &gcode,
-        &toolpath,
-        &project.machine,
-        tool_changes,
-        spindle_warmup_s,
-        &op_rates,
-    );
+    let time_estimate = match &cps_feeds_dwell {
+        // IR-derived feeds + dwell: timing never depends on the CPS
+        // output text being parseable.
+        Some((feeds, dwell_s)) => crate::sim::timing::estimate_from_feeds_with_rates(
+            &toolpath,
+            feeds,
+            *dwell_s,
+            &project.machine,
+            tool_changes,
+            spindle_warmup_s,
+            &op_rates,
+        ),
+        None => crate::sim::timing::estimate_from_gcode_with_rates(
+            &gcode,
+            &toolpath,
+            &project.machine,
+            tool_changes,
+            spindle_warmup_s,
+            &op_rates,
+        ),
+    };
     progress("done", 1.0, "complete");
     Ok(PipelineResponse {
         stats: PipelineStats {
@@ -727,7 +822,69 @@ fn run_pipeline_impl<F: Fn(&str, f64, &str)>(
         regions,
         warnings,
         time_estimate,
+        output_extension,
     })
+}
+
+/// Resolved `.cps` script text + display name for diagnostics.
+#[cfg(feature = "cps")]
+struct ResolvedCpsSource {
+    name: String,
+    source: String,
+}
+
+#[cfg(feature = "cps")]
+fn resolve_cps_source(selection: &CpsPostSelection) -> Result<ResolvedCpsSource, PipelineError> {
+    match &selection.source {
+        CpsPostSource::Bundled { id } => ivac_cps::library::bundled(id)
+            .map(|post| ResolvedCpsSource {
+                name: format!("{}.cps", post.id),
+                source: post.source.to_string(),
+            })
+            .ok_or_else(|| PipelineError::CpsPostFailed {
+                message: format!("unknown bundled post \"{id}\""),
+            }),
+        CpsPostSource::Inline { script, filename } => Ok(ResolvedCpsSource {
+            name: filename.clone().unwrap_or_else(|| "inline.cps".to_string()),
+            source: script.clone(),
+        }),
+        // CLI-only convenience; the server rejects Path selections at
+        // the route boundary (cps.8).
+        CpsPostSource::Path { path } => std::fs::read_to_string(path)
+            .map(|source| ResolvedCpsSource {
+                name: std::path::Path::new(path)
+                    .file_name()
+                    .map_or_else(|| path.clone(), |n| n.to_string_lossy().into_owned()),
+                source,
+            })
+            .map_err(|e| PipelineError::CpsPostFailed {
+                message: format!("cannot read post file {path}: {e}"),
+            }),
+    }
+}
+
+#[cfg(feature = "cps")]
+fn cps_properties_json(properties: &BTreeMap<String, CpsParamValue>) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    for (name, value) in properties {
+        let json = match value {
+            CpsParamValue::Bool(b) => serde_json::Value::from(*b),
+            CpsParamValue::Number(n) => serde_json::Value::from(*n),
+            CpsParamValue::Text(s) => serde_json::Value::from(s.clone()),
+        };
+        map.insert(name.clone(), json);
+    }
+    serde_json::Value::Object(map)
+}
+
+#[cfg(feature = "cps")]
+fn cps_post_error(error: ivac_cps::PostError) -> PipelineError {
+    match error {
+        ivac_cps::PostError::Cancelled => PipelineError::Cancelled,
+        other => PipelineError::CpsPostFailed {
+            message: other.to_string(),
+        },
+    }
 }
 
 /// A streaming Generate's result: planning stats + the warnings that don't
