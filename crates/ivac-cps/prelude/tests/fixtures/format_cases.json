@@ -1,0 +1,418 @@
+[
+ {
+  "name": "gFormat",
+  "spec": {
+   "prefix": "G",
+   "width": 2,
+   "zeropad": true,
+   "decimals": 1
+  },
+  "values": [
+   0,
+   1,
+   2,
+   3,
+   4,
+   5.1,
+   17,
+   18,
+   19,
+   20,
+   21,
+   28,
+   43,
+   49,
+   53.1,
+   54,
+   68.2,
+   80,
+   81,
+   83,
+   90,
+   91,
+   94,
+   98,
+   99,
+   330
+  ]
+ },
+ {
+  "name": "mFormat",
+  "spec": {
+   "prefix": "M",
+   "width": 2,
+   "zeropad": true,
+   "decimals": 1
+  },
+  "values": [
+   0,
+   1,
+   3,
+   4,
+   5,
+   6,
+   8,
+   9,
+   30,
+   78,
+   79,
+   98,
+   99
+  ]
+ },
+ {
+  "name": "xyzMm",
+  "spec": {
+   "decimals": 3,
+   "forceDecimal": true
+  },
+  "values": [
+   0,
+   10,
+   10.5,
+   -10.5,
+   0.25,
+   -0.25,
+   0.0005,
+   -0.0005,
+   0.0004,
+   1.0004999,
+   2.6745,
+   -2.6745,
+   1234.5678,
+   1e-09,
+   -1e-09,
+   100,
+   0.30000000000000004,
+   99.9995,
+   -99.9995,
+   123.456499,
+   123.4565,
+   5e-05,
+   -72.19999999999999
+  ]
+ },
+ {
+  "name": "xyzInch",
+  "spec": {
+   "decimals": 4,
+   "forceDecimal": true
+  },
+  "values": [
+   0,
+   1.5,
+   -1.5,
+   5e-05,
+   -5e-05,
+   3.93700787401574,
+   0.12345
+  ]
+ },
+ {
+  "name": "ijk",
+  "spec": {
+   "decimals": 6,
+   "forceDecimal": true
+  },
+  "values": [
+   0.5,
+   -1e-06,
+   0.9999995,
+   -0.49999949999,
+   0
+  ]
+ },
+ {
+  "name": "abcDeg",
+  "spec": {
+   "decimals": 3,
+   "forceDecimal": true,
+   "scale": "DEG"
+  },
+  "values": [
+   0,
+   3.141592653589793,
+   -3.141592653589793,
+   1.5707963267948966,
+   0.5235987755982988,
+   2.0943951023931953,
+   -0.008726646259971648
+  ]
+ },
+ {
+  "name": "feedMm",
+  "spec": {
+   "decimals": 0,
+   "forceDecimal": true
+  },
+  "values": [
+   500,
+   499.5,
+   499.4,
+   -0.4,
+   0.5,
+   1200,
+   0
+  ]
+ },
+ {
+  "name": "feedInch",
+  "spec": {
+   "decimals": 1,
+   "forceDecimal": true
+  },
+  "values": [
+   19.685,
+   19.64,
+   0.05
+  ]
+ },
+ {
+  "name": "rpm",
+  "spec": {
+   "decimals": 0
+  },
+  "values": [
+   12000,
+   11999.5,
+   11999.4,
+   0
+  ]
+ },
+ {
+  "name": "sec",
+  "spec": {
+   "decimals": 3,
+   "forceDecimal": true
+  },
+  "values": [
+   0.001,
+   99999.999,
+   0.0005,
+   1,
+   2.5
+  ]
+ },
+ {
+  "name": "milli",
+  "spec": {
+   "decimals": 0
+  },
+  "values": [
+   1,
+   9999,
+   1500.5
+  ]
+ },
+ {
+  "name": "oNum",
+  "spec": {
+   "width": 4,
+   "zeropad": true,
+   "decimals": 0
+  },
+  "values": [
+   1,
+   1001,
+   12345,
+   0
+  ]
+ },
+ {
+  "name": "taper",
+  "spec": {
+   "decimals": 1,
+   "scale": "DEG"
+  },
+  "values": [
+   0.5235987755982988,
+   0.7853981633974483,
+   0
+  ]
+ },
+ {
+  "name": "cyclicPos",
+  "spec": {
+   "decimals": 3,
+   "forceDecimal": true,
+   "cyclicLimit": 6.283185307179586,
+   "cyclicSign": 1,
+   "scale": "DEG"
+  },
+  "values": [
+   7,
+   -1,
+   13,
+   6.283185307179586,
+   -6.283185307179586,
+   0
+  ]
+ },
+ {
+  "name": "cyclicSym",
+  "spec": {
+   "decimals": 3,
+   "forceDecimal": true,
+   "cyclicLimit": 3.141592653589793,
+   "cyclicSign": 0,
+   "scale": "DEG"
+  },
+  "values": [
+   4,
+   -4,
+   3.141592653589793,
+   -3.141592653589793
+  ]
+ },
+ {
+  "name": "cyclicNeg",
+  "spec": {
+   "decimals": 3,
+   "forceDecimal": true,
+   "cyclicLimit": 6.283185307179586,
+   "cyclicSign": -1,
+   "scale": "DEG"
+  },
+  "values": [
+   1,
+   -7,
+   0
+  ]
+ },
+ {
+  "name": "clamp",
+  "spec": {
+   "decimals": 2,
+   "forceDecimal": true,
+   "minimum": -10,
+   "maximum": 10
+  },
+  "values": [
+   -11,
+   11,
+   9.999,
+   -9.996,
+   10.004
+  ]
+ },
+ {
+  "name": "forceSign",
+  "spec": {
+   "decimals": 2,
+   "forceDecimal": true,
+   "forceSign": true
+  },
+  "values": [
+   5,
+   -5,
+   0,
+   0.004
+  ]
+ },
+ {
+  "name": "lzs",
+  "spec": {
+   "decimals": 3,
+   "trimLeadZero": true,
+   "forceDecimal": true
+  },
+  "values": [
+   0.5,
+   -0.5,
+   1.5,
+   0,
+   0.0004
+  ]
+ },
+ {
+  "name": "comma",
+  "spec": {
+   "decimals": 2,
+   "forceDecimal": true,
+   "decimalSymbol": ","
+  },
+  "values": [
+   1.5,
+   -3.25,
+   4
+  ]
+ },
+ {
+  "name": "minRight",
+  "spec": {
+   "decimals": 4,
+   "minDigitsRight": 2
+  },
+  "values": [
+   1,
+   1.5,
+   1.23456,
+   2.10009
+  ]
+ },
+ {
+  "name": "noTrim",
+  "spec": {
+   "decimals": 3,
+   "trim": false,
+   "forceDecimal": true
+  },
+  "values": [
+   1.5,
+   2,
+   -0.25
+  ]
+ },
+ {
+  "name": "offset5",
+  "spec": {
+   "decimals": 2,
+   "forceDecimal": true,
+   "offset": 5
+  },
+  "values": [
+   0,
+   -5,
+   2.5
+  ]
+ },
+ {
+  "name": "scaleNeg",
+  "spec": {
+   "decimals": 3,
+   "forceDecimal": true,
+   "scale": -1
+  },
+  "values": [
+   1.5,
+   -2.5,
+   0
+  ]
+ },
+ {
+  "name": "wrapped",
+  "spec": {
+   "prefix": "P",
+   "suffix": "!",
+   "decimals": 0
+  },
+  "values": [
+   42,
+   -7
+  ]
+ },
+ {
+  "name": "hex",
+  "spec": {
+   "base": 16,
+   "decimals": 0,
+   "width": 2,
+   "zeropad": true
+  },
+  "values": [
+   255,
+   10,
+   1
+  ]
+ }
+]

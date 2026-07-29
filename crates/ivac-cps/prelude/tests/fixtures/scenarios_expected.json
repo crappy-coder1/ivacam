@@ -1,0 +1,15 @@
+[
+ "variable_suppression=[\"X10.5\",\"\",\"\",\"X10.501\"]",
+ "variable_reset_and_force=[\"A1.\",\"A1.\",\"S12000\",\"S12000\",\"\",\"A9.\"]",
+ "variable_onchange_fanuc_retracted=[\"Z15.\",\"false\",\"\",\"true\",\"Z-1.\",\"false\"]",
+ "reference_variable_two_arg=[\"I5.\",\"\",\"\",\"I-2.5\",\"I7.\"]",
+ "modal_motion_and_current=[\"G00\",\"\",\"G01\",\"1\",\"G01\"]",
+ "modal_onchange_cross_reset=[\"G01\",\"G17\",\"G01\",\"\",\"\"]",
+ "fanuc_writeblock_sequence=\"G01 X10.5 F500.\\nX11.\\n\"",
+ "words_flattening=[\"G1 X10.5 F500\",\"G1 X1 Y2 Z3\",\"A B\",\"G0 X0\",\"N10 G1 X5\"]",
+ "write_words_2=\"N10 G1 X5\\n/ N40 G0\\n\"",
+ "separator_and_eol=\"G1X5F100\\nM30\\r\\n\"",
+ "redirection_buffer=[\"G0 X1\\nG1 X2\\n\",false,\"before\\nafter\\n\"]",
+ "text_helpers=[\"Tool 3 of 8\",\"F100\",\"\",\"\",\"HELLO, WORLD 5\",\"1001\",\"-12.5\",\"yes\"]",
+ "format_mutators=[\"1.5\",\"R1.6\",\"R+2.\",\"1\",\"0.1\",\"false\",\"true\",\"false\",\"true\"]"
+]

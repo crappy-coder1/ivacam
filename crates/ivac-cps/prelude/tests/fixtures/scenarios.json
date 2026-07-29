@@ -1,0 +1,54 @@
+[
+ {
+  "name": "variable_suppression",
+  "body": "\nvar f = createFormat({decimals:3, forceDecimal:true});\nvar x = createVariable({prefix:\"X\"}, f);\nvar out = [];\nout.push(x.format(10.5));\nout.push(x.format(10.5));\nout.push(x.format(10.5004));\nout.push(x.format(10.501));\nreturn JSON.stringify(out);\n"
+ },
+ {
+  "name": "variable_reset_and_force",
+  "body": "\nvar f = createFormat({decimals:1, forceDecimal:true});\nvar a = createVariable({prefix:\"A\"}, f);\nvar s = createVariable({prefix:\"S\", force:true}, createFormat({decimals:0}));\nvar out = [];\nout.push(a.format(1));\na.reset();\nout.push(a.format(1));\nout.push(s.format(12000));\nout.push(s.format(12000));\na.disable();\nout.push(a.format(9));\na.enable();\nout.push(a.format(9));\nreturn JSON.stringify(out);\n"
+ },
+ {
+  "name": "variable_onchange_fanuc_retracted",
+  "body": "\nvar retracted = true;\nvar f = createFormat({decimals:3, forceDecimal:true});\nvar z = createVariable({onchange:function() {retracted = false;}, prefix:\"Z\"}, f);\nvar out = [];\nout.push(z.format(15));\nout.push(String(retracted));\nretracted = true;\nout.push(z.format(15)); // suppressed: onchange must NOT fire\nout.push(String(retracted));\nout.push(z.format(-1));\nout.push(String(retracted));\nreturn JSON.stringify(out);\n"
+ },
+ {
+  "name": "reference_variable_two_arg",
+  "body": "\nvar f = createFormat({decimals:3, forceDecimal:true});\nvar i = createReferenceVariable({prefix:\"I\"}, f);\nvar out = [];\nout.push(i.format(5, 0));\nout.push(i.format(0, 0));      // equal to reference: suppressed\nout.push(i.format(0.0004, 0)); // rounds to reference: suppressed\nout.push(i.format(-2.5, 0));\nout.push(i.format(7));         // no reference: always out\nreturn JSON.stringify(out);\n"
+ },
+ {
+  "name": "modal_motion_and_current",
+  "body": "\nvar gFormat = createFormat({prefix:\"G\", width:2, zeropad:true, decimals:1});\nvar gMotion = createModal({}, gFormat);\nvar out = [];\nout.push(gMotion.format(0));\nout.push(gMotion.format(0));\nout.push(gMotion.format(1));\nout.push(String(gMotion.getCurrent()));\ngMotion.reset();\nout.push(gMotion.format(1));\nreturn JSON.stringify(out);\n"
+ },
+ {
+  "name": "modal_onchange_cross_reset",
+  "body": "\nvar gFormat = createFormat({prefix:\"G\", width:2, zeropad:true, decimals:1});\nvar gMotion = createModal({}, gFormat);\nvar gPlane = createModal({onchange:function() {gMotion.reset();}}, gFormat);\nvar out = [];\nout.push(gMotion.format(1));\nout.push(gPlane.format(17));\nout.push(gMotion.format(1)); // plane change reset the motion modal\nout.push(gPlane.format(17)); // suppressed: no reset side effect\nout.push(gMotion.format(1)); // suppressed again\nreturn JSON.stringify(out);\n"
+ },
+ {
+  "name": "fanuc_writeblock_sequence",
+  "body": "\nvar gFormat = createFormat({prefix:\"G\", width:2, zeropad:true, decimals:1});\nvar xyzFormat = createFormat({decimals:3, forceDecimal:true});\nvar feedFormat = createFormat({decimals:0, forceDecimal:true});\nvar gMotionModal = createModal({}, gFormat);\nvar xOutput = createVariable({prefix:\"X\"}, xyzFormat);\nvar feedOutput = createVariable({prefix:\"F\"}, feedFormat);\nfunction writeBlock() {\n  writeWords(arguments);\n}\nwriteBlock(gMotionModal.format(1), xOutput.format(10.5), feedOutput.format(500));\nwriteBlock(gMotionModal.format(1), xOutput.format(10.5), feedOutput.format(500)); // fully modal: no line\nwriteBlock(gMotionModal.format(1), xOutput.format(11), feedOutput.format(500));\nreturn JSON.stringify(__ivacTestOutput());\n"
+ },
+ {
+  "name": "words_flattening",
+  "body": "\nvar out = [];\nout.push(formatWords(\"G1\", \"X10.5\", \"F500\"));\nout.push(formatWords([\"G1\", [\"X1\", \"Y2\"], \"Z3\"]));\nout.push(formatWords(\"A\", undefined, null, \"\", \"B\"));\nfunction via() { return formatWords(arguments); }\nout.push(via(\"G0\", \"X0\"));\nfunction blocky() { var w = [\"N10\"]; return formatWords(w, arguments); }\nout.push(blocky(\"G1\", \"X5\"));\nreturn JSON.stringify(out);\n"
+ },
+ {
+  "name": "write_words_2",
+  "body": "\n__ivacTestReset();\nwriteWords2(\"N10\", \"G1\", \"X5\");\nwriteWords2(\"N20\");            // rest empty: nothing\nwriteWords2(\"N30\", \"\", undefined);\nwriteWords2(\"/\", \"N40\", \"G0\");\nreturn JSON.stringify(__ivacTestOutput());\n"
+ },
+ {
+  "name": "separator_and_eol",
+  "body": "\n__ivacTestReset();\nsetWordSeparator(\"\");\nwriteWords(\"G1\", \"X5\", \"F100\");\nsetWordSeparator(\" \");\nsetEOL(\"\\r\\n\");\nwriteWords(\"M30\");\nsetEOL(\"\\n\");\nreturn JSON.stringify(__ivacTestOutput());\n"
+ },
+ {
+  "name": "redirection_buffer",
+  "body": "\n__ivacTestReset();\nwriteln(\"before\");\nredirectToBuffer();\nwriteWords(\"G0\", \"X1\");\nwriteWords(\"G1\", \"X2\");\nvar sub = getRedirectionBuffer();\ncloseRedirection();\nwriteln(\"after\");\nreturn JSON.stringify([sub, isRedirecting(), __ivacTestOutput()]);\n"
+ },
+ {
+  "name": "text_helpers",
+  "body": "\nvar out = [];\nout.push(subst(localize(\"Tool %1 of %2\"), 3, 8));\nout.push(conditional(true, \"F100\"));\nout.push(conditional(false, \"F100\"));\nout.push(conditional(0, \"Q1\"));\nout.push(filterText(\"Hello, World! #5\".toUpperCase(), \" ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,=_-\"));\nout.push(String(getAsInt(\"1001\")));\nout.push(String(getAsFloat(\"-12.5\")));\nvar threw = \"no\";\ntry { getAsInt(\"O1001\"); } catch (e) { threw = \"yes\"; }\nout.push(threw);\nreturn JSON.stringify(out);\n"
+ },
+ {
+  "name": "format_mutators",
+  "body": "\nvar f = createFormat({decimals:3, forceDecimal:true});\nvar out = [];\nout.push(f.format(1.5));\nf.setPrefix(\"R\");\nf.setNumberOfDecimals(1);\nout.push(f.format(1.55));\nf.setForceSign(true);\nout.push(f.format(2));\nout.push(String(f.getNumberOfDecimals()));\nout.push(String(f.getMinimumValue()));\nout.push(String(f.areDifferent(1.0004, 1.0)));\nout.push(String(f.areDifferent(1.06, 1.0)));\nout.push(String(f.isSignificant(0.04)));\nout.push(String(f.isSignificant(0.06)));\nreturn JSON.stringify(out);\n"
+ }
+]
