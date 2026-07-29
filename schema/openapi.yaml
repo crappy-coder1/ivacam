@@ -35,6 +35,63 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/VersionResponse'
+  /posts:
+    get:
+      summary: List bundled .cps posts
+      operationId: listPosts
+      description: |
+        Every post shipped in this build's bundled library, with the
+        metadata `inspect_post` extracts (description, vendor, extension,
+        property sheet). Present only in builds with the `cps` feature —
+        probe `/version` capabilities for `post-cps`.
+      responses:
+        '200':
+          description: Bundled posts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PostListEntry'
+  /posts/inspect:
+    post:
+      summary: Inspect a user-supplied .cps post
+      operationId: inspectPost
+      description: |
+        Evaluates ONLY the script's top level inside the sandboxed JS
+        runtime (no filesystem/network host bindings, strict execution
+        budgets) and returns its identity + property sheet for the UI
+        properties form. Scripts above 1 MiB are rejected with 413.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - script
+              properties:
+                script:
+                  type: string
+                  description: The .cps source text.
+                filename:
+                  type: string
+                  description: Display name for diagnostics.
+      responses:
+        '200':
+          description: Post metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PostMeta'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '413':
+          description: Script exceeds the 1 MiB inspection cap
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /import:
     post:
       summary: Parse a vector file into ivaCAM geometry
@@ -583,6 +640,19 @@ components:
       - seconds
       - milliseconds
       type: string
+    EnumValueMeta:
+      description: One selectable value of an enum property.
+      properties:
+        id:
+          description: Stored value (`id` in the post's `values` list).
+          type: string
+        title:
+          description: Display label.
+          type: string
+      required:
+      - id
+      - title
+      type: object
     Error:
       properties:
         details: true
@@ -2657,6 +2727,45 @@ components:
         - position
         - seek_mm
         type: object
+    PostListEntry:
+      description: One bundled post as listed by the `/posts` surfaces.
+      properties:
+        id:
+          description: Stable id the wire selection references.
+          type: string
+        meta:
+          $ref: '#/components/schemas/PostMeta'
+      required:
+      - id
+      - meta
+      type: object
+    PostMeta:
+      description: Identity + property sheet of one post script.
+      properties:
+        capabilities:
+          default: 0
+          description: '`CAPABILITY_*` bitmask from the post''s `capabilities` global.'
+          format: uint32
+          minimum: 0.0
+          type: integer
+        description:
+          default: ''
+          description: The post's `description` global (display name).
+          type: string
+        extension:
+          default: ''
+          description: Output file extension the post declares (e.g. `"nc"`).
+          type: string
+        properties:
+          default: []
+          description: User-tunable properties in declaration order.
+          items:
+            $ref: '#/components/schemas/PropertyMeta'
+          type: array
+        vendor:
+          default: ''
+          type: string
+      type: object
     PostProcessorKind:
       oneOf:
       - enum:
@@ -2891,6 +3000,83 @@ components:
       - segments
       - tools
       type: object
+    PropertyKind:
+      description: Control shape for one property.
+      oneOf:
+      - properties:
+          type:
+            enum:
+            - bool
+            type: string
+        required:
+        - type
+        type: object
+      - properties:
+          type:
+            enum:
+            - number
+            type: string
+        required:
+        - type
+        type: object
+      - properties:
+          type:
+            enum:
+            - integer
+            type: string
+        required:
+        - type
+        type: object
+      - properties:
+          type:
+            enum:
+            - enum
+            type: string
+          values:
+            items:
+              $ref: '#/components/schemas/EnumValueMeta'
+            type: array
+        required:
+        - type
+        - values
+        type: object
+      - properties:
+          type:
+            enum:
+            - string
+            type: string
+        required:
+        - type
+        type: object
+    PropertyMeta:
+      description: One entry of the post's `properties` object.
+      properties:
+        default:
+          $ref: '#/components/schemas/PropertyValue'
+        description:
+          default: ''
+          type: string
+        kind:
+          $ref: '#/components/schemas/PropertyKind'
+        name:
+          description: The key in the `properties` object — what overrides address.
+          type: string
+        title:
+          description: Human-facing label (`title` in the post, falls back to `name`).
+          type: string
+      required:
+      - default
+      - kind
+      - name
+      - title
+      type: object
+    PropertyValue:
+      anyOf:
+      - type: boolean
+      - format: double
+        type: number
+      - type: string
+      description: 'A property''s default (and override) payload. Untagged: the JSON is the bare primitive, mirroring ivac-core''s `CpsParamValue` wire type.'
     RapidCollisionSubkind:
       description: 'Which part of the tool struck stock during a rapid — the flutes/tip (the typical "rapid past retract plane" failure) or the shank/holder (broken-collet scenario: cutter tip is in air but the shank drags through tall walls).'
       enum:

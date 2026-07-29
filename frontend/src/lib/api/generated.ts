@@ -38,6 +38,52 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/posts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List bundled .cps posts
+         * @description Every post shipped in this build's bundled library, with the
+         *     metadata `inspect_post` extracts (description, vendor, extension,
+         *     property sheet). Present only in builds with the `cps` feature —
+         *     probe `/version` capabilities for `post-cps`.
+         */
+        get: operations["listPosts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/posts/inspect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Inspect a user-supplied .cps post
+         * @description Evaluates ONLY the script's top level inside the sandboxed JS
+         *     runtime (no filesystem/network host bindings, strict execution
+         *     budgets) and returns its identity + property sheet for the UI
+         *     properties form. Scripts above 1 MiB are rejected with 413.
+         */
+        post: operations["inspectPost"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/import": {
         parameters: {
             query?: never;
@@ -396,6 +442,13 @@ export interface components {
          * @enum {string}
          */
         DwellUnit: "seconds" | "milliseconds";
+        /** @description One selectable value of an enum property. */
+        EnumValueMeta: {
+            /** @description Stored value (`id` in the post's `values` list). */
+            id: string;
+            /** @description Display label. */
+            title: string;
+        };
         Error: {
             details?: unknown;
             error: string;
@@ -1636,6 +1689,38 @@ export interface components {
              */
             seek_mm: number;
         };
+        /** @description One bundled post as listed by the `/posts` surfaces. */
+        PostListEntry: {
+            /** @description Stable id the wire selection references. */
+            id: string;
+            meta: components["schemas"]["PostMeta"];
+        };
+        /** @description Identity + property sheet of one post script. */
+        PostMeta: {
+            /**
+             * Format: uint32
+             * @description `CAPABILITY_*` bitmask from the post's `capabilities` global.
+             * @default 0
+             */
+            capabilities: number;
+            /**
+             * @description The post's `description` global (display name).
+             * @default
+             */
+            description: string;
+            /**
+             * @description Output file extension the post declares (e.g. `"nc"`).
+             * @default
+             */
+            extension: string;
+            /**
+             * @description User-tunable properties in declaration order.
+             * @default []
+             */
+            properties: components["schemas"]["PropertyMeta"][];
+            /** @default  */
+            vendor: string;
+        };
         PostProcessorKind: ("linuxcnc" | "grbl" | "hpgl") | "cps";
         /** @description A named bundle of override templates the user attaches to a machine config. Any field left at `None` keeps the built-in emitter's default behavior. The active variant of `PostProcessorKind` is unaffected — ivac's linuxcnc / grbl / hpgl emitters continue to drive line-level formatting (delta encoding, arc fitting, drill cycles). The profile only swaps the PROGRAM-LEVEL strings. */
         PostProfile: {
@@ -1748,6 +1833,37 @@ export interface components {
             /** @description Explicit work-offset (MVP) between the geometry frame (where the DXF / SVG was drawn) and the gcode WCS origin (where the user zeros the spindle on the real machine). All zeros (default) means "geometry origin = WCS origin". Full G54..G59 + per-fixture origins are a future feature; this field gives a single offset the sim and the WCS warning consult. Persisted into project files; legacy files lacking the field default to zeros and behave exactly as before. */
             work_offset?: components["schemas"]["WorkOffset"];
         };
+        /** @description Control shape for one property. */
+        PropertyKind: {
+            /** @enum {string} */
+            type: "bool";
+        } | {
+            /** @enum {string} */
+            type: "number";
+        } | {
+            /** @enum {string} */
+            type: "integer";
+        } | {
+            /** @enum {string} */
+            type: "enum";
+            values: components["schemas"]["EnumValueMeta"][];
+        } | {
+            /** @enum {string} */
+            type: "string";
+        };
+        /** @description One entry of the post's `properties` object. */
+        PropertyMeta: {
+            default: components["schemas"]["PropertyValue"];
+            /** @default  */
+            description: string;
+            kind: components["schemas"]["PropertyKind"];
+            /** @description The key in the `properties` object — what overrides address. */
+            name: string;
+            /** @description Human-facing label (`title` in the post, falls back to `name`). */
+            title: string;
+        };
+        /** @description A property's default (and override) payload. Untagged: the JSON is the bare primitive, mirroring ivac-core's `CpsParamValue` wire type. */
+        PropertyValue: boolean | number | string;
         /**
          * @description Which part of the tool struck stock during a rapid — the flutes/tip (the typical "rapid past retract plane" failure) or the shank/holder (broken-collet scenario: cutter tip is in air but the shank drags through tall walls).
          * @enum {string}
@@ -2710,6 +2826,65 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["VersionResponse"];
+                };
+            };
+        };
+    };
+    listPosts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bundled posts */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PostListEntry"][];
+                };
+            };
+        };
+    };
+    inspectPost: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description The .cps source text. */
+                    script: string;
+                    /** @description Display name for diagnostics. */
+                    filename?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Post metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PostMeta"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            /** @description Script exceeds the 1 MiB inspection cap */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
                 };
             };
         };

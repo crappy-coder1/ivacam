@@ -3044,6 +3044,15 @@ pub(crate) fn register_schemas(map: &mut crate::schema::SchemaMap) {
     crate::schema::insert::<CpsPostSelection>(map, "CpsPostSelection");
     crate::schema::insert::<CpsPostSource>(map, "CpsPostSource");
     crate::schema::insert::<CpsParamValue>(map, "CpsParamValue");
+    // Post metadata surfaces (/posts routes). xtask builds ivac-core
+    // WITH the cps feature so the schema output is deterministic; the
+    // nested PropertyMeta/PropertyKind/EnumValueMeta definitions ride
+    // along via schemars' definitions collection.
+    #[cfg(feature = "cps")]
+    {
+        crate::schema::insert::<ivac_cps::meta::PostMeta>(map, "PostMeta");
+        crate::schema::insert::<ivac_cps::meta::PostListEntry>(map, "PostListEntry");
+    }
 }
 
 #[cfg(test)]

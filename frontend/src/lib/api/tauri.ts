@@ -8,6 +8,8 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 import { CancelledError, type PipelineEvent, type ProgressEvent, type WiacClient } from './client';
 import type {
+  PostListEntry,
+  PostMeta,
   GenerateRequest,
   GenerateResponse,
   TwoSidedGenerateResponse,
@@ -71,6 +73,14 @@ export class TauriWiacClient implements WiacClient {
 
   async generateTwoSided(request: GenerateRequest): Promise<TwoSidedGenerateResponse> {
     return invoke<TwoSidedGenerateResponse>('generate_two_sided', { request });
+  }
+
+  async listPosts(): Promise<PostListEntry[]> {
+    return invoke<PostListEntry[]>('list_posts');
+  }
+
+  async inspectPost(script: string, filename?: string): Promise<PostMeta> {
+    return invoke<PostMeta>('inspect_post', { script, filename: filename ?? null });
   }
 
   // Tauri doesn't have HTTP-style streaming; the work happens in-process

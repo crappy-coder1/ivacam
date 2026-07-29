@@ -611,6 +611,25 @@ fn inspect_post_returns_fanuc_property_sheet() {
 
 // ---- error paths ----
 
+/// A spin loop hits the loop-iteration budget instead of hanging the
+/// worker (server-grade protection on by default).
+#[test]
+fn runaway_script_hits_budget() {
+    let script = "function onOpen() { while (true) {} }";
+    let err = ivac_cps::run_post_with_limits(
+        script,
+        "spin.cps",
+        &fixture_c(),
+        &no_overrides(),
+        ivac_cps::RunLimits {
+            loop_iterations: 10_000,
+            recursion: 512,
+        },
+    )
+    .expect_err("must exceed the budget");
+    assert!(matches!(err, PostError::BudgetExceeded(_)), "got: {err:?}");
+}
+
 #[test]
 fn syntax_error_maps_to_parse_with_line() {
     let program = fixture_c();

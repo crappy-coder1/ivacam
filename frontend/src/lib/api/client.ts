@@ -12,6 +12,8 @@ import type {
   RenderTextRequest,
   RenderTextResponse,
   RenderTextLayerResponse,
+  PostListEntry,
+  PostMeta,
   SurfaceField,
   WireTextLayer,
   VersionResponse,
@@ -55,6 +57,17 @@ export interface WiacClient {
    * `generate()` when a transport predates it.
    */
   generateTwoSided?(request: GenerateRequest): Promise<TwoSidedGenerateResponse>;
+  /**
+   * Bundled .cps posts with inspected metadata. Optional: present only
+   * on transports whose build carries the cps feature (probe the
+   * version capabilities for "post-cps").
+   */
+  listPosts?(): Promise<PostListEntry[]>;
+  /**
+   * Inspect a user-supplied .cps script (top-level eval in the
+   * sandboxed runtime) → its identity + property sheet.
+   */
+  inspectPost?(script: string, filename?: string): Promise<PostMeta>;
   /**
    * Render TTF font + string → segments. Used by the AddTextDialog to
    * stage geometry before adding it to the project.

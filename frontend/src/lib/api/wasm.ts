@@ -5,6 +5,8 @@
 
 import { CancelledError, type PipelineEvent, type ProgressEvent, type WiacClient } from './client';
 import type {
+  PostListEntry,
+  PostMeta,
   GenerateRequest,
   GenerateResponse,
   TwoSidedGenerateResponse,
@@ -22,6 +24,8 @@ import type {
 export type WasmModule = {
   default?: () => Promise<unknown>;
   healthz: () => { ok: boolean };
+  listPosts?: () => unknown;
+  inspectPost?: (script: string, filename?: string) => unknown;
   version: () => VersionResponse;
   importBytes: (filename: string, bytes: Uint8Array) => ImportResponse;
   generate: (request: GenerateRequest) => GenerateResponse;
@@ -66,6 +70,22 @@ export class WasmWiacClient implements WiacClient {
   async health(): Promise<boolean> {
     const m = await loadModule();
     return m.healthz().ok === true;
+  }
+
+  async listPosts(): Promise<PostListEntry[]> {
+    const m = await loadModule();
+    if (typeof m.listPosts !== 'function') {
+      throw new Error('this wasm build lacks CPS support');
+    }
+    return m.listPosts() as PostListEntry[];
+  }
+
+  async inspectPost(script: string, filename?: string): Promise<PostMeta> {
+    const m = await loadModule();
+    if (typeof m.inspectPost !== 'function') {
+      throw new Error('this wasm build lacks CPS support');
+    }
+    return m.inspectPost(script, filename) as PostMeta;
   }
 
   async version(): Promise<VersionResponse> {

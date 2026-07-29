@@ -59,6 +59,7 @@ fn main() -> Result<()> {
         "import" => cmd_import(args),
         "generate" => cmd_generate(args),
         "stream-gcode" => cmd_stream(args),
+        "posts" => cmd_posts(args),
         "" | "-h" | "--help" => {
             print_help();
             Ok(())
@@ -81,11 +82,16 @@ fn print_help() {
     eprintln!("{}", i18n::t("cli.help.usage"));
     eprintln!("  ivac import <path>");
     eprintln!("      {}", i18n::t("cli.help.import"));
-    eprintln!("  ivac generate <path> [--post linuxcnc|grbl|hpgl] [--diameter MM] [--depth MM]");
+    eprintln!(
+        "  ivac generate <path> [--post linuxcnc|grbl|hpgl|cps] [--diameter MM] [--depth MM]"
+    );
     eprintln!("                       [--inside|--outside|--on] [--overcut]");
+    eprintln!("                       [--post-id ID | --post-file FILE.cps] [--post-prop k=v]...");
     eprintln!("      {}", i18n::t("cli.help.generate"));
     eprintln!("  ivac stream-gcode <project.json> [--output FILE] [--two-sided]");
     eprintln!("      {}", i18n::t("cli.help.stream"));
+    eprintln!("  ivac posts [inspect <file.cps>]");
+    eprintln!("      {}", i18n::t("cli.help.posts"));
     eprintln!("  ivac --help");
     eprintln!("      {}", i18n::t("cli.help.help"));
     eprintln!("\n  --lang <en|de>   {}", i18n::t("cli.help.lang"));
@@ -293,6 +299,49 @@ fn generate_cps(
         |_, _, _| {},
     )
     .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+/// `ivac posts` — table of the bundled `.cps` posts;
+/// `ivac posts inspect <file.cps>` — PostMeta JSON for a script.
+#[cfg(feature = "cps")]
+fn cmd_posts(mut args: impl Iterator<Item = String>) -> Result<()> {
+    match args.next().as_deref() {
+        None => {
+            println!("{:<12} {:<28} {:<8}", "ID", "DESCRIPTION", "EXT");
+            for post in ivac_cps::library::BUNDLED {
+                let meta = ivac_cps::inspect_post(post.source, &format!("{}.cps", post.id))
+                    .map_err(|e| {
+                        anyhow::anyhow!("bundled post {} failed inspection: {e}", post.id)
+                    })?;
+                println!(
+                    "{:<12} {:<28} {:<8}",
+                    post.id, meta.description, meta.extension
+                );
+            }
+            Ok(())
+        }
+        Some("inspect") => {
+            let path = args
+                .next()
+                .context("posts inspect needs a .cps file path")?;
+            let script =
+                std::fs::read_to_string(&path).with_context(|| format!("cannot read {path}"))?;
+            let name = std::path::Path::new(&path)
+                .file_name()
+                .map_or_else(|| path.clone(), |n| n.to_string_lossy().into_owned());
+            let meta =
+                ivac_cps::inspect_post(&script, &name).map_err(|e| anyhow::anyhow!("{e}"))?;
+            serde_json::to_writer_pretty(std::io::stdout(), &meta)?;
+            println!();
+            Ok(())
+        }
+        Some(other) => bail!("unknown posts subcommand: {other}"),
+    }
+}
+
+#[cfg(not(feature = "cps"))]
+fn cmd_posts(_args: impl Iterator<Item = String>) -> Result<()> {
+    bail!("this build lacks CPS support")
 }
 
 /// Stream g-code from a full project JSON (a serialized `PipelineRequest` —

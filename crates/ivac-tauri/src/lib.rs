@@ -221,6 +221,8 @@ fn run_app() -> tauri::Result<()> {
             commands::log_error,
             commands::is_debug,
             commands::clear_pipeline_cache_cmd,
+            commands::list_posts,
+            commands::inspect_post,
         ])
         // Intercept window close so the user can confirm
         // discarding unsaved work. First CloseRequested call emits an

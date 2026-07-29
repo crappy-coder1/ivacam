@@ -75,6 +75,11 @@ pub enum PostError {
     /// expect — an ivac bug in the driver contract.
     #[error("driver contract violation: {0}")]
     Contract(String),
+    /// The script blew through an execution budget (loop-iteration /
+    /// recursion caps) — a runaway `while (true)` cannot wedge a
+    /// worker.
+    #[error("post exceeded its execution budget: {0}")]
+    BudgetExceeded(String),
     /// The host cancelled the run.
     #[error("post execution cancelled")]
     Cancelled,

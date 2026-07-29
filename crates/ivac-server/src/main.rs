@@ -67,7 +67,14 @@ async fn main() -> Result<()> {
         .route("/text", post(render_text_handler))
         .route("/text/layer", post(render_text_layer_handler))
         .route("/helix-radius", post(helix_radius_handler))
-        .route("/relief/stl", post(relief_stl_handler))
+        .route("/relief/stl", post(relief_stl_handler));
+    // Post-library surfaces exist only in cps builds; the /version
+    // capabilities probe ("post-cps") tells clients which world this is.
+    #[cfg(feature = "cps")]
+    let app = app
+        .route("/posts", get(list_posts))
+        .route("/posts/inspect", post(inspect_post_handler));
+    let app = app
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
@@ -261,13 +268,105 @@ async fn import(
     Ok(Json(serde_json::to_value(resp).unwrap()))
 }
 
+/// The server never reads server-side paths on a client's behalf —
+/// `.cps` scripts travel inline (or by bundled id). `Path` selections
+/// are a CLI-only convenience and get a clear 400 here. Unconditional:
+/// the wire type exists in every build.
+fn reject_cps_path(req: &GenerateRequest) -> Result<(), AppError> {
+    if let Some(selection) = &req.cps_post {
+        if matches!(
+            selection.source,
+            ivac_core::pipeline::CpsPostSource::Path { .. }
+        ) {
+            return Err(AppError::bad_request(
+                "cps_post.source \"path\" is CLI-only — send the script inline or use a bundled id",
+            ));
+        }
+    }
+    Ok(())
+}
+
 async fn generate(
     State(_state): State<Arc<AppState>>,
     Json(req): Json<GenerateRequest>,
 ) -> Result<Json<GenerateResponse>, AppError> {
+    reject_cps_path(&req)?;
     run_pipeline(req, |_phase, _fraction, _msg| {})
         .map(Json)
         .map_err(AppError::from)
+}
+
+/// Bundled-post listing for the frontend picker. Metadata comes from a
+/// real `inspect_post` run per post (sandboxed, budgeted); a bundled
+/// post failing inspection is an ivac build bug → 500.
+#[cfg(feature = "cps")]
+async fn list_posts() -> Result<Json<Vec<ivac_cps::meta::PostListEntry>>, AppError> {
+    let entries = tokio::task::spawn_blocking(|| {
+        ivac_cps::library::BUNDLED
+            .iter()
+            .map(|post| {
+                ivac_cps::inspect_post_with_limits(
+                    post.source,
+                    &format!("{}.cps", post.id),
+                    server_cps_limits(),
+                )
+                .map(|meta| ivac_cps::meta::PostListEntry {
+                    id: post.id.to_string(),
+                    meta,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()
+    })
+    .await
+    .map_err(|e| AppError::from_core(ivac_core::Error::internal(e.to_string())))?
+    .map_err(|e| {
+        AppError::from_core(ivac_core::Error::internal(format!(
+            "bundled post failed inspection: {e}"
+        )))
+    })?;
+    Ok(Json(entries))
+}
+
+#[cfg(feature = "cps")]
+#[derive(serde::Deserialize)]
+struct InspectPostRequest {
+    script: String,
+    #[serde(default)]
+    filename: Option<String>,
+}
+
+/// Scripts a user pastes/opens are untrusted: size-capped at 1 MiB,
+/// evaluated in the sandboxed runtime (no FS/network host bindings)
+/// under tightened execution budgets, top level only.
+#[cfg(feature = "cps")]
+async fn inspect_post_handler(
+    Json(req): Json<InspectPostRequest>,
+) -> Result<Json<ivac_cps::meta::PostMeta>, AppError> {
+    const MAX_SCRIPT_BYTES: usize = 1024 * 1024;
+    if req.script.len() > MAX_SCRIPT_BYTES {
+        return Err(AppError::from_core(ivac_core::Error::limit(format!(
+            "post script is {} bytes — the inspection cap is {MAX_SCRIPT_BYTES}",
+            req.script.len()
+        ))));
+    }
+    let meta = tokio::task::spawn_blocking(move || {
+        let name = req.filename.as_deref().unwrap_or("inline.cps");
+        ivac_cps::inspect_post_with_limits(&req.script, name, server_cps_limits())
+    })
+    .await
+    .map_err(|e| AppError::from_core(ivac_core::Error::internal(e.to_string())))?
+    .map_err(|e| AppError::bad_request(e.to_string()))?;
+    Ok(Json(meta))
+}
+
+/// Tighter-than-default budgets for user-supplied scripts on a shared
+/// worker.
+#[cfg(feature = "cps")]
+fn server_cps_limits() -> ivac_cps::RunLimits {
+    ivac_cps::RunLimits {
+        loop_iterations: 20_000_000,
+        recursion: 256,
+    }
 }
 
 /// Two-sided (flip-stock) variant of `/generate`: returns the front program
@@ -278,6 +377,7 @@ async fn generate_two_sided(
     State(_state): State<Arc<AppState>>,
     Json(req): Json<GenerateRequest>,
 ) -> Result<Json<TwoSidedResponse>, AppError> {
+    reject_cps_path(&req)?;
     run_pipeline_two_sided(req, |_phase, _fraction, _msg| {})
         .map(Json)
         .map_err(AppError::from)
@@ -695,6 +795,104 @@ mod tests {
         let body = body_json(resp).await;
         let parsed: WiacError = serde_json::from_value(body).unwrap();
         assert_eq!(parsed, inner);
+    }
+
+    #[cfg(feature = "cps")]
+    #[tokio::test]
+    async fn posts_routes_list_inspect_and_guard() {
+        use tower::ServiceExt;
+
+        // GET /posts lists the bundled library with real metadata.
+        let app = Router::new().route("/posts", get(list_posts));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/posts")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp).await;
+        let list = body.as_array().expect("array");
+        assert!(list.iter().any(|e| e["id"] == "grbl"));
+        assert!(list[0]["meta"]["properties"].is_array());
+
+        // POST /posts/inspect happy path: the bundled grbl source.
+        let inspect = || Router::new().route("/posts/inspect", post(inspect_post_handler));
+        let happy = serde_json::json!({
+            "script": ivac_cps::library::bundled("grbl").unwrap().source,
+            "filename": "grbl.cps",
+        });
+        let resp = inspect()
+            .oneshot(post_json("/posts/inspect", &happy))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let meta = body_json(resp).await;
+        assert_eq!(meta["extension"], "gcode");
+
+        // Malformed JS → 400 with the parse position in the message.
+        let broken = serde_json::json!({"script": "var x = ;"});
+        let resp = inspect()
+            .oneshot(post_json("/posts/inspect", &broken))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        // Oversize → 413.
+        let oversize = serde_json::json!({"script": "x".repeat(1024 * 1024 + 1)});
+        let resp = inspect()
+            .oneshot(post_json("/posts/inspect", &oversize))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+        // Runaway top-level script → budget error (400), not a hang.
+        let spin = serde_json::json!({"script": "while (true) {}"});
+        let resp = inspect()
+            .oneshot(post_json("/posts/inspect", &spin))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(resp).await;
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("budget"),
+            "got: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn generate_rejects_cps_path_source() {
+        use tower::ServiceExt;
+        let app = Router::new()
+            .route("/generate", post(generate))
+            .with_state(Arc::new(AppState::default()));
+        let mut req = a_request(PostProcessorKind::Cps);
+        req.cps_post = Some(ivac_core::pipeline::CpsPostSelection {
+            source: ivac_core::pipeline::CpsPostSource::Path {
+                path: "/etc/passwd".into(),
+            },
+            properties: Default::default(),
+        });
+        let resp = app
+            .oneshot(post_json("/generate", &serde_json::to_value(&req).unwrap()))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    fn post_json(uri: &str, body: &serde_json::Value) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(body).unwrap()))
+            .unwrap()
     }
 
     #[test]

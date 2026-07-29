@@ -2591,6 +2591,7 @@ version = "0.4.0"
 dependencies = [
  "anyhow",
  "ivac-core",
+ "ivac-cps",
  "serde",
  "serde_json",
  "tracing",
@@ -2639,6 +2640,7 @@ dependencies = [
  "axum",
  "futures",
  "ivac-core",
+ "ivac-cps",
  "serde",
  "serde_json",
  "tokio",
@@ -2655,6 +2657,7 @@ version = "0.4.0"
 dependencies = [
  "anyhow",
  "ivac-core",
+ "ivac-cps",
  "libc",
  "log",
  "notify",
@@ -2681,6 +2684,7 @@ dependencies = [
  "console_error_panic_hook",
  "getrandom 0.2.17",
  "ivac-core",
+ "ivac-cps",
  "js-sys",
  "serde",
  "serde-wasm-bindgen",

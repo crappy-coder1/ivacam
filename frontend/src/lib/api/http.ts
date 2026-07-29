@@ -3,6 +3,8 @@
 
 import { CancelledError, type PipelineEvent, type ProgressEvent, type WiacClient } from './client';
 import type {
+  PostListEntry,
+  PostMeta,
   GenerateRequest,
   GenerateResponse,
   TwoSidedGenerateResponse,
@@ -95,6 +97,22 @@ export class HttpWiacClient implements WiacClient {
     });
     if (!res.ok) await throwHttpError('/generate/two-sided', res);
     return (await res.json()) as TwoSidedGenerateResponse;
+  }
+
+  async listPosts(): Promise<PostListEntry[]> {
+    const res = await fetch(`${this.base}/posts`);
+    if (!res.ok) await throwHttpError('/posts', res);
+    return (await res.json()) as PostListEntry[];
+  }
+
+  async inspectPost(script: string, filename?: string): Promise<PostMeta> {
+    const res = await fetch(`${this.base}/posts/inspect`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ script, filename }),
+    });
+    if (!res.ok) await throwHttpError('/posts/inspect', res);
+    return (await res.json()) as PostMeta;
   }
 
   async renderText(request: RenderTextRequest): Promise<RenderTextResponse> {
@@ -443,6 +461,18 @@ class WasmClientLazy {
             ? c.generateTwoSided(req)
             : Promise.reject(new Error('two-sided generation not supported by this transport')),
         ),
+      listPosts: () =>
+        ensure().then((c) =>
+          c.listPosts
+            ? c.listPosts()
+            : Promise.reject(new Error('bundled posts not supported by this transport')),
+        ),
+      inspectPost: (script, filename) =>
+        ensure().then((c) =>
+          c.inspectPost
+            ? c.inspectPost(script, filename)
+            : Promise.reject(new Error('post inspection not supported by this transport')),
+        ),
       renderText: (req) => ensure().then((c) => c.renderText(req)),
       renderTextLayer: (layer) => ensure().then((c) => c.renderTextLayer(layer)),
       computeHelixRadius: (req) => ensure().then((c) => c.computeHelixRadius(req)),
@@ -484,6 +514,18 @@ class TauriClientLazy {
           c.generateTwoSided
             ? c.generateTwoSided(req)
             : Promise.reject(new Error('two-sided generation not supported by this transport')),
+        ),
+      listPosts: () =>
+        ensure().then((c) =>
+          c.listPosts
+            ? c.listPosts()
+            : Promise.reject(new Error('bundled posts not supported by this transport')),
+        ),
+      inspectPost: (script, filename) =>
+        ensure().then((c) =>
+          c.inspectPost
+            ? c.inspectPost(script, filename)
+            : Promise.reject(new Error('post inspection not supported by this transport')),
         ),
       renderText: (req) => ensure().then((c) => c.renderText(req)),
       renderTextLayer: (layer) => ensure().then((c) => c.renderTextLayer(layer)),

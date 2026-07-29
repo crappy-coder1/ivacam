@@ -164,6 +164,9 @@ fn eval_bundled(
             let raw = e.to_string();
             let message = map.remap_message(&raw);
             let file = map.file_of_message(&raw).unwrap_or(script_name);
+            if is_budget_error(&e) {
+                return Err(PostError::BudgetExceeded(message));
+            }
             if raw.starts_with("SyntaxError") {
                 if file == script_name {
                     Err(PostError::Parse {
@@ -181,6 +184,46 @@ fn eval_bundled(
             }
         }
     }
+}
+
+/// Execution budgets for one post run. Defaults are generous enough
+/// for real posts over large programs but finite, so a runaway script
+/// errors instead of wedging a worker — every transport gets this
+/// protection without wiring.
+#[derive(Debug, Clone, Copy)]
+pub struct RunLimits {
+    /// Iterations any single loop may run (`while (true)` killer).
+    pub loop_iterations: u64,
+    /// Call-stack recursion depth.
+    pub recursion: usize,
+}
+
+impl Default for RunLimits {
+    fn default() -> Self {
+        Self {
+            // The JS driver itself loops over program records; large
+            // programs reach a few hundred thousand iterations. 100M
+            // leaves orders of magnitude of headroom while still
+            // terminating a spin loop in well under a minute.
+            loop_iterations: 100_000_000,
+            recursion: 512,
+        }
+    }
+}
+
+fn apply_limits(engine: &mut Engine, limits: RunLimits) {
+    let runtime_limits = engine.context_mut().runtime_limits_mut();
+    runtime_limits.set_loop_iteration_limit(limits.loop_iterations);
+    runtime_limits.set_recursion_limit(limits.recursion);
+}
+
+fn is_budget_error(error: &boa_engine::JsError) -> bool {
+    error.as_native().is_some_and(|native| {
+        matches!(
+            native.kind,
+            boa_engine::error::JsNativeErrorKind::RuntimeLimit
+        )
+    })
 }
 
 /// A successful post run.
@@ -222,6 +265,27 @@ pub fn run_post(
     program: &ir::Program,
     properties: &serde_json::Value,
 ) -> Result<PostOutput, PostError> {
+    run_post_with_limits(
+        script,
+        script_name,
+        program,
+        properties,
+        RunLimits::default(),
+    )
+}
+
+/// [`run_post`] with explicit execution budgets (servers tighten them).
+///
+/// # Errors
+///
+/// As [`run_post`], plus [`PostError::BudgetExceeded`].
+pub fn run_post_with_limits(
+    script: &str,
+    script_name: &str,
+    program: &ir::Program,
+    properties: &serde_json::Value,
+    limits: RunLimits,
+) -> Result<PostOutput, PostError> {
     if program.version != ir::IR_VERSION {
         return Err(PostError::IrVersionMismatch(format!(
             "program is v{}, runtime supports v{}",
@@ -230,6 +294,7 @@ pub fn run_post(
         )));
     }
     let mut engine = Engine::new();
+    apply_limits(&mut engine, limits);
     let map = eval_bundled(&mut engine, script, script_name)?;
 
     let program_json =
@@ -244,6 +309,8 @@ pub fn run_post(
             let message = e.to_string();
             if message.contains("__IVAC_CANCELLED__") {
                 PostError::Cancelled
+            } else if is_budget_error(&e) {
+                PostError::BudgetExceeded(map.remap_message(&message))
             } else {
                 PostError::PostRuntime {
                     message: map.remap_message(&message),
@@ -293,7 +360,21 @@ pub fn run_post(
 /// [`PostError::Parse`] / [`PostError::PostRuntime`] when the script's
 /// top level fails, [`PostError::PreludeBug`] for runtime-side faults.
 pub fn inspect_post(script: &str, script_name: &str) -> Result<PostMeta, PostError> {
+    inspect_post_with_limits(script, script_name, RunLimits::default())
+}
+
+/// [`inspect_post`] with explicit execution budgets.
+///
+/// # Errors
+///
+/// As [`inspect_post`], plus [`PostError::BudgetExceeded`].
+pub fn inspect_post_with_limits(
+    script: &str,
+    script_name: &str,
+    limits: RunLimits,
+) -> Result<PostMeta, PostError> {
     let mut engine = Engine::new();
+    apply_limits(&mut engine, limits);
     let map = eval_bundled(&mut engine, script, script_name)?;
 
     let meta = call_export(&mut engine, "inspect", &[]).map_err(|e| PostError::PostRuntime {

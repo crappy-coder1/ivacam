@@ -84,6 +84,40 @@ pub fn version() -> Result<JsValue, JsValue> {
     serde_wasm_bindgen::to_value(&v).map_err(into_js_error)
 }
 
+/// Bundled `.cps` posts with their inspected metadata.
+#[cfg(feature = "cps")]
+#[wasm_bindgen(js_name = listPosts)]
+pub fn list_posts() -> Result<JsValue, JsValue> {
+    guard(|| {
+        let entries = ivac_cps::library::BUNDLED
+            .iter()
+            .map(|post| {
+                ivac_cps::inspect_post(post.source, &format!("{}.cps", post.id)).map(|meta| {
+                    ivac_cps::meta::PostListEntry {
+                        id: post.id.to_string(),
+                        meta,
+                    }
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| into_js_error(format!("bundled post failed inspection: {e}")))?;
+        serde_wasm_bindgen::to_value(&entries).map_err(into_js_error)
+    })
+}
+
+/// Inspect a user-supplied `.cps` script → `PostMeta` for the
+/// properties form.
+#[cfg(feature = "cps")]
+#[wasm_bindgen(js_name = inspectPost)]
+pub fn inspect_post(script: &str, filename: Option<String>) -> Result<JsValue, JsValue> {
+    guard(|| {
+        let name = filename.unwrap_or_else(|| "inline.cps".to_string());
+        let meta =
+            ivac_cps::inspect_post(script, &name).map_err(|e| into_js_error(e.to_string()))?;
+        serde_wasm_bindgen::to_value(&meta).map_err(into_js_error)
+    })
+}
+
 /// Import a DXF/SVG/HPGL byte buffer. The web client sends `File`
 /// contents as a Uint8Array and provides the filename so the Rust core
 /// can match the format detector.

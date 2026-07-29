@@ -43,6 +43,18 @@ by `node prelude/tests/run.mjs --update` (committed). The Rust test
 engine-semantics gap that would corrupt NC output — fix the prelude (or
 add a `00_polyfill.js` shim); never loosen the comparison.
 
+## Security model
+
+User `.cps` scripts are UNTRUSTED input. The runtime gives them no
+filesystem, network, or process host bindings — the entire host API is
+`__ivac`: an in-memory NC-text sink, diagnostics, a fixed clock, and a
+cancellation probe. Execution budgets (`RunLimits`: loop-iteration +
+recursion caps) terminate runaway scripts instead of wedging a worker;
+the server additionally caps inspected scripts at 1 MiB and rejects
+filesystem-path post selections outright (scripts travel inline or by
+bundled id — the server never reads server-side paths on a client's
+behalf).
+
 ## License note
 
 `refs/cam-posteditor` (Autodesk post-editor sources, FANUC test post,

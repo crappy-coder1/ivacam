@@ -126,6 +126,51 @@ pub fn healthz() -> HealthResponse {
     HealthResponse { ok: true }
 }
 
+/// Bundled `.cps` posts with their inspected metadata. JSON-typed so
+/// the command signature is identical with and without the `cps`
+/// feature (the macro registration can't be cfg-gated per entry).
+#[tauri::command]
+pub fn list_posts() -> Result<serde_json::Value, String> {
+    #[cfg(feature = "cps")]
+    {
+        let entries = ivac_cps::library::BUNDLED
+            .iter()
+            .map(|post| {
+                ivac_cps::inspect_post(post.source, &format!("{}.cps", post.id)).map(|meta| {
+                    ivac_cps::meta::PostListEntry {
+                        id: post.id.to_string(),
+                        meta,
+                    }
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("bundled post failed inspection: {e}"))?;
+        serde_json::to_value(entries).map_err(|e| e.to_string())
+    }
+    #[cfg(not(feature = "cps"))]
+    {
+        Err("this build lacks CPS support".to_string())
+    }
+}
+
+/// Inspect a user-supplied `.cps` script (file picking happens in the
+/// frontend via the dialog plugin; the TEXT travels here) → `PostMeta`
+/// JSON for the properties form.
+#[tauri::command]
+pub fn inspect_post(script: String, filename: Option<String>) -> Result<serde_json::Value, String> {
+    #[cfg(feature = "cps")]
+    {
+        let name = filename.unwrap_or_else(|| "inline.cps".to_string());
+        let meta = ivac_cps::inspect_post(&script, &name).map_err(|e| e.to_string())?;
+        serde_json::to_value(meta).map_err(|e| e.to_string())
+    }
+    #[cfg(not(feature = "cps"))]
+    {
+        let _ = (script, filename);
+        Err("this build lacks CPS support".to_string())
+    }
+}
+
 /// Drop every entry from the process-global pipeline cache.
 /// Frontend project-load / replace flows call this whenever the
 /// machine config or tool library changes since the last load — the

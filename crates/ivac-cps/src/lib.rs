@@ -15,4 +15,6 @@ pub mod meta;
 pub mod run;
 
 pub use diag::{Diagnostic, PostError, Severity};
-pub use run::{inspect_post, run_post, PostOutput};
+pub use run::{
+    inspect_post, inspect_post_with_limits, run_post, run_post_with_limits, PostOutput, RunLimits,
+};

@@ -136,6 +136,7 @@ mod tests {
         "cli.help.import",
         "cli.help.generate",
         "cli.help.stream",
+        "cli.help.posts",
         "cli.help.help",
         "cli.help.lang",
         "cli.err.unknown_subcommand",

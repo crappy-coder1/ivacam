@@ -28,6 +28,15 @@ pub struct PostMeta {
     pub properties: Vec<PropertyMeta>,
 }
 
+/// One bundled post as listed by the `/posts` surfaces.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PostListEntry {
+    /// Stable id the wire selection references.
+    pub id: String,
+    pub meta: PostMeta,
+}
+
 /// One entry of the post's `properties` object.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]

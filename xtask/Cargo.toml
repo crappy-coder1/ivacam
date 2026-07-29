@@ -13,4 +13,4 @@ workspace = true
 anyhow = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = "0.9"
-ivac-core = { workspace = true }
+ivac-core = { workspace = true, features = ["cps"] }
