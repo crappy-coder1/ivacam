@@ -3653,6 +3653,8 @@ fn gcode_include_empty_content_warns() {
 /// `gcode_include_lines_skipped` summary warning. The summary names
 /// the FIRST skipped line so the user has a concrete starting point.
 #[test]
+// 101 lines: the included body plus its expected per-line classification.
+#[allow(clippy::too_many_lines)]
 fn gcode_include_mixed_body_emits_counted_skipped_summary() {
     let include = Op {
         id: 1,

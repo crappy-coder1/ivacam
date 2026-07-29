@@ -49,11 +49,21 @@ function FormatNumber(spec) {
   }
 }
 
+/// 10^decimals, memoized — `format`/`getResultingValue` need it on
+/// every call and Math.pow is not free in an interpreter.
+FormatNumber.prototype.__pow = function () {
+  if (this.__powDecimals !== this.decimals) {
+    this.__powDecimals = this.decimals;
+    this.__powValue = Math.pow(10, this.decimals);
+  }
+  return this.__powValue;
+};
+
 // Round half away from zero at `decimals`, defeating representation
 // error: 2.6745 scaled by 10^3 is 2674.4999999999995 in binary, but the
 // intended decimal is exactly half — the relative nudge lifts it over.
 FormatNumber.prototype.__round = function (value) {
-  var p = Math.pow(10, this.decimals);
+  var p = this.__pow();
   var a = Math.abs(value) * p;
   var nudge = Math.max(1e-9, a * 1e-12);
   var n = Math.round(a + nudge);
@@ -103,7 +113,7 @@ FormatNumber.prototype.getResultingValue = function (value) {
 FormatNumber.prototype.format = function (value) {
   var v = this.getResultingValue(value);
   var negative = v < 0;
-  var p = Math.pow(10, this.decimals);
+  var p = this.__pow();
   // v is exactly on the decimals grid (post-round), so this recovers
   // the exact scaled integer.
   var n = Math.round(Math.abs(v) * p);
@@ -126,7 +136,15 @@ FormatNumber.prototype.format = function (value) {
     var fracPart = this.decimals > 0 ? digits.slice(digits.length - this.decimals) : "";
 
     if (this.trim) {
-      fracPart = fracPart.replace(/0+$/, "");
+      // Manual scan, not /0+$/: this runs once per emitted word and a
+      // regex is ~2.6x slower here (see benches/post_bench.rs).
+      var lastNonZero = fracPart.length;
+      while (lastNonZero > 0 && fracPart.charCodeAt(lastNonZero - 1) === 48) {
+        lastNonZero -= 1;
+      }
+      if (lastNonZero !== fracPart.length) {
+        fracPart = fracPart.slice(0, lastNonZero);
+      }
     }
     while (fracPart.length < this.minDigitsRight) {
       fracPart += "0";

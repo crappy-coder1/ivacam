@@ -2671,6 +2671,10 @@ pub(super) fn synthesize_finish_setup(
 /// delta-encoder. `None` falls back to the tool's library `speed` (the
 /// inter-op boundary case, where the next op's resolved speed isn't known
 /// at this site).
+// One safety envelope read top-to-bottom (retract → coolant → spindle →
+// per-strategy change → spin-up); the scaffold-ownership early return
+// pushed it over the line limit.
+#[allow(clippy::too_many_lines)]
 pub(in crate::pipeline) fn emit_toolchange_envelope<P: PostProcessor>(
     post: &mut P,
     machine: &crate::project::MachineConfig,

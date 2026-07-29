@@ -1,5 +1,21 @@
 # cargo-deny configuration. Run with `cargo deny check` (CI: see ci.yml).
 # Docs: https://embarkstudios.github.io/cargo-deny/
+#
+# .cps POST RUNTIME LICENSE NOTE (audited 2026-07-29, ivac-yhdf.11):
+# `crates/ivac-cps` reimplements an API surface described by Autodesk's
+# PUBLISHED `globals.d.ts` declarations. No Autodesk kernel code is
+# vendored, copied, or derived: the prelude is written from the
+# declarations plus documented behavior, and the bundled posts under
+# `crates/ivac-cps/posts/` are ivaCAM-authored (GPL-3.0-or-later).
+#
+# The Autodesk-copyrighted material under `refs/cam-posteditor` (the
+# FANUC test post, `globals.d.ts`) is a TEST ORACLE only. It is
+# referenced exclusively from tests — `crates/ivac-cps/tests/golden_fanuc.rs`,
+# `crates/ivac-core/tests/cps_posts.rs`, `tools/extract-symbols.mjs` —
+# each of which SKIPS when `refs/` is absent, and `refs/` is not part of
+# any build artifact (no include_str!, no build script reads it).
+# `cargo deny check licenses` therefore sees no Autodesk-licensed crate,
+# and no shipped binary or bundle carries their text.
 
 [graph]
 all-features = true
@@ -15,6 +31,11 @@ yanked = "deny"
 # migrated to the maintained skrifa in ivac-kz7r, so its ignore is gone.)
 ignore = [
     "RUSTSEC-2024-0370",  # proc-macro-error unmaintained (transitive)
+    # paste (proc-macro) unmaintained, transitive via boa_engine — the
+    # .cps runtime's JS engine. Unmaintained, not vulnerable: it's a
+    # compile-time macro helper with no runtime surface, and dropping it
+    # means dropping boa. Revisit when boa migrates off it.
+    "RUSTSEC-2024-0436",  # paste unmaintained (transitive via boa_engine)
     "RUSTSEC-2024-0411",  # gtk3-rs unmaintained
     "RUSTSEC-2024-0412",  # gtk3-rs unmaintained
     "RUSTSEC-2024-0413",  # gtk3-rs unmaintained

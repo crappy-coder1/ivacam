@@ -88,6 +88,31 @@ cargo build --workspace
 cargo test --workspace --tests   # full Rust unit + integration suite
 ```
 
+### Feature matrix: `cps` (Autodesk-`.cps` post runtime)
+
+The `.cps` post runtime (`crates/ivac-cps`, a JS engine + runtime
+prelude) is behind a cargo feature so size-sensitive builds can drop it.
+
+| transport | `cps` | why |
+| --- | --- | --- |
+| `ivac-cli` | **on** by default | desktop-class; no size pressure |
+| `ivac-server` | **on** by default | serves `/posts`, `/posts/inspect` |
+| `ivac-tauri` | **on** by default | desktop app |
+| `ivac-wasm` | **off** by default | +1.5 MiB gzipped more than doubles the browser bundle |
+
+```sh
+cargo build -p ivac-core --features cps      # opt in explicitly
+cargo test  -p ivac-core                     # feature-off matrix
+cargo test  -p ivac-core --features cps      # feature-on matrix
+scripts/wasm-size-guard.sh                   # measure the wasm delta
+```
+
+Every transport advertises its build through `/version` →
+`capabilities`: `post-cps` is present exactly when the runtime is
+compiled in, and the frontend hides the `.cps` option when it isn't. So
+a wasm-only (browser) session shows the built-in dialects only, while
+the desktop app and server offer `.cps` posts.
+
 ### Web frontend (browser)
 
 ```sh

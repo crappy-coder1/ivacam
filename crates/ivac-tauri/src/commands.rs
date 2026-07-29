@@ -156,6 +156,9 @@ pub fn list_posts() -> Result<serde_json::Value, String> {
 /// Inspect a user-supplied `.cps` script (file picking happens in the
 /// frontend via the dialog plugin; the TEXT travels here) → `PostMeta`
 /// JSON for the properties form.
+// Tauri commands deserialize their arguments, so owned parameters are
+// the required shape even on the feature-off path that ignores them.
+#[allow(clippy::needless_pass_by_value)]
 #[tauri::command]
 pub fn inspect_post(script: String, filename: Option<String>) -> Result<serde_json::Value, String> {
     #[cfg(feature = "cps")]

@@ -57,6 +57,7 @@ pub const PRELUDE: &[(&str, &str)] = &[
         "13_properties.js",
         include_str!("../prelude/13_properties.js"),
     ),
+    ("14_stubs.js", include_str!("../prelude/14_stubs.js")),
     ("15_driver.js", include_str!("../prelude/15_driver.js")),
 ];
 
@@ -88,6 +89,13 @@ impl Default for Engine {
 
 impl Engine {
     /// Build a fresh context and install `__ivac` with the host API.
+    ///
+    /// # Panics
+    ///
+    /// Never in practice: the only fallible step is registering
+    /// `__ivac` on a context this function just created, which cannot
+    /// already carry that binding.
+    #[must_use]
     pub fn new() -> Self {
         let mut context = Context::default();
         let sink: EmitSink = Gc::new(GcRefCell::new(Vec::new()));
@@ -171,6 +179,7 @@ impl Engine {
 
     /// Diagnostics pushed via `__ivac.diag` so far, as
     /// `(severity, message)` pairs.
+    #[must_use]
     pub fn diagnostics(&self) -> Vec<(String, String)> {
         self.diags.borrow().clone()
     }
@@ -178,6 +187,11 @@ impl Engine {
     /// Evaluate the runtime prelude ([`PRELUDE`]) in order. An error
     /// here is an ivac bug, not a post bug — the failing module's name
     /// is in the source position of the returned error.
+    ///
+    /// # Errors
+    ///
+    /// Returns the engine error of the first prelude module that fails
+    /// to parse or evaluate.
     pub fn eval_prelude(&mut self) -> Result<(), JsError> {
         for (name, source) in PRELUDE {
             self.eval_named(name, source)?;
@@ -188,6 +202,11 @@ impl Engine {
     /// Evaluate `src` under `name` — the name shows up in boa
     /// diagnostics so a broken prelude file or user post is
     /// attributable.
+    ///
+    /// # Errors
+    ///
+    /// Returns the engine error when `src` fails to parse or throws
+    /// during evaluation.
     pub fn eval_named(&mut self, name: &str, src: &str) -> Result<JsValue, JsError> {
         self.context
             .eval(Source::from_bytes(src.as_bytes()).with_path(Path::new(name)))
@@ -196,6 +215,11 @@ impl Engine {
     /// Call a global function by name (the `.cps` entry-point pattern:
     /// resolve the CURRENT binding at call time, so posts may redefine
     /// entry points at will).
+    ///
+    /// # Errors
+    ///
+    /// Returns a `TypeError` when the global is missing or not
+    /// callable, or the thrown value when the call itself throws.
     pub fn call_global(&mut self, name: &str, args: &[JsValue]) -> Result<JsValue, JsError> {
         let value = self
             .context
@@ -210,11 +234,13 @@ impl Engine {
     }
 
     /// Raw chunks collected by `__ivac.emit` so far.
+    #[must_use]
     pub fn output(&self) -> Vec<String> {
         self.sink.borrow().clone()
     }
 
     /// The emitted program text — all chunks joined verbatim.
+    #[must_use]
     pub fn output_text(&self) -> String {
         self.sink.borrow().concat()
     }

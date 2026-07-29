@@ -113,8 +113,13 @@ popd >/dev/null
 
 if command -v wasm-pack >/dev/null 2>&1; then
   step "wasm-pack build (web)"   wasm-pack build crates/ivac-wasm --target web --release
+  # Regression detector for the .cps runtime's browser-bundle cost. The
+  # ship decision (cps OFF for wasm) is recorded in the script itself;
+  # this gate catches an accidental size blow-up (e.g. an ICU4X pull).
+  step "wasm cps size guard"     scripts/wasm-size-guard.sh
 else
   skip "wasm-pack build (web)"   "wasm-pack not on PATH"
+  skip "wasm cps size guard"     "wasm-pack not on PATH"
 fi
 
 if command -v cargo-deny >/dev/null 2>&1; then

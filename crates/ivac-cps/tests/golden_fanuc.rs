@@ -1,7 +1,7 @@
 //! FANUC golden fixtures — the acceptance oracle for the program model
-//! + dispatch driver (cps.4): the REAL Autodesk FANUC post from refs/
-//! runs over hand-built IR programs and must produce byte-stable,
-//! hand-sanity-checked NC output.
+//! and dispatch driver (cps.4): the REAL Autodesk FANUC post from
+//! `refs/` runs over hand-built IR programs and must produce
+//! byte-stable, hand-sanity-checked NC output.
 //!
 //! The refs directory is Autodesk-copyrighted test material: these
 //! tests SKIP (with a notice) when it is absent, and nothing from it
@@ -20,13 +20,11 @@ const FANUC_RELATIVE: &str = "../../refs/cam-posteditor/src/post-parser/test/tes
 
 fn fanuc_source() -> Option<String> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(FANUC_RELATIVE);
-    match std::fs::read_to_string(&path) {
-        Ok(source) => Some(source),
-        Err(_) => {
-            eprintln!("SKIP: FANUC oracle not present at {}", path.display());
-            None
-        }
+    if let Ok(source) = std::fs::read_to_string(&path) {
+        return Some(source);
     }
+    eprintln!("SKIP: FANUC oracle not present at {}", path.display());
+    None
 }
 
 fn assert_snapshot(name: &str, actual: &str, expected: &str) {
@@ -107,8 +105,8 @@ fn program(sections: Vec<Section>) -> Program {
     }
 }
 
-/// Fixture (a): two sections, linear + arc motion, tool change between.
-fn fixture_a() -> Program {
+/// Section 1 of fixture (a): plunge, cut, quarter arc, cut, retract.
+fn fixture_a_first_records() -> Vec<Record> {
     let cut = |x: f64, y: f64| Record::Linear {
         x,
         y,
@@ -116,7 +114,7 @@ fn fixture_a() -> Program {
         feed: 800.0,
         movement: codes::MOVEMENT_CUTTING,
     };
-    let first = vec![
+    vec![
         Record::Rapid {
             x: 10.0,
             y: 5.0,
@@ -157,8 +155,12 @@ fn fixture_a() -> Program {
             y: 25.0,
             z: 15.0,
         },
-    ];
-    let second = vec![
+    ]
+}
+
+/// Section 2 of fixture (a): a clockwise half circle on a second tool.
+fn fixture_a_second_records() -> Vec<Record> {
+    vec![
         Record::Rapid {
             x: -4.0,
             y: 0.0,
@@ -197,7 +199,13 @@ fn fixture_a() -> Program {
             y: 0.0,
             z: 15.0,
         },
-    ];
+    ]
+}
+
+/// Fixture (a): two sections, linear + arc motion, tool change between.
+fn fixture_a() -> Program {
+    let first = fixture_a_first_records();
+    let second = fixture_a_second_records();
     let mut s1 = section(1, "Profile outer", flat_endmill(6), 18000.0, first);
     s1.final_position = Position {
         x: 35.0,
@@ -402,7 +410,7 @@ fn fixture_c_use_radius_override() {
     )
     .expect("FANUC post must run fixture (c) with useRadius");
     assert!(
-        !out.text.contains(" I") || out.text.contains("R"),
+        !out.text.contains(" I") || out.text.contains('R'),
         "useRadius must switch arcs away from IJK-only output:\n{}",
         out.text
     );

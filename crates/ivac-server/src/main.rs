@@ -877,7 +877,7 @@ mod tests {
             source: ivac_core::pipeline::CpsPostSource::Path {
                 path: "/etc/passwd".into(),
             },
-            properties: Default::default(),
+            properties: std::collections::BTreeMap::default(),
         });
         let resp = app
             .oneshot(post_json("/generate", &serde_json::to_value(&req).unwrap()))

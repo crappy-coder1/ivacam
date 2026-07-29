@@ -33,6 +33,7 @@ const CHIP_BREAK_DISTANCE_MM: f64 = 0.5;
 /// Re-entry clearance of the trait-default peck expansion, mirrored by
 /// [`ir_to_toolpath`]'s deep-drilling preview.
 const RE_ENTRY_CLEARANCE_MM: f64 = 0.5;
+const TAU: f64 = std::f64::consts::TAU;
 
 #[derive(Debug)]
 pub struct CpsRecorder {
@@ -840,7 +841,6 @@ fn push_arc_chords(
     let theta_start = (from.y - cy).atan2(from.x - cx);
     let theta_end = (to.y - cy).atan2(to.x - cx);
     let mut sweep = theta_end - theta_start;
-    const TAU: f64 = std::f64::consts::TAU;
     if ccw {
         if sweep <= 1e-9 {
             sweep += TAU; // start==end → full circle in the arc's direction
@@ -884,6 +884,9 @@ fn push_arc_chords(
 /// expansions (`drill_simple`/`drill_peck`/`drill_chip_break`), so the
 /// preview and time estimate see the same motion a non-canned dialect
 /// would cut. Per-peck dwells accumulate into the preview's dwell sum.
+// One contiguous motion program per cycle type; splitting the arms into
+// helpers would scatter a sequence that reads top-to-bottom.
+#[allow(clippy::too_many_lines)]
 fn expand_cycle_segments(
     preview: &mut IrPreview,
     pos: &mut Pose3,
@@ -1027,6 +1030,10 @@ fn expand_cycle_segments(
 }
 
 #[cfg(test)]
+// Assertions compare coordinates/feeds that propagate through the
+// recorder by direct assignment from a literal — exact equality is the
+// right test (same convention as pipeline/tests.rs).
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
     use crate::project::Wcs;

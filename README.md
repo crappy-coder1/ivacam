@@ -21,6 +21,10 @@ Free, open-source CAM for the hobby shop. One self-contained app for desktop and
 - **Import**: DXF, SVG.
 - **Operations**: profile, pocket, drill (canned cycles), V-carve, engrave/text, chamfer, thread, dovetail, T-slot — with tabs, lead-in/out, and tool offsets.
 - **Machines**: mill, laser, plasma (pierce + dwell), drag knife — each with its own post-processor.
+- **Post-processors**: built-in LinuxCNC / GRBL / HPGL dialects, plus an
+  Autodesk-`.cps`-compatible runtime — run Fusion-style post scripts
+  (bundled or your own file) with their properties exposed in the UI.
+  Available on the CLI, server and desktop app.
 - **Preview**: 2D drawing canvas plus a live 3D toolpath and material-removal simulation.
 - **Shop setup**: per-tool library, reusable machine profiles, project save/load.
 
@@ -39,6 +43,7 @@ Per-platform prerequisites and the full workflow: [docs/BUILDING.md](./docs/BUIL
 
 - [Quickstart](./docs/QUICKSTART.md) — drawing → G-code in 5 minutes
 - [Building](./docs/BUILDING.md) — build & package every transport
+- [Writing a .cps post](./docs/CPS_POSTS.md) — use or author an Autodesk-compatible post
 - [Architecture](./docs/ARCHITECTURE.md) · [Contributing](./docs/CONTRIBUTING.md) — for hacking on it
 
 ## License

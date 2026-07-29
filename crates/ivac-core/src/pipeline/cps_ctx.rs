@@ -117,9 +117,7 @@ pub(crate) fn build_section_ctx(
 ) -> SectionCtx {
     let tool_entry = tool_index.get(&op.tool_id).copied();
     let pass = op_pass_kind(op);
-    let (speed, rate_v, rate_h) = tool_entry
-        .map(|t| resolve_tool_rates(t, pass))
-        .unwrap_or((0, 0, 0));
+    let (speed, rate_v, rate_h) = tool_entry.map_or((0, 0, 0), |t| resolve_tool_rates(t, pass));
     let rpm = super::setup_resolver::clamp_rpm_silent(speed, &project.machine);
     let params = vec![
         (

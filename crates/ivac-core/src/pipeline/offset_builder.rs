@@ -2524,6 +2524,9 @@ mod tests {
     /// `frame_op_storage` mutating `objects` would leak into a prior or
     /// subsequent op.
     #[test]
+    // 101 lines: two full pipeline requests inline. Kept whole so the
+    // two ops' configs read side by side.
+    #[allow(clippy::too_many_lines)]
     fn pocket_then_pocket_outside_produces_disjoint_cuts() {
         let segments = closed_square_offset(50.0, 0.0, 0.0);
         let project = Project {

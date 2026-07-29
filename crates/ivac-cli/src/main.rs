@@ -118,6 +118,9 @@ fn cmd_import(mut args: impl Iterator<Item = String>) -> Result<()> {
     Ok(())
 }
 
+// One flag-parsing loop plus the per-dialect emit switch; splitting it
+// would separate a flag from the value it sets.
+#[allow(clippy::too_many_lines)]
 fn cmd_generate(args: impl Iterator<Item = String>) -> Result<()> {
     let mut path: Option<PathBuf> = None;
     let mut post_kind = "linuxcnc".to_string();
@@ -302,7 +305,7 @@ fn generate_cps(
 }
 
 /// `ivac posts` — table of the bundled `.cps` posts;
-/// `ivac posts inspect <file.cps>` — PostMeta JSON for a script.
+/// `ivac posts inspect <file.cps>` — `PostMeta` JSON for a script.
 #[cfg(feature = "cps")]
 fn cmd_posts(mut args: impl Iterator<Item = String>) -> Result<()> {
     match args.next().as_deref() {

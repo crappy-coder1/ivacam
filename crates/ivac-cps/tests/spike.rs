@@ -25,7 +25,7 @@ fn substr_annex_b() {
     assert_eq!(eval_str(&mut e, r#""hello".substr(1)"#), "ello");
 }
 
-/// RegExp literals AND the `new RegExp` constructor (regress engine).
+/// `RegExp` literals AND the `new RegExp` constructor (regress engine).
 #[test]
 fn regexp_literal_and_constructor() {
     let mut e = Engine::new();
@@ -135,7 +135,7 @@ fn arguments_object_semantics() {
     assert_eq!(out, "3|X10.5|G1 X10.5 F500");
 }
 
-/// Closure-capturing NativeFunction on a global object — `__ivac.emit`
+/// Closure-capturing `NativeFunction` on a global object — `__ivac.emit`
 /// collects into a Rust-side sink.
 #[test]
 fn native_function_sink() {
@@ -184,7 +184,7 @@ fn script_can_overwrite_host_global() {
 /// `C.prototype.m = function () {…}` members yields the LAST assigned
 /// method instead of the instance. The prelude works around it by
 /// never instantiating during such a script's own top level
-/// (09_machine.js declares, 15_driver.js instantiates). This test
+/// (`09_machine.js` declares, `15_driver.js` instantiates). This test
 /// documents the bug shape; when an engine upgrade makes the first
 /// assertion fail, the bug is fixed upstream — drop the workaround
 /// and this test together.

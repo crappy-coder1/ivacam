@@ -292,7 +292,7 @@ pub enum Record {
     Comment {
         text: String,
     },
-    /// Raw line forwarded verbatim (GcodeInclude ops, `raw()` calls the
+    /// Raw line forwarded verbatim (`GcodeInclude` ops, `raw()` calls the
     /// recorder cannot classify).
     PassThrough {
         text: String,

@@ -30,3 +30,10 @@ tracing = { workspace = true }
 # clocks through web-time. Native builds stay off this path.
 [target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies]
 boa_engine = { workspace = true, features = ["js"] }
+
+[dev-dependencies]
+criterion = { version = "0.5", default-features = false, features = ["plotters", "cargo_bench_support"] }
+
+[[bench]]
+name = "post_bench"
+harness = false
