@@ -1,0 +1,29 @@
+[package]
+name = "ivac-cps"
+version.workspace = true
+edition.workspace = true
+# boa_engine 0.21 needs rustc 1.88 (= rust-toolchain.toml pin), above
+# the 1.80 workspace floor, so this crate declares its own MSRV.
+rust-version = "1.88"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+description = "Autodesk .cps-compatible post-processor runtime (boa JS engine + prelude)"
+
+[lints]
+workspace = true
+
+[dependencies]
+boa_engine = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+# Browser wasm needs boa's `js` feature: it routes Math.random/hash
+# seeds through getrandom's Web-Crypto backend (`getrandom/wasm_js`;
+# selected by the `getrandom_backend` cfg in .cargo/config.toml) and
+# clocks through web-time. Native builds stay off this path.
+[target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies]
+boa_engine = { workspace = true, features = ["js"] }

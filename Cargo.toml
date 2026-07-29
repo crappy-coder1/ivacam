@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/ivac-core",
+    "crates/ivac-cps",
     "crates/ivac-cli",
     "crates/ivac-server",
     "crates/ivac-tauri",
@@ -16,6 +17,7 @@ members = [
 # ivac-tauri` when those deps are present.
 default-members = [
     "crates/ivac-core",
+    "crates/ivac-cps",
     "crates/ivac-cli",
     "crates/ivac-server",
     "crates/ivac-wasm",
@@ -76,6 +78,14 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Internal crates.
 ivac-core = { path = "crates/ivac-core" }
+ivac-cps = { path = "crates/ivac-cps" }
+
+# JS engine for the Autodesk-.cps-compatible post runtime (ivac-cps).
+# Pure Rust, so it builds for wasm32-unknown-unknown without a C
+# toolchain. Pinned exact: 0.21's MSRV equals our 1.88 toolchain pin,
+# and `annex-b` is REQUIRED — vendor posts use `String.prototype.substr`
+# (Annex B). `intl` stays OFF to keep ICU4X data out of the wasm bundle.
+boa_engine = { version = "=0.21.1", default-features = false, features = ["annex-b"] }
 
 # Pure-Rust Voronoi/Delaunay (MIT) — used by the V-Carve operation to
 # build the medial axis of densified region boundaries. We disable the

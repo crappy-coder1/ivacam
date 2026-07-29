@@ -38,6 +38,15 @@ rustflags = ["-C", "link-arg=-fuse-ld=lld"]
 # mmap page-aligned), which made the debug APK balloon to ~135 MB — almost all
 # of it debug symbols in the .so. Strip them on Android only (per-target, so
 # desktop keeps its backtraces); the lib still loads and stays 16 KB-aligned.
+# getrandom 0.3 (pulled by boa_engine → rand 0.9 for ivac-cps) refuses
+# to build for wasm32-unknown-unknown until a backend is selected
+# explicitly: the `wasm_js` cargo feature (enabled via boa's `js`
+# feature in ivac-cps) makes the Web-Crypto backend AVAILABLE, and this
+# cfg SELECTS it. Both are required. getrandom 0.2 (uuid path in
+# ivac-wasm) ignores this cfg, so it's inert for existing wasm builds.
+[target.wasm32-unknown-unknown]
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']
+
 [target.aarch64-linux-android]
 rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384", "-C", "strip=symbols"]
 
