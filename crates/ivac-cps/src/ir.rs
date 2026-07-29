@@ -26,6 +26,60 @@ use std::collections::BTreeMap;
 /// dispatching garbage.
 pub const IR_VERSION: u32 = 1;
 
+/// Autodesk constant encodings the recorder stamps into code fields.
+///
+/// Values follow the declaration order in the public `globals.d.ts`
+/// (which mirrors the kernel enum order). Only the subset the recorder
+/// emits lives here; `prelude/01_constants.js` (cps.4) carries the full
+/// table plus a Rust↔JS consistency test pinned against THESE values —
+/// posts compare by NAME, so cross-side consistency is the correctness
+/// requirement, and this module is the single Rust-side source.
+pub mod codes {
+    // MOVEMENT_* (Linear.movement)
+    pub const MOVEMENT_RAPID: u32 = 0;
+    pub const MOVEMENT_LEAD_IN: u32 = 1;
+    pub const MOVEMENT_CUTTING: u32 = 2;
+    pub const MOVEMENT_LEAD_OUT: u32 = 3;
+    pub const MOVEMENT_LINK_TRANSITION: u32 = 4;
+    pub const MOVEMENT_LINK_DIRECT: u32 = 5;
+    pub const MOVEMENT_RAMP_HELIX: u32 = 6;
+    pub const MOVEMENT_RAMP_PROFILE: u32 = 7;
+    pub const MOVEMENT_RAMP_ZIG_ZAG: u32 = 8;
+    pub const MOVEMENT_RAMP: u32 = 9;
+    pub const MOVEMENT_PLUNGE: u32 = 10;
+    pub const MOVEMENT_PREDRILL: u32 = 11;
+
+    // COOLANT_* (Coolant.mode, ToolSpec.coolant)
+    pub const COOLANT_DISABLED: u32 = 0;
+    pub const COOLANT_FLOOD: u32 = 1;
+    pub const COOLANT_MIST: u32 = 2;
+
+    // COMMAND_* (Command.command)
+    pub const COMMAND_STOP: u32 = 0;
+    pub const COMMAND_OPTIONAL_STOP: u32 = 1;
+    pub const COMMAND_END: u32 = 2;
+    pub const COMMAND_SPINDLE_CLOCKWISE: u32 = 3;
+    pub const COMMAND_SPINDLE_COUNTERCLOCKWISE: u32 = 4;
+    pub const COMMAND_START_SPINDLE: u32 = 5;
+    pub const COMMAND_STOP_SPINDLE: u32 = 6;
+    pub const COMMAND_COOLANT_ON: u32 = 9;
+    pub const COMMAND_COOLANT_OFF: u32 = 10;
+
+    // TOOL_* (ToolSpec.tool_type)
+    pub const TOOL_UNSPECIFIED: u32 = 0;
+    pub const TOOL_DRILL: u32 = 1;
+    pub const TOOL_MILLING_END_FLAT: u32 = 5;
+    pub const TOOL_MILLING_END_BALL: u32 = 6;
+    pub const TOOL_MILLING_END_BULLNOSE: u32 = 7;
+    pub const TOOL_MILLING_CHAMFER: u32 = 8;
+    pub const TOOL_MILLING_TAPERED: u32 = 13;
+    pub const TOOL_MILLING_FORM: u32 = 15;
+    pub const TOOL_MILLING_THREAD: u32 = 16;
+    pub const TOOL_LASER_CUTTER: u32 = 32;
+    pub const TOOL_PLASMA_CUTTER: u32 = 33;
+    pub const TOOL_MARKER: u32 = 36;
+}
+
 /// XYZ triple for direction vectors and work-plane rows.
 pub type Vec3 = [f64; 3];
 

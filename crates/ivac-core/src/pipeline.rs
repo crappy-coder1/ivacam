@@ -42,6 +42,7 @@
     clippy::match_same_arms,
 )]
 
+pub mod cps_ctx;
 mod frame;
 mod offset_builder;
 mod op_drivers;
@@ -1844,7 +1845,16 @@ where
     const GCODE_PROGRESS_START: f64 = 0.30;
     const GCODE_PROGRESS_SPAN: f64 = 0.55;
 
-    emit_program_begin(header_setup, post);
+    // A scaffold-owning post (the .cps recorder) receives structured
+    // hooks instead of dialect scaffolding — one flag, checked at every
+    // scaffold emission site in this loop. `false` for every dialect
+    // post, keeping their output byte-identical.
+    let owns_scaffold = post.capabilities().owns_scaffold;
+    if owns_scaffold {
+        post.begin_program(&cps_ctx::build_program_ctx(project, header_setup));
+    } else {
+        emit_program_begin(header_setup, post);
+    }
     let gcode_progress = |emitted: usize, total: usize| -> f64 {
         let denom = total.max(1) as f64;
         GCODE_PROGRESS_START + GCODE_PROGRESS_SPAN * (emitted as f64 / denom)
@@ -1909,7 +1919,9 @@ where
             Some(g) if !g.is_empty() => Some(g),
             _ => None,
         };
-        if cur_group != prev_group {
+        // A scaffold-owning post gets the group name inside its
+        // SectionCtx instead of marker comment lines.
+        if cur_group != prev_group && !owns_scaffold {
             if let Some(g) = cur_group {
                 post.raw(&format!("; === GROUP: {g} ==="));
             } else {
@@ -1949,14 +1961,28 @@ where
         // no tool and don't reset prev_tool_id; no-emit ops skip the swap.
         // Program-only ops bypass the M6 toolchange envelope.
         if !op.is_program_only() && will_emit {
-            prev_tool_id = emit_boundary_toolchange(
-                op,
-                project,
-                header_setup,
-                &tool_index,
-                post,
-                prev_tool_id,
-            );
+            if owns_scaffold {
+                // One section per op, even when the tool repeats
+                // (Fusion's model) — the post decides whether the tool
+                // change is real. prev_tool_id bookkeeping stays
+                // identical to the dialect path.
+                post.begin_section(&cps_ctx::build_section_ctx(
+                    op,
+                    project,
+                    &tool_index,
+                    header_setup,
+                ));
+                prev_tool_id = Some(op.tool_id);
+            } else {
+                prev_tool_id = emit_boundary_toolchange(
+                    op,
+                    project,
+                    header_setup,
+                    &tool_index,
+                    post,
+                    prev_tool_id,
+                );
+            }
         }
         // Mark the op boundary for a streaming post: drop the previous op's
         // teed lines (already written through) so its bounded tee holds only
@@ -1973,7 +1999,11 @@ where
         // completion event) stays here, so adding a program-only kind is one
         // arm there — never new logic in this loop.
         if op.is_program_only() {
-            emit_program_only_op(op, project, post, warnings, &state_before_reset);
+            if owns_scaffold {
+                cps_program_only_event(op, project, post, warnings, &state_before_reset);
+            } else {
+                emit_program_only_op(op, project, post, warnings, &state_before_reset);
+            }
             emitted_ops += 1;
             progress(
                 "gcode",
@@ -2014,6 +2044,13 @@ where
         if let (Some(c), Some(key)) = (cache, cache_key) {
             if let Some(cached) = c.get(key) {
                 let internal_swap = apply_cached_op(post, &cached, warnings, &mut last_pos, stats);
+                // Close the section opened above. (The CPS dispatch arm
+                // passes no cache, so this path is theoretical for the
+                // recorder — kept symmetric so a future cached
+                // scaffold-owning post can't leak an open section.)
+                if owns_scaffold && will_emit {
+                    post.end_section();
+                }
                 // End-of-op tool bookkeeping, shared with the
                 // fresh-emit path via next_prev_tool_id.
                 prev_tool_id = Some(next_prev_tool_id(op, internal_swap));
@@ -2082,6 +2119,10 @@ where
                 );
             }
         }
+        // Close the section opened above (fresh-emit path).
+        if owns_scaffold && will_emit {
+            post.end_section();
+        }
         // End-of-op tool bookkeeping (see next_prev_tool_id).
         prev_tool_id = Some(next_prev_tool_id(op, internal_swap_emitted));
         emitted_ops += 1;
@@ -2095,8 +2136,84 @@ where
             cached: false,
         });
     }
-    emit_program_end(header_setup, post);
+    if owns_scaffold {
+        post.end_program();
+    } else {
+        emit_program_end(header_setup, post);
+    }
     Ok(())
+}
+
+/// Program-only ops for a scaffold-owning post: structured events
+/// instead of raw dialect lines. Mirrors [`emit_program_only_op`]'s
+/// kinds — Pause becomes a Stop event, GcodeInclude a variable-expanded
+/// pass-through (same warnings as the dialect path), and the kinds a
+/// `.cps` post has no representation for (Homing / Probe / CycleMarker)
+/// surface a `cps_unsupported_op` warning and emit nothing.
+fn cps_program_only_event<P: PostProcessor>(
+    op: &Op,
+    project: &Project,
+    post: &mut P,
+    warnings: &mut Vec<PipelineWarning>,
+    state_before_reset: &crate::gcode::CapturedPostState,
+) {
+    match &op.kind {
+        OpKind::Pause { message } => {
+            post.program_event(&cps_ctx::ProgramEventCtx::Stop {
+                message: message.clone(),
+                optional: project.machine.program_pause_code() == "M1",
+            });
+        }
+        OpKind::GcodeInclude { content, .. } => {
+            let safe_z = op.params.fast_move_z;
+            let (expanded, unknown) =
+                expand_gcode_include_vars(content, state_before_reset, safe_z);
+            for name in &unknown {
+                warnings.push(PipelineWarning::for_op(
+                    op.id,
+                    "gcode_include_unknown_variable",
+                    format!(
+                        "Op '{}': unknown variable `{{{name}}}` in included G-code passed through verbatim — fix or remove to silence.",
+                        op.name,
+                    ),
+                )
+                .with_param("op_name", op.name.as_str())
+                .with_param("variable", format!("{{{name}}}")));
+            }
+            if expanded.trim().is_empty() {
+                warnings.push(
+                    PipelineWarning::for_op(
+                        op.id,
+                        "gcode_include_empty",
+                        format!(
+                            "Op '{}': included G-code is empty — no lines emitted at this slot.",
+                            op.name,
+                        ),
+                    )
+                    .with_param("op_name", op.name.as_str()),
+                );
+            }
+            post.program_event(&cps_ctx::ProgramEventCtx::PassThrough {
+                lines: expanded.lines().map(str::to_owned).collect(),
+            });
+        }
+        OpKind::Homing { .. } | OpKind::Probe { .. } | OpKind::CycleMarker { .. } => {
+            warnings.push(
+                PipelineWarning::for_op(
+                    op.id,
+                    "cps_unsupported_op",
+                    format!(
+                        "Op '{}' ({}) has no .cps representation — skipped in CPS output.",
+                        op.name,
+                        program_only_label(&op.kind),
+                    ),
+                )
+                .with_param("op_name", op.name.as_str())
+                .with_param("kind", program_only_label(&op.kind)),
+            );
+        }
+        _ => {}
+    }
 }
 
 /// The geometry op kinds that have a dedicated driver emitting XYZ blocks
@@ -2406,6 +2523,19 @@ pub(in crate::pipeline) fn emit_toolchange_envelope<P: PostProcessor>(
     is_first_tool: bool,
     target_speed: Option<u32>,
 ) {
+    // A scaffold-owning post handles the swap itself — one structured
+    // hook instead of the dialect envelope below. This first-line gate
+    // covers every call site (dual-tool, drill Stufenfase) without
+    // touching those drivers.
+    if post.capabilities().owns_scaffold {
+        post.mid_section_toolchange(&cps_ctx::build_section_tool_ctx(
+            machine,
+            new_tool,
+            new_tool_id,
+            target_speed,
+        ));
+        return;
+    }
     // Conservative: always lift to the program-wide safe Z before
     // touching the spindle. The post delta-encodes Z so this collapses
     // to nothing on the FIRST op (program_begin already moved there).

@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use crate::cam::offsets::PolylineOffset;
 use crate::cam::setup::Setup;
 use crate::geometry::Point2;
+use crate::pipeline::cps_ctx;
 use crate::project::tool::SpindleDirection;
 use crate::project::{MachineMode, ToolOffset, UnitSystem};
 
@@ -121,6 +122,8 @@ fn cut_tool_off<P: PostProcessor>(post: &mut P, setup: &Setup) {
 }
 
 pub mod arc_fit;
+#[cfg(feature = "cps")]
+pub mod cps_recorder;
 mod emit;
 mod entry;
 pub mod face_mill_overlay;
@@ -152,6 +155,39 @@ use z_schedule::{arc_length, build_z_schedule};
 /// Generic post-processor trait. Stateful — implementations track the last
 /// emitted XYZ/feedrate/spindle so they can delta-encode output.
 pub trait PostProcessor {
+    /// What this post takes over from the pipeline. The default —
+    /// nothing — keeps every existing dialect byte-identical; only a
+    /// scaffold-owning post (the `.cps` recorder) overrides it, which
+    /// reroutes the pipeline from `emit_program_begin` /
+    /// `emit_toolchange_envelope` / group markers to the structured
+    /// hooks below.
+    fn capabilities(&self) -> cps_ctx::PostCaps {
+        cps_ctx::PostCaps::default()
+    }
+
+    /// Program start for a scaffold-owning post (replaces
+    /// `emit_program_begin`). Never called otherwise.
+    fn begin_program(&mut self, _ctx: &cps_ctx::ProgramCtx<'_>) {}
+
+    /// Program end counterpart (replaces `emit_program_end`).
+    fn end_program(&mut self) {}
+
+    /// One section per operation (replaces the boundary tool-change
+    /// envelope; fires even when the tool repeats — Fusion's model).
+    fn begin_section(&mut self, _ctx: &cps_ctx::SectionCtx) {}
+
+    /// Close of the current section, after the op's driver ran.
+    fn end_section(&mut self) {}
+
+    /// Mid-section tool swap (dual-tool rough→finish, drill→chamfer) —
+    /// the scaffold-owning replacement for `emit_toolchange_envelope`'s
+    /// body at its non-boundary call sites.
+    fn mid_section_toolchange(&mut self, _ctx: &cps_ctx::SectionToolCtx) {}
+
+    /// Non-motion program flow (Pause stop, GcodeInclude pass-through)
+    /// for a scaffold-owning post.
+    fn program_event(&mut self, _ev: &cps_ctx::ProgramEventCtx) {}
+
     fn separation(&mut self) {}
     fn raw(&mut self, _cmd: &str) {}
     fn comment(&mut self, _text: &str) {}
