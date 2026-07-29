@@ -38,6 +38,7 @@ pub const PRELUDE: &[(&str, &str)] = &[
         "02_vector_matrix.js",
         include_str!("../prelude/02_vector_matrix.js"),
     ),
+    ("03_euler.js", include_str!("../prelude/03_euler.js")),
     ("04_format.js", include_str!("../prelude/04_format.js")),
     (
         "05_variables.js",

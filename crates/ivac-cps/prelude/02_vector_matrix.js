@@ -1,9 +1,8 @@
 // 02_vector_matrix.js — Vector / Matrix / Range / BoundingBox.
 //
-// cps.4 ships the working core (what 3-axis posts touch: vector
-// algebra, identity work planes, Z ranges). cps.6 extends Matrix with
-// the 24-convention Euler engine and rotation factories for the full
-// multi-axis API.
+// Vector algebra, row-major 3x3 Matrix with the Autodesk accessor
+// names, rotation factories, and Range/BoundingBox. The Euler
+// extraction/composition these delegate to is in 03_euler.js.
 
 function Vector(x, y, z) {
   this.x = Number(x) || 0;
@@ -96,8 +95,8 @@ Vector.lerp = function (a, b, t) {
 };
 
 // Matrix: row-major 3×3. Rows are exposed the Autodesk way — right/up/
-// forward accessors plus getEuler2 (cps.6 delivers all 24 conventions;
-// the identity case posts hit for 3-axis work is exact today).
+// forward accessors, the rotation factories, and getEuler2 over all 24
+// conventions (the table-driven engine lives in 03_euler.js).
 function Matrix(right, up, forward) {
   if (right === undefined) {
     this.right = new Vector(1, 0, 0);
@@ -167,15 +166,60 @@ Matrix.prototype.transform = function (v) {
     Vector.dot(this.forward, v)
   );
 };
-/** Euler extraction — the identity fast path is exact; the general
- * table-driven engine lands with the kinematics work (cps.6). */
-Matrix.prototype.getEuler2 = function (_convention) {
-  if (this.isIdentity()) {
-    return new Vector(0, 0, 0);
-  }
-  throw new Error(
-    "Matrix.getEuler2: non-identity work planes need the cps.6 kinematics module"
+/** Euler extraction for any of the 24 conventions — implemented by the
+ * table-driven engine in 03_euler.js (loaded after this file, so the
+ * call resolves at run time, not definition time). */
+Matrix.prototype.getEuler2 = function (convention) {
+  return __ivacGetEuler(this, convention);
+};
+
+/** Alias posts use when they want the angles as a rotation triple. */
+Matrix.prototype.getEulerRotation = function (convention) {
+  return __ivacGetEuler(this, convention);
+};
+
+/** Compose a rotation matrix from Euler angles — inverse of getEuler2. */
+Matrix.getEulerRotation = function (angles, convention) {
+  return __ivacEulerToMatrix(angles, convention);
+};
+
+/** Rotation of `angle` radians about X (right-hand rule). */
+Matrix.getXRotation = function (angle) {
+  var c = Math.cos(angle);
+  var s = Math.sin(angle);
+  return new Matrix(new Vector(1, 0, 0), new Vector(0, c, -s), new Vector(0, s, c));
+};
+
+/** Rotation of `angle` radians about Y. */
+Matrix.getYRotation = function (angle) {
+  var c = Math.cos(angle);
+  var s = Math.sin(angle);
+  return new Matrix(new Vector(c, 0, s), new Vector(0, 1, 0), new Vector(-s, 0, c));
+};
+
+/** Rotation of `angle` radians about Z. */
+Matrix.getZRotation = function (angle) {
+  var c = Math.cos(angle);
+  var s = Math.sin(angle);
+  return new Matrix(new Vector(c, -s, 0), new Vector(s, c, 0), new Vector(0, 0, 1));
+};
+
+/** Rotation about an arbitrary axis (Rodrigues / axis-angle). */
+Matrix.getAxisRotation = function (axis, angle) {
+  var a = axis.getNormalized();
+  var c = Math.cos(angle);
+  var s = Math.sin(angle);
+  var t = 1 - c;
+  return new Matrix(
+    new Vector(t * a.x * a.x + c, t * a.x * a.y - s * a.z, t * a.x * a.z + s * a.y),
+    new Vector(t * a.x * a.y + s * a.z, t * a.y * a.y + c, t * a.y * a.z - s * a.x),
+    new Vector(t * a.x * a.z - s * a.y, t * a.y * a.z + s * a.x, t * a.z * a.z + c)
   );
+};
+
+/** The inverse of a pure rotation is its transpose. */
+Matrix.prototype.getInverse = function () {
+  return this.getTransposed();
 };
 
 function Range(minimum, maximum) {

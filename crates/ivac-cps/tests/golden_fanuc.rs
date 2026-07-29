@@ -617,6 +617,88 @@ fn inspect_post_returns_fanuc_property_sheet() {
     ));
 }
 
+/// Multi-axis smoke: the reserved 5D records dispatch through
+/// onRapid5D/onLinear5D with solved ABC angles when the post declares
+/// an AC-table machine and asks for machine optimization. The recorder
+/// never emits these in v1 — this proves the path is live for when it
+/// does.
+#[test]
+fn five_d_records_dispatch_with_solved_abc() {
+    let script = r#"
+description = "5D smoke";
+extension = "nc";
+function onOpen() {
+  var aAxis = createAxis({coordinate:0, table:true, axis:[1, 0, 0], range:[-120, 120], preference:1});
+  var cAxis = createAxis({coordinate:2, table:true, axis:[0, 0, 1], cyclic:true, preference:0});
+  machineConfiguration = new MachineConfiguration(aAxis, cAxis);
+  setMachineConfiguration(machineConfiguration);
+  optimizeMachineAngles2(OPTIMIZE_BOTH);
+  writeln("MULTIAXIS " + (machineConfiguration.isMultiAxisConfiguration() ? "yes" : "no"));
+  writeln("OPTIMIZED " + (isOptimizedForMachine() ? "yes" : "no"));
+}
+function onRapid5D(x, y, z, a, b, c) {
+  writeln("R5 A" + toDeg(a).toFixed(1) + " C" + toDeg(c).toFixed(1));
+}
+function onLinear5D(x, y, z, a, b, c, feed, mode) {
+  writeln("L5 A" + toDeg(a).toFixed(1) + " C" + toDeg(c).toFixed(1) + " F" + feed.toFixed(1));
+}
+function onRapid(x, y, z) { writeln("R3"); }
+function onLinear(x, y, z, feed) { writeln("L3"); }
+"#;
+    let mut program = fixture_c();
+    // Tilt 30 degrees toward +Y, then cut with the same tool axis.
+    let axis = (0.0, 0.5, 3.0_f64.sqrt() / 2.0);
+    program.sections[0].records = vec![
+        Record::Rapid5D {
+            x: 10.0,
+            y: 0.0,
+            z: 5.0,
+            dx: axis.0,
+            dy: axis.1,
+            dz: axis.2,
+        },
+        Record::Linear5D {
+            x: 20.0,
+            y: 0.0,
+            z: 5.0,
+            dx: axis.0,
+            dy: axis.1,
+            dz: axis.2,
+            feed: 500.0,
+        },
+    ];
+    let out = run_post(script, "five.cps", &program, &no_overrides()).expect("5D post runs");
+    assert!(out.text.contains("MULTIAXIS yes"), "{}", out.text);
+    assert!(out.text.contains("OPTIMIZED yes"), "{}", out.text);
+    // A 30-degree A tilt reaches the +Y-leaning tool axis with C
+    // unrotated; the solver picks the POSITIVE branch because the A
+    // axis declares preference:1 (both branches reach the direction).
+    assert!(out.text.contains("R5 A30.0 C0.0"), "{}", out.text);
+    assert!(out.text.contains("L5 A30.0 C0.0"), "{}", out.text);
+    // The 3-axis callbacks must NOT have been used for 5D records.
+    assert!(!out.text.contains("R3"), "{}", out.text);
+    assert!(!out.text.contains("L3"), "{}", out.text);
+}
+
+/// The refs FANUC post's own machine paths (activateMachine,
+/// optimizeMachineAngles2, defineWorkPlane) run over a 3-axis program
+/// without error — they execute on EVERY program, so the kinematics API
+/// has to be sound even when nothing rotates.
+#[test]
+fn fanuc_machine_paths_run_on_three_axis() {
+    let Some(source) = fanuc_source() else { return };
+    let out = run_post(&source, "fanuc.cps", &fixture_a(), &no_overrides())
+        .expect("FANUC machine paths must not error on a 3-axis program");
+    // No machine-angle diagnostics for a plain 3-axis job.
+    for diagnostic in &out.diagnostics {
+        assert!(
+            !diagnostic.message.contains("angles"),
+            "unexpected machine diagnostic: {}",
+            diagnostic.message
+        );
+    }
+}
+
 // ---- error paths ----
 
 /// A spin loop hits the loop-iteration budget instead of hanging the

@@ -354,6 +354,52 @@ function invokeOnLinear5D(x, y, z, a, b, c, feed) {
   setCurrentPosition(new Vector(x, y, z));
 }
 
+/// Dispatch one reserved 5D record. With an optimized machine the
+/// post receives ABC angles solved from the record's tool axis;
+/// otherwise it receives the tool-axis vector itself (Autodesk's two
+/// modes). The recorder never emits these in v1 — the path exists so a
+/// multi-axis IR needs no driver change.
+function __ivacDispatch5D(record, isLinear) {
+  var x = record.x * __ivacScale;
+  var y = record.y * __ivacScale;
+  var z = record.z * __ivacScale;
+  var direction = new Vector(record.dx, record.dy, record.dz).getNormalized();
+  var from = getCurrentPosition();
+  var abc;
+  if (isOptimizedForMachine()) {
+    try {
+      abc = machineConfiguration.getABC(
+        new Matrix(new Vector(1, 0, 0), new Vector(0, 1, 0), direction)
+      );
+      abc = machineConfiguration.remapABC(machineConfiguration.getPreferredABC(abc));
+    } catch (e) {
+      error(localize("Machine angles not supported") + ": " + String(e.message));
+      return false;
+    }
+  } else {
+    abc = direction;
+  }
+  setCurrentDirection(direction);
+  var feed = record.feed === undefined ? 0 : record.feed * __ivacScale;
+  if (isLinear) {
+    var distance = Vector.diff(new Vector(x, y, z), from).length;
+    var rotary = Vector.diff(abc, getCurrentABC()).length;
+    var outFeed = __ivacMultiAxisFeed(distance, rotary, feed);
+    if (typeof onLinear5D === "function") {
+      onLinear5D(x, y, z, abc.x, abc.y, abc.z, outFeed, FEED_INVERSE_TIME);
+    } else {
+      invokeOnLinear(x, y, z, feed);
+    }
+  } else if (typeof onRapid5D === "function") {
+    onRapid5D(x, y, z, abc.x, abc.y, abc.z);
+  } else {
+    invokeOnRapid(x, y, z);
+  }
+  setCurrentABC(abc);
+  setCurrentPosition(new Vector(x, y, z));
+  return true;
+}
+
 // ---- the dispatch driver ----
 
 function __ivacExecute(program, overrides) {
@@ -495,6 +541,19 @@ function __ivacExecute(program, overrides) {
             record.feed * __ivacScale
           );
           break;
+        case "rapid5d": {
+          movement = MOVEMENT_RAPID;
+          var r5 = __ivacDispatch5D(record, false);
+          if (r5) {
+            break;
+          }
+          break;
+        }
+        case "linear5d": {
+          movement = MOVEMENT_CUTTING;
+          __ivacDispatch5D(record, true);
+          break;
+        }
         case "rapidMachine":
           if (!__ivacRun.warnedRapidMachine) {
             __ivacRun.warnedRapidMachine = true;

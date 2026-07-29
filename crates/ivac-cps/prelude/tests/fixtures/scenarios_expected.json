@@ -14,5 +14,8 @@
  "format_mutators=[\"1.5\",\"R1.6\",\"R+2.\",\"1\",\"0.1\",\"false\",\"true\",\"false\",\"true\"]",
  "cycle_expand_deep_drilling=[\"R 5 1 2\",\"L 5 1 -1 F120\",\"R 5 1 2\",\"R 5 1 -0.5\",\"L 5 1 -1 F120\",\"L 5 1 -4 F120\",\"R 5 1 2\",\"R 5 1 -3.5\",\"L 5 1 -4 F120\",\"L 5 1 -6 F120\",\"R 5 1 2\"]",
  "cycle_expand_chip_breaking=[\"R 5 1 2\",\"L 5 1 -1 F120\",\"R 5 1 -0.5\",\"L 5 1 -1 F120\",\"L 5 1 -4 F120\",\"R 5 1 -3.5\",\"L 5 1 -4 F120\",\"L 5 1 -6 F120\",\"R 5 1 2\"]",
- "cycle_expand_counter_boring_and_tap=[\"R 4 0 3\",\"R 4 0 1\",\"L 4 0 -2 F100\",\"D 0.5\",\"R 4 0 3\",\"--\",\"R 8 0 3\",\"R 8 0 1\",\"L 8 0 -5 F250\",\"C COMMAND_SPINDLE_COUNTERCLOCKWISE\",\"L 8 0 1 F250\",\"C COMMAND_SPINDLE_CLOCKWISE\",\"R 8 0 3\"]"
+ "cycle_expand_counter_boring_and_tap=[\"R 4 0 3\",\"R 4 0 1\",\"L 4 0 -2 F100\",\"D 0.5\",\"R 4 0 3\",\"--\",\"R 8 0 3\",\"R 8 0 1\",\"L 8 0 -5 F250\",\"C COMMAND_SPINDLE_COUNTERCLOCKWISE\",\"L 8 0 1 F250\",\"C COMMAND_SPINDLE_CLOCKWISE\",\"R 8 0 3\"]",
+ "euler_round_trip_all_conventions=[\"0:ok\",\"1:ok\",\"2:ok\",\"3:ok\",\"4:ok\",\"5:ok\",\"6:ok\",\"7:ok\",\"8:ok\",\"9:ok\",\"10:ok\",\"11:ok\",\"12:ok\",\"13:ok\",\"14:ok\",\"15:ok\",\"16:ok\",\"17:ok\",\"18:ok\",\"19:ok\",\"20:ok\",\"21:ok\",\"22:ok\",\"23:ok\"]",
+ "kinematics_ac_table_solutions=[\"A0.000 C0.000 err=ok\",\"A30.000 C0.000 err=ok\",\"A30.000 C90.000 err=ok\",\"A30.000 C45.000 err=ok\"]",
+ "kinematics_remap_and_feed=[\"wrap=180.000\",\"short=190.000\",\"outOfRange=yes\",\"invTime=50.000\",\"dpm=572.958\"]"
 ]
