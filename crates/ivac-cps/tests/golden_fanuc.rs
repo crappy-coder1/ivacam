@@ -444,6 +444,148 @@ N135 M30\n\
     assert_snapshot("fanuc_fixture_c_radius", &out.text, expected);
 }
 
+/// Fixture (b): drill section exercising G81/G82/G83/G73 plus one
+/// forced expansion (chip-breaking with dwell — the FANUC post expands
+/// that combination itself).
+fn fixture_b() -> Program {
+    let drill = ToolSpec {
+        number: 5,
+        description: "5mm drill".into(),
+        diameter: 5.0,
+        corner_radius: 0.0,
+        taper_angle: 0.0,
+        flutes: 2,
+        tool_type: codes::TOOL_DRILL,
+        coolant: codes::COOLANT_DISABLED,
+    };
+    let params = |extra: &[(&str, f64)]| {
+        let mut m = std::collections::BTreeMap::from([
+            ("clearance".to_string(), 2.0),
+            ("retract".to_string(), 2.0),
+            ("feedrate".to_string(), 120.0),
+        ]);
+        for (k, v) in extra {
+            m.insert((*k).to_string(), *v);
+        }
+        m
+    };
+    let at = |x: f64, z: f64| Position { x, y: 0.0, z };
+    let records = vec![
+        Record::Cycle {
+            cycle_type: "drilling".into(),
+            params: params(&[("bottom", -5.0), ("depth", 7.0)]),
+            points: vec![at(10.0, -5.0), at(20.0, -5.0), at(30.0, -5.0)],
+        },
+        Record::CycleEnd,
+        Record::Cycle {
+            cycle_type: "counter-boring".into(),
+            params: params(&[("bottom", -3.0), ("depth", 5.0), ("dwell", 0.5)]),
+            points: vec![at(40.0, -3.0)],
+        },
+        Record::CycleEnd,
+        Record::Cycle {
+            cycle_type: "deep-drilling".into(),
+            params: params(&[
+                ("bottom", -12.0),
+                ("depth", 14.0),
+                ("incrementalDepth", 3.0),
+            ]),
+            points: vec![at(50.0, -12.0), at(60.0, -12.0)],
+        },
+        Record::CycleEnd,
+        Record::Cycle {
+            cycle_type: "chip-breaking".into(),
+            params: params(&[
+                ("bottom", -12.0),
+                ("depth", 14.0),
+                ("incrementalDepth", 3.0),
+                ("chipBreakDistance", 0.5),
+                ("accumulatedDepth", 14.0),
+            ]),
+            points: vec![at(70.0, -12.0)],
+        },
+        Record::CycleEnd,
+        // Forced expansion: chip-breaking WITH dwell — FANUC calls
+        // expandCyclePoint for it.
+        Record::Cycle {
+            cycle_type: "chip-breaking".into(),
+            params: params(&[
+                ("bottom", -6.0),
+                ("depth", 8.0),
+                ("incrementalDepth", 3.0),
+                ("chipBreakDistance", 0.5),
+                ("accumulatedDepth", 8.0),
+                ("dwell", 0.3),
+            ]),
+            points: vec![at(80.0, -6.0)],
+        },
+        Record::CycleEnd,
+    ];
+    let mut s = section(1, "Drill pattern", drill, 9000.0, records);
+    s.strategy = "drill".into();
+    s.final_position = Position {
+        x: 80.0,
+        y: 0.0,
+        z: 2.0,
+    };
+    program(vec![s])
+}
+
+#[test]
+fn fixture_b_canned_cycles() {
+    let Some(source) = fanuc_source() else { return };
+    let out = run_post(&source, "fanuc.cps", &fixture_b(), &no_overrides())
+        .expect("FANUC post must run fixture (b)");
+    let expected = "\
+%\n\
+O1001 (IVAC GOLDEN)\n\
+(T5 D=5. CR=0. - ZMIN=-12. - DRILL)\n\
+N10 G90 G94 G17 G49 G40 G80\n\
+N15 G21\n\
+N20 G28 G91 Z0.\n\
+N25 G90\n\
+\n\
+(DRILL PATTERN)\n\
+N30 T5 M06\n\
+N35 S9000 M03\n\
+N40 G54\n\
+N45 G00 X0. Y0.\n\
+N50 G43 Z15. H05\n\
+N55 G98 G81 X10. Y0. Z-5. R2. F120.\n\
+N60 X20.\n\
+N65 X30.\n\
+N70 G80\n\
+N75 G82 X40. Y0. Z-3. R2. P500\n\
+N80 G80\n\
+N85 G83 X50. Y0. Z-12. R2. Q3.\n\
+N90 X60.\n\
+N95 G80\n\
+N100 G73 X70. Y0. Z-12. R2. Q3.\n\
+N105 G80\n\
+N110 G00 X80. Z2.\n\
+N115 G01 Z-1. F120.\n\
+N120 G04 P300\n\
+N125 G00 Z-0.5\n\
+N130 G01 Z-1. F120.\n\
+N135 Z-4.\n\
+N140 G04 P300\n\
+N145 G00 Z-3.5\n\
+N150 G01 Z-4. F120.\n\
+N155 Z-6.\n\
+N160 G04 P300\n\
+N165 G00 Z2.\n\
+\n\
+N170 G28 G91 Z0.\n\
+N175 G90\n\
+N180 G49\n\
+N185 G28 G91 X0. Y0.\n\
+N190 G90\n\
+N195 M30\n\
+%\n\
+";
+    assert_snapshot("fanuc_fixture_b", &out.text, expected);
+}
+
 #[test]
 fn inspect_post_returns_fanuc_property_sheet() {
     let Some(source) = fanuc_source() else { return };

@@ -52,6 +52,7 @@ pub const PRELUDE: &[(&str, &str)] = &[
     ("09_machine.js", include_str!("../prelude/09_machine.js")),
     ("10_state.js", include_str!("../prelude/10_state.js")),
     ("11_circular.js", include_str!("../prelude/11_circular.js")),
+    ("12_cycles.js", include_str!("../prelude/12_cycles.js")),
     (
         "13_properties.js",
         include_str!("../prelude/13_properties.js"),

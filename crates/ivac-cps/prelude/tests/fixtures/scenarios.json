@@ -50,5 +50,17 @@
  {
   "name": "format_mutators",
   "body": "\nvar f = createFormat({decimals:3, forceDecimal:true});\nvar out = [];\nout.push(f.format(1.5));\nf.setPrefix(\"R\");\nf.setNumberOfDecimals(1);\nout.push(f.format(1.55));\nf.setForceSign(true);\nout.push(f.format(2));\nout.push(String(f.getNumberOfDecimals()));\nout.push(String(f.getMinimumValue()));\nout.push(String(f.areDifferent(1.0004, 1.0)));\nout.push(String(f.areDifferent(1.06, 1.0)));\nout.push(String(f.isSignificant(0.04)));\nout.push(String(f.isSignificant(0.06)));\nreturn JSON.stringify(out);\n"
+ },
+ {
+  "name": "cycle_expand_deep_drilling",
+  "body": "\nvar trace = [];\nonRapid = function (x, y, z) { trace.push(\"R \" + x + \" \" + y + \" \" + z); };\nonLinear = function (x, y, z, f) { trace.push(\"L \" + x + \" \" + y + \" \" + z + \" F\" + f); };\nonDwell = function (s) { trace.push(\"D \" + s); };\nonCommand = function (c) { trace.push(\"C \" + getCommandStringId(c)); };\n\ncycleType = \"deep-drilling\";\ncycle = { clearance: 2, retract: 2, bottom: -6, depth: 8, feedrate: 120, incrementalDepth: 3 };\nsetCurrentPosition(new Vector(0, 0, 2));\nexpandCyclePoint(5, 1, -6);\n\nonRapid = undefined; onLinear = undefined; onDwell = undefined; onCommand = undefined;\nreturn JSON.stringify(trace);"
+ },
+ {
+  "name": "cycle_expand_chip_breaking",
+  "body": "\nvar trace = [];\nonRapid = function (x, y, z) { trace.push(\"R \" + x + \" \" + y + \" \" + z); };\nonLinear = function (x, y, z, f) { trace.push(\"L \" + x + \" \" + y + \" \" + z + \" F\" + f); };\nonDwell = function (s) { trace.push(\"D \" + s); };\nonCommand = function (c) { trace.push(\"C \" + getCommandStringId(c)); };\n\ncycleType = \"chip-breaking\";\ncycle = { clearance: 2, retract: 2, bottom: -6, depth: 8, feedrate: 120,\n          incrementalDepth: 3, chipBreakDistance: 0.5, accumulatedDepth: 8 };\nsetCurrentPosition(new Vector(0, 0, 2));\nexpandCyclePoint(5, 1, -6);\n\nonRapid = undefined; onLinear = undefined; onDwell = undefined; onCommand = undefined;\nreturn JSON.stringify(trace);"
+ },
+ {
+  "name": "cycle_expand_counter_boring_and_tap",
+  "body": "\nvar trace = [];\nonRapid = function (x, y, z) { trace.push(\"R \" + x + \" \" + y + \" \" + z); };\nonLinear = function (x, y, z, f) { trace.push(\"L \" + x + \" \" + y + \" \" + z + \" F\" + f); };\nonDwell = function (s) { trace.push(\"D \" + s); };\nonCommand = function (c) { trace.push(\"C \" + getCommandStringId(c)); };\n\ncycleType = \"counter-boring\";\ncycle = { clearance: 3, retract: 1, bottom: -2, feedrate: 100, dwell: 0.5 };\nsetCurrentPosition(new Vector(0, 0, 3));\nexpandCyclePoint(4, 0, -2);\ntrace.push(\"--\");\ncycleType = \"right-tapping\";\ncycle = { clearance: 3, retract: 1, bottom: -5, feedrate: 250 };\nexpandCyclePoint(8, 0, -5);\n\nonRapid = undefined; onLinear = undefined; onDwell = undefined; onCommand = undefined;\nreturn JSON.stringify(trace);"
  }
 ]

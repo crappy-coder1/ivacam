@@ -64,7 +64,6 @@ var __ivacRun = {
   errorFlag: false,
   errorMessages: [],
   warnedRapidMachine: false,
-  warnedCycles: false,
   recordsSinceAbortCheck: 0,
 };
 
@@ -312,15 +311,6 @@ function invokeOnLinear5D(x, y, z, a, b, c, feed) {
   setCurrentPosition(new Vector(x, y, z));
 }
 
-// Cycle engine placeholders — replaced by the real implementation in
-// prelude/12_cycles.js (cps.5).
-function expandCyclePoint(_x, _y, _z) {
-  error("expandCyclePoint: canned-cycle support is not available yet");
-}
-function cycleNotSupported() {
-  error("Canned cycle is not supported: " + String(cycleType));
-}
-
 // ---- the dispatch driver ----
 
 function __ivacExecute(program, overrides) {
@@ -470,14 +460,34 @@ function __ivacExecute(program, overrides) {
             );
           }
           break;
-        case "cycle":
-        case "cycleEnd":
-          if (!__ivacRun.warnedCycles) {
-            __ivacRun.warnedCycles = true;
-            warning(
-              "canned drill cycles are not dispatched yet (cps.5) — cycle records omitted"
+        case "cycle": {
+          // Scale the CycleParameters bag into the post's unit
+          // (everything in the recorder's bag is a length or a feed —
+          // dwell is the one time-valued key).
+          var scaledParams = {};
+          for (var key in record.params) {
+            if (Object.prototype.hasOwnProperty.call(record.params, key)) {
+              scaledParams[key] =
+                key === "dwell"
+                  ? record.params[key]
+                  : record.params[key] * __ivacScale;
+            }
+          }
+          var scaledPoints = [];
+          for (var pi = 0; pi < record.points.length; ++pi) {
+            scaledPoints.push(
+              new Vector(
+                record.points[pi].x * __ivacScale,
+                record.points[pi].y * __ivacScale,
+                record.points[pi].z * __ivacScale
+              )
             );
           }
+          __ivacDispatchCycle(record.cycleType, scaledParams, scaledPoints);
+          break;
+        }
+        case "cycleEnd":
+          __ivacDispatchCycleEnd();
           break;
         case "dwell":
           __ivacCallOptional("onDwell", [record.seconds]);
