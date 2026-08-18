@@ -46,7 +46,7 @@ skrifa = "0.36"
 usvg = { version = "0.45", default-features = false }
 voronator = { workspace = true }
 seahash = "4"
-lru = { version = "0.16", default-features = false }
+lru = { version = "0.18.2", default-features = false }
 
 [dev-dependencies]
 criterion = { version = "0.5", default-features = false, features = ["plotters", "cargo_bench_support"] }
