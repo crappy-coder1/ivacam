@@ -6,6 +6,53 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (plain `MAJOR.MINOR.PATCH`, git tags `vX.Y.Z`).
 
+## [0.5.0] - 2026-08-18
+
+The post-processor release: an Autodesk-(Fusion 360)-`.cps`-compatible
+post-processor engine, so existing vendor posts run unmodified instead of
+requiring a Rust dialect per machine. ~16 commits since v0.4.0.
+
+### Added
+
+- **Autodesk-`.cps`-compatible post-processor engine** (new `ivac-cps` crate
+  on the pure-Rust boa JS runtime, feature-gated). A 16-module prelude
+  implements the `.cps` runtime API — format/variable/modal factories, entry
+  points from `onOpen` through `onClose`, canned cycles with
+  `expandCyclePoint` re-entrancy, a 24-convention Euler engine with real
+  `MachineConfiguration` rotary kinematics (AC/BC-table and AB-head verified),
+  execution budgets, and a structured `PostError` taxonomy. Acceptance proof:
+  the real Autodesk FANUC post runs unmodified and produces byte-stable,
+  hand-verified NC; a V8↔boa differential (158 format values + 19 scenarios)
+  is byte-identical; 100% of the 445 declared API symbols are present.
+- **Post sources on every desktop transport.** A bundled post library
+  (`grbl`) plus user-supplied `.cps` files: server `/posts` +
+  `/posts/inspect` routes, Tauri commands, and CLI `--post cps` /
+  `ivac posts`.
+- **Frontend post picker with an auto-generated properties form** driven by
+  the post's declared `properties`, persisting only user overrides.
+- **IR-exact preview, sim, and timing for CPS posts.** The simulator carves
+  the recorded intermediate representation, so preview geometry is exact no
+  matter what dialect text the post renders; G-code line sync is recovered
+  against the posted text where possible.
+
+### Fixed
+
+- `PostProfile` file extension and line ending were editable in the UI but
+  ignored on export; both are now honored.
+- Dependency advisory RUSTSEC-2026-0253: `lru` bumped 0.16.4 → 0.18.2
+  (unsound `LruCache::pop()`; not reachable with ivaCAM's key types, but the
+  release gate enforces a clean advisory scan).
+
+### Known limitations
+
+- CPS posts don't stream — `--stream` rejects them (same precedent as HPGL).
+- CPS is compiled out of the wasm/browser build for size (≈1.5 MiB gzipped);
+  the UI hides the picker there.
+- The simulation of a CPS program reflects the recorded IR, not a re-parse of
+  the final text — a post that transforms or drops moves in its own emission
+  logic is not cross-checked at runtime (only bundled posts carry a geometry
+  parity test).
+
 ## [0.4.0] - 2026-07-21
 
 The 3D-machining release: two-sided (flip-stock) jobs, waterline roughing
@@ -98,6 +145,7 @@ v0.0.1.
 First tagged release. (Android's manifest merger requires a versionName ≥
 0.0.1, so the initial tag is v0.0.1 rather than v0.1.0.)
 
+[0.5.0]: https://github.com/aalarchiv/ivacam/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/aalarchiv/ivacam/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/aalarchiv/ivacam/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/aalarchiv/ivacam/compare/v0.0.1...v0.2.0
