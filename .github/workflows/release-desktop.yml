@@ -100,20 +100,9 @@ jobs:
       - name: install tauri-cli
         run: cargo install tauri-cli --version "^2" --locked
 
-      # ── build the bundle ──
-      - name: tauri build
-        working-directory: crates/ivac-tauri
-        env:
-          # macOS notarization (set in repo secrets if signing is desired):
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          # Windows code signing (optional):
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      # ── build the bundle ──                                                                                               
+      - name: tauri build                                                                                                    
+        working-directory: crates/ivac-tauri                                                                                 
         run: cargo tauri build ${{ matrix.platform.args }}
 
       # Drop the GStreamer core libs linuxdeploy bundles as WebKit transitive
