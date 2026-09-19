@@ -44,10 +44,10 @@ jobs:
             runner: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             args: ""
-          - name: macos
-            runner: macos-13
-            target: universal-apple-darwin
-            args: --target universal-apple-darwin
+          - name: macos                                                                                                      
+            runner: macos-latest                                                                                             
+            target: aarch64-apple-darwin,x86_64-apple-darwin                                                                 
+            args: --target universal-apple-darwin 
           - name: windows
             runner: windows-latest
             target: x86_64-pc-windows-msvc
@@ -136,17 +136,17 @@ jobs:
 
       # Linux + macOS bundles publish directly. Windows is handled by the
       # dedicated steps below so it can route through SignPath.
-      - name: upload artifacts
-        if: matrix.platform.name != 'windows'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ivaCAM-${{ matrix.platform.name }}
-          path: |
-            target/release/bundle/deb/*.deb
-            target/release/bundle/rpm/*.rpm
-            target/release/bundle/appimage/*.AppImage
-            target/release/bundle/dmg/*.dmg
-            target/release/bundle/macos/*.app.tar.gz
+      - name: upload artifacts                                                                                               
+        if: matrix.platform.name != 'windows'                                                                                
+        uses: actions/upload-artifact@v4                                                                                     
+        with:                                                                                                                
+          name: ivaCAM-${{ matrix.platform.name }}                                                                           
+          path: |                                                                                                            
+            target/**/bundle/deb/*.deb                                                                                       
+            target/**/bundle/rpm/*.rpm                                                                                       
+            target/**/bundle/appimage/*.AppImage                                                                             
+            target/**/bundle/dmg/*.dmg                                                                                       
+            target/**/bundle/macos/*.app.tar.gz 
 
       # ── Windows: unsigned upload → SignPath → signed upload ──
       # The unsigned upload is ALWAYS produced: it's the input SignPath
